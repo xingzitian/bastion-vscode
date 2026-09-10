@@ -1,0 +1,38 @@
+name: CI
+
+# 扩展这边的单元测试**不需要启动 VS Code**（vscode 模块在测试里打了桩），
+# 所以可以在 Linux runner 上秒级跑完 239 项，顺便把 vsix 也打出来。
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 编译 + 单元测试
+        run: npm test
+
+      - name: 打包 vsix（可直接上传商店）
+        run: npx --yes @vscode/vsce package --allow-missing-repository
+
+      - name: 上传 vsix
+        uses: actions/upload-artifact@v4
+        with:
+          name: bastion-vscode-vsix
+          path: '*.vsix'
+          if-no-files-found: error
