@@ -2,7 +2,7 @@
   "name": "bastion-vscode",
   "displayName": "BastionShell SSH",
   "description": "SSH 堡垒机终端：一次 MFA + 连接复用，多开会话/批量部署/rz/sz 文件传输/端口转发/快捷命令，并提供 bastion.exec 让 VS Code 里的 AI 插件在服务器上执行命令",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "publisher": "xingzitian",
   "author": "杏子甜",
   "license": "MIT",
@@ -46,7 +46,14 @@
     "跳板机",
     "远程终端",
     "运维",
-    "端口转发"
+    "端口转发",
+    "jumpserver",
+    "jumpbox",
+    "connection-reuse",
+    "batch-deploy",
+    "file-transfer",
+    "批量部署",
+    "会话复用"
   ],
   "activationEvents": [
     "onStartupFinished",
