@@ -1,0 +1,949 @@
+{
+  "name": "bastion-vscode",
+  "displayName": "BastionShell SSH",
+  "description": "SSH 堡垒机终端：一次 MFA + 连接复用，多开会话/批量部署/rz/sz 文件传输/端口转发/快捷命令，并提供 bastion.exec 让 VS Code 里的 AI 插件在服务器上执行命令",
+  "version": "0.1.3",
+  "publisher": "xingzitian",
+  "author": "杏子甜",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xingzitian/bastion-vscode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xingzitian/bastion-vscode/issues"
+  },
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#0f141b",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.99.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "ssh",
+    "ssh-client",
+    "sftp",
+    "terminal",
+    "bastion",
+    "jump-server",
+    "jump-host",
+    "remote",
+    "devops",
+    "tunnel",
+    "port-forwarding",
+    "zmodem",
+    "rz",
+    "sz",
+    "mfa",
+    "otp",
+    "session",
+    "堡垒机",
+    "跳板机",
+    "远程终端",
+    "运维",
+    "端口转发"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:bastion.connect",
+    "onCommand:bastion.uploadToSession",
+    "onCommand:bastion.addProfile",
+    "onCommand:bastion.connectProfile",
+    "onCommand:bastion.deleteProfile",
+    "onCommand:bastion.refreshProfiles",
+    "onCommand:bastion.addDeployTask",
+    "onCommand:bastion.runDeployTask",
+    "onCommand:bastion.stopDeployTask",
+    "onCommand:bastion.openLastDeployReport",
+    "onCommand:bastion.deleteDeployTask",
+    "onCommand:bastion.addFileToDeployTask",
+    "onCommand:bastion.batchRunDeployTasks",
+    "onCommand:bastion.batchConnect",
+    "onCommand:bastion.openDeployTask",
+    "onCommand:bastion.exportDeployTasks",
+    "onCommand:bastion.exec",
+    "onCommand:bastion.reconnect",
+    "onCommand:bastion.addQuickCommand",
+    "onCommand:bastion.sendQuickCommand",
+    "onCommand:bastion.deleteQuickCommand",
+    "onCommand:bastion.addForwardRule",
+    "onCommand:bastion.startForward",
+    "onCommand:bastion.stopForward",
+    "onCommand:bastion.deleteForwardRule",
+    "onCommand:bastion.openHabitsFile",
+    "onCommand:bastion.openDangerRulesFile",
+    "onCommand:bastion.sendSelectionToAI",
+    "onCommand:bastion.sendTailToAI",
+    "onCommand:bastion.pickSession",
+    "onCommand:bastion.toggleReadOnly",
+    "onCommand:bastion.toggleKeepDeployTerminal",
+    "onCommand:bastion.pickOverwriteMode",
+    "onCommand:bastion.stopAllForwards",
+    "onCommand:bastion.showForwards",
+    "onCommand:bastion.showTransferHistory",
+    "onCommand:bastion.retryTransfer",
+    "onCommand:bastion.clearTransferHistory",
+    "onCommand:bastion.revealTransferItem",
+    "onCommand:bastion.copyTransferPath",
+    "onCommand:bastion.showOverview",
+    "onView:bastion.overview",
+    "onView:bastion.transfers",
+    "onLanguageModelTool:bastion_exec",
+    "onLanguageModelTool:bastion_connect",
+    "onLanguageModelTool:bastion_listSessions",
+    "onLanguageModelTool:bastion_listProfiles",
+    "onLanguageModelTool:bastion_habits",
+    "onCommand:bastion.showLog",
+    "onCommand:bastion.openProfilesFile",
+    "onCommand:bastion.openForwardsFile",
+    "onCommand:bastion.openQuickCommandsFile",
+    "onCommand:bastion.openTransferHistoryFile",
+    "onView:bastion.profiles",
+    "onView:bastion.deployTasks",
+    "onView:bastion.quickCommands",
+    "onView:bastion.forwards"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "jsonValidation": [
+      {
+        "fileMatch": "**/tasks/*.json",
+        "url": "./schemas/deploy-task.schema.json"
+      },
+      {
+        "fileMatch": "**/tasks/*.jsonc",
+        "url": "./schemas/deploy-task.schema.json"
+      }
+    ],
+    "configuration": {
+      "title": "BastionShell",
+      "properties": {
+        "bastion.terminalLocation": {
+          "type": "string",
+          "enum": [
+            "editor",
+            "panel"
+          ],
+          "default": "editor",
+          "description": "新会话的显示位置：editor = 编辑器区域（和文件标签一样，可拖拽分屏），panel = 底部面板"
+        },
+        "bastion.sendToAiMode": {
+          "type": "string",
+          "enum": [
+            "insert",
+            "send"
+          ],
+          "default": "insert",
+          "description": "「把终端选中内容/最近输出发给 AI」的行为：insert = 只把内容填进 AI 聊天输入框，你可以再补一句话再回车（推荐）；send = 直接发出去"
+        },
+        "bastion.tailLines": {
+          "type": "number",
+          "default": 80,
+          "description": "「把终端最近输出发给 AI」时带多少行（1-1000）"
+        },
+        "bastion.verboseLog": {
+          "type": "boolean",
+          "default": false,
+          "description": "打开详细日志（ZMODEM 握手帧原始字节等诊断信息）。平时关着，免得把真正有用的日志行挤掉。排查文件传输问题时再打开。"
+        },
+        "bastion.passwordPromptPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "**密码提示**的识别关键词（子串匹配，不区分大小写）。留空用内置默认；**填了就整套替换**。\n\n用途：决定一个交互提示是在问密码、还是在问 MFA 动态码 —— 判错会把动态码当密码填进去（或反过来）。\n\n内置默认：`password`、`passphrase`、`passwd`、`密码`、`密碼`、`口令`、`パスワード`、`암호`。\n\n换一家文案不同的堡垒机时，把你家实际那串提示词填进来即可。\n\n> 高危命令的规则不在这里，在 `~/.bastionshell/dangerRules.jsonc`（用命令「打开高危命令规则文件」）。菜单提示在 `bastion.menuHints.*`。"
+        },
+        "bastion.sessionNumber": {
+          "type": "boolean",
+          "default": true,
+          "description": "终端名前面加会话号（#1、#2…），便于区分多个会话，也让 AI 用 bastion_exec 的 terminal 参数精确指定目标（关掉后终端名就只有 用户@主机）"
+        },
+        "bastion.menuHints.hostPromptLoose": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "主菜单的**弱特征**：只有提示符本身。留空用内置默认（`Opt>`、`[Host]>`）；填了整套替换。\n\n⚠️ 它**只用于第一次等主菜单**，不参与「IP 被拒绝、菜单又回到输 IP」的判断 —— 因为输完 IP 后那行回显是 `Opt> Opt> 10.0.0.10`，堡垒机只要重画一次提示符就会被误判成「IP 被拒绝」。\n\n你家的提示符如果不是 `Opt>` / `[Host]>`，填这里。不确定就先留空：认不出来时日志会把屏幕原文打出来。"
+        },
+        "bastion.menuHints.hostPrompt": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "堡垒机**主菜单**（提示你输目标机 IP / 资产编号）的识别正则 —— 只放**菜单正文的措辞**，不要放裸提示符（那属于 `bastion.menuHints.hostPromptLoose`）。留空用内置默认；**填了就整组替换内置**。\n\n内置含实测过的某厂商堡垒机 写法（`进行搜索`、`输入 部分IP，主机名…`）和 JumpServer / 齐治常见写法。\n\n识别不到会自动退回固定等待（不会更差），并把当时屏幕原文打进日志 —— 照着它补一条即可。"
+        },
+        "bastion.menuHints.userPrompt": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "堡垒机**二级菜单**（提示你选登录用户）的识别正则。留空用内置默认；填了整组替换。"
+        },
+        "bastion.menuHints.shellPrompt": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "目标机 **shell 提示符**的识别正则（判断是否已经落到目标机）。留空用内置默认；填了整组替换。"
+        },
+        "bastion.deployTerminalPolicy": {
+          "type": "string",
+          "enum": [
+            "closeSuccess",
+            "ask",
+            "keep",
+            "closeAll"
+          ],
+          "enumDescriptions": [
+            "成功的会话自动关掉，失败的留着（默认。失败终端里有出错现场，关掉就等于销毁证据）",
+            "跑完弹一次问你要不要保留窗口 —— 报告里虽然记了每条命令的输出，但有人就是想自己去翻",
+            "全部保留，和以前一样（长时间批量部署会堆很多终端）",
+            "全部关掉，包括失败的"
+          ],
+          "default": "closeSuccess",
+          "description": "批量部署结束后，怎么处理为每台机器开的会话终端"
+        },
+        "bastion.uploadOverwrite": {
+          "type": "string",
+          "enum": [
+            "skip",
+            "overwrite",
+            "rename"
+          ],
+          "enumDescriptions": [
+            "远端已有同名文件就跳过不传（默认，最安全）",
+            "直接覆盖远端同名文件（rz -y）",
+            "远端自动改名保留旧文件（rz -E），新文件叫 xxx.0 之类"
+          ],
+          "default": "skip",
+          "description": "上传（rz）时遇到远端同名文件的处理方式。下载（sz）的落盘位置仍由每次的目录选择决定。"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "bastion",
+          "title": "BastionShell",
+          "icon": "media/bastion.svg"
+        }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "bastionOverview",
+          "title": "BastionShell",
+          "icon": "media/bastion.svg"
+        }
+      ]
+    },
+    "views": {
+      "bastion": [
+        {
+          "id": "bastion.profiles",
+          "name": "连接档案"
+        },
+        {
+          "id": "bastion.deployTasks",
+          "name": "部署任务"
+        },
+        {
+          "id": "bastion.quickCommands",
+          "name": "快捷命令"
+        },
+        {
+          "id": "bastion.forwards",
+          "name": "端口转发"
+        },
+        {
+          "id": "bastion.transfers",
+          "name": "传输历史"
+        }
+      ],
+      "bastionOverview": [
+        {
+          "id": "bastion.overview",
+          "name": "总览与进度",
+          "type": "webview"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "bastion.profiles",
+        "contents": "还没有连接档案。\n[新建连接档案](command:bastion.addProfile)"
+      },
+      {
+        "view": "bastion.deployTasks",
+        "contents": "还没有部署任务。\n[新建部署任务](command:bastion.addDeployTask)"
+      },
+      {
+        "view": "bastion.transfers",
+        "contents": "还没有传输记录。\n上传/下载完成后会自动记在这里，失败的上传可以右键重试。"
+      },
+      {
+        "view": "bastion.quickCommands",
+        "contents": "还没有快捷命令。\n命令可以直接写在这个配置文件里（支持多行命令和外部 .sh 脚本文件，保存即生效）：\n[打开快捷命令配置文件](command:bastion.openQuickCommandsFile)"
+      },
+      {
+        "view": "bastion.overview",
+        "contents": "还没有会话。\n\n这个面板停在右侧，会实时显示会话、传输进度、部署进度和端口转发，里面的按钮可以直接操作。\n[新建连接](command:bastion.connect)"
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "bastion_exec",
+        "toolReferenceName": "bastionExec",
+        "displayName": "BastionShell 远程执行",
+        "userDescription": "在堡垒机服务器上执行 shell 命令并返回输出",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(terminal)",
+        "modelDescription": "在堡垒机（BastionShell）连接的服务器上执行一条 shell 命令并返回输出。用于操作通过堡垒机连接的服务器：执行命令、查看状态、排查问题等。命令会在 VS Code 的堡垒机终端里实时显示并流式输出，输出在命令结束后（输出静止约 3 秒）返回。若同时有多个会话，可用 terminal 参数指定目标会话（名字见 bastion_listSessions），不填则用当前活动/最近的堡垒机会话。提权方式不要写死成 sudo -i：先看这台机器的「提权习惯」——bastion_connect 和 bastion_listProfiles 的返回里都带，也可以用 bastion_habits（action=read）单独查。习惯为 sudo 表示该账号 sudo 免密，直接执行 `sudo <命令>` 即可，不要进 sudo -i；习惯为 none 表示这台机器不需要提权；习惯为 sudo-i 表示要先 `sudo -i` 进交互式 root。习惯为 ask 或没有记录时，先问用户一次他实际怎么做，然后立刻用 bastion_habits 的 setPrivilege（提权方式）+ remember（一句话习惯）记下来，以后不再重复问。如果返回输出里出现密码提示（password / 密码 / 口令），说明正在等密码：此时停止执行，让用户到堡垒机终端里手动输入密码完成认证，等用户明确说认证完成后，再用本工具继续执行后续命令；同时用 bastion_habits 把这次真实的提权方式修正记录。",
+        "tags": [
+          "ssh",
+          "terminal",
+          "remote",
+          "bastion"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "要在远程服务器上执行的 shell 命令"
+            },
+            "terminal": {
+              "type": "string",
+              "description": "可选：目标会话的终端名（如 root@10.0.0.1）。不填则用当前活动/最近的堡垒机会话"
+            }
+          },
+          "required": [
+            "command"
+          ]
+        }
+      },
+      {
+        "name": "bastion_connect",
+        "toolReferenceName": "bastionConnect",
+        "displayName": "BastionShell 连接服务器",
+        "userDescription": "连接一个档案对应的服务器（直接 SSH 或过堡垒机菜单）",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(plug)",
+        "modelDescription": "通过 BastionShell 连接一个档案对应的服务器。档案分两种模式（用 bastion_listProfiles 可看到）：直接 SSH（普通服务器，连上直接进 shell，无需 host）和堡垒机（连上后要过菜单选目标机，需要 host 与可选 userChoice）。如果 profile 不明确或档案有多个，先调用 bastion_listProfiles 列出档案并向用户确认用哪个，不要自己猜。连接成功后用 bastion_exec 在这台机器上执行命令。连接成功的返回里会带这台机器的「提权习惯」，按它执行特权命令（sudo=账号免密，直接 `sudo <命令>`；none=不用提权；sudo-i=先 `sudo -i`）；若为 ask 或没有记录，先问用户一次他的实际做法，再用 bastion_habits 记下来，不要每次都问。",
+        "tags": [
+          "ssh",
+          "remote",
+          "bastion"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "description": "档案名（在侧边栏「连接档案」里可看到）"
+            },
+            "host": {
+              "type": "string",
+              "description": "仅堡垒机模式必填：目标机器 IP 或主机名"
+            },
+            "userChoice": {
+              "type": "string",
+              "description": "仅堡垒机模式：二级菜单选择用户序号，默认 1。如果这台机器不需要选用户（有些管理员账号输完 IP 直接进 shell），传空字符串表示跳过这一步"
+            }
+          },
+          "required": [
+            "profile"
+          ]
+        }
+      },
+      {
+        "name": "bastion_listSessions",
+        "toolReferenceName": "bastionSessions",
+        "displayName": "BastionShell 会话列表",
+        "userDescription": "列出当前堡垒机会话",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(list-unordered)",
+        "modelDescription": "列出当前所有堡垒机（BastionShell）会话的终端名，用于确定有哪些会话、以及配合 bastion_exec 的 terminal 参数指定目标会话。",
+        "tags": [
+          "ssh",
+          "terminal",
+          "bastion"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "bastion_listProfiles",
+        "toolReferenceName": "bastionProfiles",
+        "displayName": "BastionShell 档案列表",
+        "userDescription": "列出堡垒机连接档案",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(list-tree)",
+        "modelDescription": "列出所有 BastionShell 连接档案（name、用户、主机、端口、模式：直接 SSH / 堡垒机）。在调用 bastion_connect 之前，先用它确定要用哪个 profile 名，以及该档案是直接 SSH 还是堡垒机（决定是否需要 host 参数）。",
+        "tags": [
+          "ssh",
+          "bastion"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "bastion_habits",
+        "toolReferenceName": "bastionHabits",
+        "displayName": "BastionShell 个人习惯",
+        "userDescription": "读取或记录个人操作习惯（提权方式、常用目录、口头习惯）",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(person)",
+        "modelDescription": "读写 BastionShell 的「个人习惯」（~/.bastionshell/habits.jsonc），用来避免每次会话都重复问同样的提权问题。action=read 读取某个档案当前生效的提权习惯、常用目录和习惯条目；action=remember 追加一条习惯（habit 参数，一句话，自动去重）；action=setPrivilege 设置提权方式（privilege 参数：none / sudo / sudo-i / ask）。profile 参数省略表示写全局，给了就只作用于该连接档案（名字见 bastion_listProfiles）。典型用法：用户第一次告诉你「这台 su 直接用 sudo 就行，不用 sudo -i」时，setPrivilege(profile, 'sudo') 再把细节 remember 下来；此后每次连接都会自动带上这些习惯，不需要再问。写入会保留文件里手写的中文注释。",
+        "tags": [
+          "ssh",
+          "bastion",
+          "preferences"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "read",
+                "remember",
+                "setPrivilege"
+              ],
+              "description": "read=读取；remember=追加一条习惯；setPrivilege=设置提权方式。默认 read"
+            },
+            "profile": {
+              "type": "string",
+              "description": "可选：连接档案名（见 bastion_listProfiles）。省略表示全局习惯"
+            },
+            "habit": {
+              "type": "string",
+              "description": "action=remember 时必填：要记下来的一句话习惯"
+            },
+            "privilege": {
+              "type": "string",
+              "enum": [
+                "none",
+                "sudo",
+                "sudo-i",
+                "ask"
+              ],
+              "description": "action=setPrivilege 时必填：none=不用提权；sudo=账号免密直接 sudo <命令>；sudo-i=先进 sudo -i；ask=每次都问"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "bastion.connect",
+        "title": "BastionShell: 连接"
+      },
+      {
+        "command": "bastion.addProfile",
+        "title": "新建档案",
+        "icon": "$(add)"
+      },
+      {
+        "command": "bastion.connectProfile",
+        "title": "连接",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "bastion.deleteProfile",
+        "title": "删除档案",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "bastion.refreshProfiles",
+        "title": "刷新",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "bastion.uploadToSession",
+        "title": "BastionShell: 上传到当前会话"
+      },
+      {
+        "command": "bastion.addDeployTask",
+        "title": "新建部署任务",
+        "icon": "$(add)"
+      },
+      {
+        "command": "bastion.openDeployTask",
+        "title": "打开任务文件",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "bastion.exportDeployTasks",
+        "title": "导出任务",
+        "icon": "$(export)"
+      },
+      {
+        "command": "bastion.batchRunDeployTasks",
+        "title": "批量执行任务",
+        "icon": "$(play-circle)"
+      },
+      {
+        "command": "bastion.batchConnect",
+        "title": "BastionShell: 批量连接"
+      },
+      {
+        "command": "bastion.exec",
+        "title": "BastionShell: 执行远程命令（AI 桥接）"
+      },
+      {
+        "command": "bastion.reconnect",
+        "title": "BastionShell: 重连最近会话",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "bastion.openProfilesFile",
+        "title": "打开连接档案配置文件",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "bastion.openForwardsFile",
+        "title": "打开端口转发配置文件",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "bastion.openQuickCommandsFile",
+        "title": "打开快捷命令配置文件",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "bastion.runDeployTask",
+        "title": "运行",
+        "icon": "$(play)"
+      },
+      {
+        "command": "bastion.stopDeployTask",
+        "title": "停止",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "bastion.openLastDeployReport",
+        "title": "打开最近一次部署报告",
+        "icon": "$(file-text)"
+      },
+      {
+        "command": "bastion.deleteDeployTask",
+        "title": "删除任务",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "bastion.addFileToDeployTask",
+        "title": "加入部署任务"
+      },
+      {
+        "command": "bastion.addQuickCommand",
+        "title": "新建快捷命令",
+        "icon": "$(add)"
+      },
+      {
+        "command": "bastion.sendQuickCommand",
+        "title": "发送到会话",
+        "icon": "$(play)"
+      },
+      {
+        "command": "bastion.deleteQuickCommand",
+        "title": "删除命令",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "bastion.addForwardRule",
+        "title": "新建转发规则",
+        "icon": "$(add)"
+      },
+      {
+        "command": "bastion.startForward",
+        "title": "启动转发",
+        "icon": "$(play)"
+      },
+      {
+        "command": "bastion.stopForward",
+        "title": "停止转发",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "bastion.deleteForwardRule",
+        "title": "删除规则",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "bastion.openHabitsFile",
+        "title": "打开个人习惯配置文件",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "bastion.openDangerRulesFile",
+        "title": "打开高危命令规则文件",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "bastion.sendSelectionToAI",
+        "title": "BastionShell: 把终端选中内容发给 AI",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "bastion.sendTailToAI",
+        "title": "BastionShell: 把终端最近输出发给 AI",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "bastion.pickSession",
+        "title": "BastionShell: 切换会话"
+      },
+      {
+        "command": "bastion.toggleReadOnly",
+        "title": "BastionShell: 切换只读模式（防手滑）",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "bastion.toggleKeepDeployTerminal",
+        "title": "BastionShell: 部署结束保留终端窗口（开关）",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "bastion.pickOverwriteMode",
+        "title": "BastionShell: 设置上传覆盖方式（跳过/覆盖/改名）",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "bastion.stopAllForwards",
+        "title": "BastionShell: 停止全部端口转发",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "bastion.showOverview",
+        "title": "BastionShell: 打开总览与进度面板",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "bastion.showLog",
+        "title": "BastionShell: 打开日志（诊断用）",
+        "icon": "$(output)"
+      },
+      {
+        "command": "bastion.showForwards",
+        "title": "BastionShell: 打开端口转发视图"
+      },
+      {
+        "command": "bastion.showTransferHistory",
+        "title": "BastionShell: 打开传输历史"
+      },
+      {
+        "command": "bastion.retryTransfer",
+        "title": "重试这次上传",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "bastion.clearTransferHistory",
+        "title": "清空传输历史",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "bastion.openTransferHistoryFile",
+        "title": "打开传输历史文件",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "bastion.revealTransferItem",
+        "title": "在文件夹中显示",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "bastion.copyTransferPath",
+        "title": "复制本地路径",
+        "icon": "$(copy)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "bastion.sendSelectionToAI",
+        "key": "ctrl+alt+i",
+        "mac": "cmd+alt+i",
+        "when": "terminalFocus"
+      },
+      {
+        "command": "bastion.sendTailToAI",
+        "key": "ctrl+alt+shift+i",
+        "mac": "cmd+alt+shift+i",
+        "when": "terminalFocus"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "bastion.addProfile",
+          "when": "view == bastion.profiles",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bastion.refreshProfiles",
+          "when": "view == bastion.profiles",
+          "group": "navigation@2"
+        },
+        {
+          "command": "bastion.openProfilesFile",
+          "when": "view == bastion.profiles",
+          "group": "navigation@3"
+        },
+        {
+          "command": "bastion.addDeployTask",
+          "when": "view == bastion.deployTasks",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bastion.batchRunDeployTasks",
+          "when": "view == bastion.deployTasks",
+          "group": "navigation@2"
+        },
+        {
+          "command": "bastion.exportDeployTasks",
+          "when": "view == bastion.deployTasks",
+          "group": "navigation@3"
+        },
+        {
+          "command": "bastion.openLastDeployReport",
+          "when": "view == bastion.deployTasks",
+          "group": "navigation@4"
+        },
+        {
+          "command": "bastion.toggleKeepDeployTerminal",
+          "when": "view == bastion.deployTasks",
+          "group": "navigation@5"
+        },
+        {
+          "command": "bastion.addQuickCommand",
+          "when": "view == bastion.quickCommands",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bastion.openQuickCommandsFile",
+          "when": "view == bastion.quickCommands",
+          "group": "navigation@2"
+        },
+        {
+          "command": "bastion.addForwardRule",
+          "when": "view == bastion.forwards",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bastion.openForwardsFile",
+          "when": "view == bastion.forwards",
+          "group": "navigation@2"
+        },
+        {
+          "command": "bastion.stopAllForwards",
+          "when": "view == bastion.forwards",
+          "group": "navigation@3"
+        },
+        {
+          "command": "bastion.openHabitsFile",
+          "when": "view == bastion.profiles",
+          "group": "navigation@4"
+        },
+        {
+          "command": "bastion.openDangerRulesFile",
+          "when": "view == bastion.profiles",
+          "group": "navigation@5"
+        },
+        {
+          "command": "bastion.clearTransferHistory",
+          "when": "view == bastion.transfers",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bastion.openTransferHistoryFile",
+          "when": "view == bastion.transfers",
+          "group": "navigation@2"
+        }
+      ],
+      "terminal/context": [
+        {
+          "command": "bastion.toggleReadOnly",
+          "when": "terminalFocus",
+          "group": "0_bastion@0"
+        },
+        {
+          "command": "bastion.sendSelectionToAI",
+          "when": "terminalFocus",
+          "group": "0_bastion@1"
+        },
+        {
+          "command": "bastion.sendTailToAI",
+          "when": "terminalFocus",
+          "group": "0_bastion@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "bastion.connectProfile",
+          "when": "view == bastion.profiles && viewItem == profile",
+          "group": "inline@0"
+        },
+        {
+          "command": "bastion.connectProfile",
+          "when": "view == bastion.profiles && viewItem == profile",
+          "group": "1_主操作@1"
+        },
+        {
+          "command": "bastion.openProfilesFile",
+          "when": "view == bastion.profiles && viewItem == profile",
+          "group": "2_编辑@1"
+        },
+        {
+          "command": "bastion.deleteProfile",
+          "when": "view == bastion.profiles && viewItem == profile",
+          "group": "3_删除@1"
+        },
+        {
+          "command": "bastion.runDeployTask",
+          "when": "view == bastion.deployTasks && viewItem == deployTask",
+          "group": "inline@0"
+        },
+        {
+          "command": "bastion.stopDeployTask",
+          "when": "view == bastion.deployTasks && viewItem == deployTaskRunning",
+          "group": "inline@0"
+        },
+        {
+          "command": "bastion.runDeployTask",
+          "when": "view == bastion.deployTasks && viewItem == deployTask",
+          "group": "1_主操作@1"
+        },
+        {
+          "command": "bastion.stopDeployTask",
+          "when": "view == bastion.deployTasks && viewItem == deployTaskRunning",
+          "group": "1_主操作@1"
+        },
+        {
+          "command": "bastion.openDeployTask",
+          "when": "view == bastion.deployTasks && viewItem =~ /deployTask/",
+          "group": "2_编辑@1"
+        },
+        {
+          "command": "bastion.deleteDeployTask",
+          "when": "view == bastion.deployTasks && viewItem == deployTask",
+          "group": "3_删除@1"
+        },
+        {
+          "command": "bastion.sendQuickCommand",
+          "when": "view == bastion.quickCommands && viewItem == quickCommand",
+          "group": "inline@0"
+        },
+        {
+          "command": "bastion.sendQuickCommand",
+          "when": "view == bastion.quickCommands && viewItem == quickCommand",
+          "group": "1_主操作@1"
+        },
+        {
+          "command": "bastion.openQuickCommandsFile",
+          "when": "view == bastion.quickCommands && viewItem == quickCommand",
+          "group": "2_编辑@1"
+        },
+        {
+          "command": "bastion.deleteQuickCommand",
+          "when": "view == bastion.quickCommands && viewItem == quickCommand",
+          "group": "3_删除@1"
+        },
+        {
+          "command": "bastion.startForward",
+          "when": "view == bastion.forwards && viewItem == forwardIdle",
+          "group": "inline@0"
+        },
+        {
+          "command": "bastion.stopForward",
+          "when": "view == bastion.forwards && viewItem == forwardActive",
+          "group": "inline@0"
+        },
+        {
+          "command": "bastion.startForward",
+          "when": "view == bastion.forwards && viewItem == forwardIdle",
+          "group": "1_主操作@1"
+        },
+        {
+          "command": "bastion.stopForward",
+          "when": "view == bastion.forwards && viewItem == forwardActive",
+          "group": "1_主操作@1"
+        },
+        {
+          "command": "bastion.openForwardsFile",
+          "when": "view == bastion.forwards && viewItem =~ /forward/",
+          "group": "2_编辑@1"
+        },
+        {
+          "command": "bastion.deleteForwardRule",
+          "when": "view == bastion.forwards && viewItem =~ /forward/",
+          "group": "3_删除@1"
+        },
+        {
+          "command": "bastion.retryTransfer",
+          "when": "view == bastion.transfers && viewItem == transferFailed",
+          "group": "inline@0"
+        },
+        {
+          "command": "bastion.retryTransfer",
+          "when": "view == bastion.transfers && viewItem == transferFailed",
+          "group": "1_主操作@1"
+        },
+        {
+          "command": "bastion.revealTransferItem",
+          "when": "view == bastion.transfers && viewItem =~ /transfer/",
+          "group": "2_操作@1"
+        },
+        {
+          "command": "bastion.copyTransferPath",
+          "when": "view == bastion.transfers && viewItem =~ /transfer/",
+          "group": "2_操作@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "bastion.uploadToSession",
+          "when": "!explorerResourceIsFolder && bastion.hasSession && bastion.activeIsBastion",
+          "group": "7_modification"
+        },
+        {
+          "command": "bastion.addFileToDeployTask",
+          "when": "!explorerResourceIsFolder",
+          "group": "7_modification"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "tsc -p ./ && node --test \"out/test/*.test.js\"",
+    "test:only": "node --test \"out/test/*.test.js\"",
+    "package": "tsc -p ./ && npx --yes @vscode/vsce package --allow-missing-repository"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1",
+    "ssh2": "^1.17.0",
+    "zmodem.js": "^0.1.10"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ssh2": "^1.15.5",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,14 @@
+.vscode/**
+.vscode-test/**
+.gitignore
+.gitattributes
+src/**
+tools/**
+*.vsix
+tsconfig.json
+package-lock.json
+out/test/**
+out/testkit/**
+node_modules/**/test/**
+node_modules/**/examples/**
+node_modules/**/*.md

@@ -1,0 +1,22 @@
+# 依赖与构建产物：不提交（33 MB 的 node_modules 不该进仓库）
+node_modules/
+out/
+
+# 打包出来的安装包：走 GitHub Releases，不放在源码历史里
+*.vsix
+
+# 测试/调试残留
+.vscode-test/
+*.log
+npm-debug.log*
+
+# 整个 .vscode/ 目录都不提交。
+# 原因：扩展的「发送最近输出给 AI」会在工作区 .vscode 下落一份终端原文
+# （bastion-last-output.txt），里面是**生产环境的真实输出**：主机名、账号、UID/GID、
+# 内网 IP、etcd/k8s 集群拓扑、进程 PID、证书与密钥文件路径……
+# 只忽略那一个文件名不够 —— 以后这个功能多写一个文件就又漏了，所以整目录忽略。
+.vscode/
+
+# 编辑器与系统杂项
+.DS_Store
+Thumbs.db

@@ -1,0 +1,360 @@
+/**
+ * 扩展入口：只负责「装配」—— 建视图、注册命令和语言模型工具、挂文件监听。
+ *
+ * 具体实现按职责拆在各自模块里（原来这个文件有 1569 行，什么都在里面）：
+ *   state.ts        共享状态（其它模块只能通过 setter 改）
+ *   slots.ts        状态栏各槽位刷什么
+ *   sessions.ts     连接、会话、堡垒机菜单导航、连接档案
+ *   deployRun.ts    部署执行与报告        deployReport.ts  报告渲染（纯函数，可测）
+ *   aiBridge.ts     AI 桥接（执行命令）    aiChat.ts        把终端内容发给 AI
+ *   quickCmd.ts     快捷命令命令          forwardCmd.ts    端口转发命令
+ *   transferCmd.ts  传输历史命令          configCmd.ts     配置文件入口
+ */
+import * as vscode from 'vscode'
+import * as path from 'path'
+import { BastionProfilesProvider } from './profilesTree'
+import { DeployTasksProvider } from './deployTree'
+import { QuickCommandsProvider, getQuickCommands, QUICK_COMMANDS_FILE } from './quickCommands'
+import { ForwardRulesProvider, getForwardRules, FORWARD_FILE, FORWARD_HEADER } from './forward'
+import {
+  TransferHistoryProvider,
+  getTransferHistory,
+  setTransferTreeProvider,
+  TRANSFER_FILE,
+  TRANSFER_HEADER
+} from './transfer'
+import { getProfiles, PROFILES_FILE, PROFILES_HEADER } from './profiles'
+import { listDeployTasks, migrateLegacyDeployTasks, migrateTaskFiles, exportDeployTasks } from './deploy'
+import { HABITS_FILE, habitsForAI, appendHabit, setPrivilege, isPrivilegeMode } from './habits'
+import { configDir } from './config'
+import { findDangerous, describeDanger } from './danger'
+import { getDangerRules } from './dangerConfig'
+import { disposeSlots } from './status'
+import { log, setVerboseLogging } from './log'
+import {
+  ctx,
+  manager,
+  terminals,
+  profilesProvider,
+  deployProvider,
+  quickCommandsProvider,
+  forwardProvider,
+  transferProvider,
+  setCtx,  setActiveIsBastion,
+  setProfilesProvider,
+  setDeployProvider,
+  setQuickCommandsProvider,
+  setForwardProvider,
+  setTransferProvider
+} from './state'
+import { updateStatusBar, updateReadOnlySlot, updateOverwriteSlot, updateKeepTerminalSlot } from './slots'
+import { connect, connectProfile, addProfile, deleteProfile, reconnect, pickSession, toggleReadOnly } from './sessions'
+import {
+  addDeployTask,
+  runDeployTask,
+  stopDeployTask,
+  deleteDeployTask,
+  addFileToDeployTask,
+  batchRunDeployTasks,
+  batchConnect,
+  openDeployTask,
+  openLastDeployReport,
+  toggleKeepDeployTerminal
+} from './deployRun'
+import { execRemote, connectToTarget, listSessions, listProfilesForAI } from './aiBridge'
+import { sendSelectionToAI, sendTailToAI } from './aiChat'
+import { addQuickCommand, sendQuickCommand, deleteQuickCommand, openQuickCommandsFile } from './quickCmd'
+import {
+  showForwards,
+  stopAllForwardsCommand,
+  addForwardRule,
+  startForwardRule,
+  stopForwardRule,
+  deleteForwardRule
+} from './forwardCmd'
+import {
+  uploadToSession,
+  showTransferHistory,
+  retryTransfer,
+  clearTransferHistoryCommand,
+  revealTransferItem,
+  copyTransferPath
+} from './transferCmd'
+import { openConfigFile, openHabitsFile, showLog, pickOverwriteMode, openDangerRules } from './configCmd'
+import {
+  OverviewProvider,
+  setOverviewProvider,
+  refreshOverview,
+  revealOverview,
+  disposeOverview
+} from './overview'
+
+export function activate(context: vscode.ExtensionContext): void {
+  setCtx(context)
+  setActiveIsBastion(false)
+
+  updateStatusBar()
+
+  setProfilesProvider(new BastionProfilesProvider(() => getProfiles(ctx)))
+  setDeployProvider(new DeployTasksProvider(() => listDeployTasks(ctx)))
+  setQuickCommandsProvider(new QuickCommandsProvider(() => getQuickCommands(ctx)))
+  setForwardProvider(new ForwardRulesProvider(() => getForwardRules(ctx)))
+  setTransferProvider(new TransferHistoryProvider(() => getTransferHistory()))
+  setTransferTreeProvider(transferProvider)
+  // 总览面板：实例只要活到 deactivate，其它模块通过 setOverviewProvider 拿到它
+  const overviewProvider = new OverviewProvider()
+  setOverviewProvider(overviewProvider)
+  context.subscriptions.push({ dispose: () => disposeOverview() })
+
+  // 迁移旧版 globalState 部署任务为文件
+  migrateLegacyDeployTasks(ctx)
+  // 老任务 .json → 带中文说明的 .jsonc（写新→验证→删旧，坏了不丢数据）
+  migrateTaskFiles(ctx)
+
+  // 详细日志开关跟着设置走
+  setVerboseLogging(vscode.workspace.getConfiguration('bastion').get<boolean>('verboseLog', false))
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('bastion.verboseLog')) {
+        setVerboseLogging(vscode.workspace.getConfiguration('bastion').get<boolean>('verboseLog', false))
+      }
+      // 手动在设置里改了「部署完保留终端」，底栏那格也要跟着变
+      // （不然开关显示的状态和你实际设置不一致，比没有还糟）
+      if (e.affectsConfiguration('bastion.deployTerminalPolicy')) {
+        updateKeepTerminalSlot()
+      }
+    })
+  )
+
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('bastion.profiles', profilesProvider),
+    vscode.window.registerTreeDataProvider('bastion.deployTasks', deployProvider),
+    vscode.window.registerTreeDataProvider('bastion.quickCommands', quickCommandsProvider),
+    vscode.window.registerTreeDataProvider('bastion.forwards', forwardProvider),
+    vscode.window.registerTreeDataProvider('bastion.transfers', transferProvider),
+    // 右侧辅助侧边栏里的「总览与进度」面板：点状态栏任意格子都会展开它
+    vscode.window.registerWebviewViewProvider(OverviewProvider.viewId, overviewProvider, {
+      webviewOptions: { retainContextWhenHidden: true }
+    }),
+    vscode.commands.registerCommand('bastion.showOverview', () => void revealOverview()),
+    vscode.commands.registerCommand('bastion.connect', connect),
+    vscode.commands.registerCommand('bastion.addProfile', addProfile),
+    vscode.commands.registerCommand('bastion.connectProfile', connectProfile),
+    vscode.commands.registerCommand('bastion.deleteProfile', deleteProfile),
+    vscode.commands.registerCommand('bastion.refreshProfiles', () => profilesProvider.refresh()),
+    vscode.commands.registerCommand('bastion.uploadToSession', uploadToSession),
+    vscode.commands.registerCommand('bastion.addDeployTask', addDeployTask),
+    vscode.commands.registerCommand('bastion.runDeployTask', runDeployTask),
+    vscode.commands.registerCommand('bastion.stopDeployTask', stopDeployTask),
+    vscode.commands.registerCommand('bastion.openLastDeployReport', () => void openLastDeployReport()),
+    vscode.commands.registerCommand('bastion.deleteDeployTask', deleteDeployTask),
+    vscode.commands.registerCommand('bastion.addFileToDeployTask', addFileToDeployTask),
+    vscode.commands.registerCommand('bastion.batchRunDeployTasks', batchRunDeployTasks),
+    vscode.commands.registerCommand('bastion.batchConnect', batchConnect),
+    vscode.commands.registerCommand('bastion.openDeployTask', openDeployTask),
+    vscode.commands.registerCommand('bastion.exportDeployTasks', () => void exportDeployTasks(ctx)),
+    vscode.commands.registerCommand('bastion.exec', execRemote),
+    vscode.commands.registerCommand('bastion.reconnect', () => void reconnect()),
+    vscode.commands.registerCommand('bastion.openProfilesFile', () => openConfigFile(PROFILES_FILE, PROFILES_HEADER)),
+    vscode.commands.registerCommand('bastion.openForwardsFile', () => openConfigFile(FORWARD_FILE, FORWARD_HEADER)),
+    vscode.commands.registerCommand('bastion.openQuickCommandsFile', openQuickCommandsFile),
+    vscode.commands.registerCommand('bastion.openHabitsFile', openHabitsFile),
+    vscode.commands.registerCommand('bastion.openDangerRulesFile', openDangerRules),
+    vscode.commands.registerCommand('bastion.sendSelectionToAI', sendSelectionToAI),
+    vscode.commands.registerCommand('bastion.sendTailToAI', sendTailToAI),
+    vscode.commands.registerCommand('bastion.pickSession', pickSession),
+    vscode.commands.registerCommand('bastion.toggleReadOnly', toggleReadOnly),
+    vscode.commands.registerCommand('bastion.toggleKeepDeployTerminal', toggleKeepDeployTerminal),
+    vscode.commands.registerCommand('bastion.pickOverwriteMode', pickOverwriteMode),
+    vscode.commands.registerCommand('bastion.showForwards', showForwards),
+    vscode.commands.registerCommand('bastion.showLog', showLog),
+    vscode.commands.registerCommand('bastion.stopAllForwards', stopAllForwardsCommand),
+    vscode.commands.registerCommand('bastion.showTransferHistory', showTransferHistory),
+    vscode.commands.registerCommand('bastion.retryTransfer', retryTransfer),
+    vscode.commands.registerCommand('bastion.clearTransferHistory', clearTransferHistoryCommand),
+    vscode.commands.registerCommand('bastion.revealTransferItem', revealTransferItem),
+    vscode.commands.registerCommand('bastion.copyTransferPath', copyTransferPath),
+    vscode.commands.registerCommand('bastion.openTransferHistoryFile', () => openConfigFile(TRANSFER_FILE, TRANSFER_HEADER)),
+    vscode.commands.registerCommand('bastion.addQuickCommand', addQuickCommand),
+    vscode.commands.registerCommand('bastion.sendQuickCommand', sendQuickCommand),
+    vscode.commands.registerCommand('bastion.deleteQuickCommand', deleteQuickCommand),
+    vscode.commands.registerCommand('bastion.addForwardRule', addForwardRule),
+    vscode.commands.registerCommand('bastion.startForward', startForwardRule),
+    vscode.commands.registerCommand('bastion.stopForward', stopForwardRule),
+    vscode.commands.registerCommand('bastion.deleteForwardRule', deleteForwardRule),
+    vscode.window.onDidCloseTerminal((t) => {
+      if (terminals.delete(t)) {
+        if (terminals.size === 0) {
+          void vscode.commands.executeCommand('setContext', 'bastion.hasSession', false)
+        }
+        // 关闭后重新判定：活动终端是否仍是堡垒机
+        const vt = vscode.window.activeTerminal
+        setActiveIsBastion(vt ? terminals.has(vt) : false)
+        updateStatusBar()
+        updateReadOnlySlot()
+        refreshOverview()
+      }
+    }),
+    vscode.window.onDidChangeActiveTerminal((t) => {
+      setActiveIsBastion(t ? terminals.has(t) : false)
+      updateStatusBar()
+    }),
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      // 焦点切到文本编辑器（文件预览页等）→ 不再是终端焦点。
+      // 注意：切到终端时该事件会以 undefined 触发，此时不清标志，交给 onDidChangeActiveTerminal 处理。
+      if (editor) setActiveIsBastion(false)
+      updateStatusBar()
+    })
+  )
+
+  // 监听任务目录变化，自动刷新部署任务树（编辑保存后名称/主机数即时更新）
+  const taskWatcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(ctx.globalStorageUri, 'tasks/*.json')
+  )
+  taskWatcher.onDidCreate(() => deployProvider.refresh())
+  taskWatcher.onDidChange(() => deployProvider.refresh())
+  taskWatcher.onDidDelete(() => deployProvider.refresh())
+  context.subscriptions.push(taskWatcher)
+
+  // 监听 ~/.bastionshell/*.jsonc 变化：改了文件保存后侧边栏立即跟上，不用手动点刷新
+  const cfgWatcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(vscode.Uri.file(configDir()), '*.jsonc')
+  )
+  const onCfgFileChanged = (uri: vscode.Uri): void => {
+    const f = path.basename(uri.fsPath)
+    log(`配置文件已变更：${f}`)
+    if (f === QUICK_COMMANDS_FILE) quickCommandsProvider.refresh()
+    else if (f === FORWARD_FILE) forwardProvider.refresh()
+    else if (f === PROFILES_FILE) profilesProvider.refresh()
+    else if (f === TRANSFER_FILE) transferProvider.refresh()
+    else if (f === HABITS_FILE) updateOverwriteSlot()
+  }
+  cfgWatcher.onDidChange(onCfgFileChanged)
+  cfgWatcher.onDidCreate(onCfgFileChanged)
+  cfgWatcher.onDidDelete(onCfgFileChanged)
+  context.subscriptions.push(cfgWatcher)
+
+  // 设置在设置界面里被改（比如 uploadOverwrite）也要同步状态栏
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('bastion.uploadOverwrite')) updateOverwriteSlot()
+    })
+  )
+
+  // 注册语言模型工具：让 Copilot 等 AI 能直接调用（配合 package.json 的 languageModelTools 声明）
+  context.subscriptions.push(
+    vscode.lm.registerTool('bastion_exec', {
+      prepareInvocation: (options) => {
+        const input = options.input as { command?: string }
+        return {
+          invocationMessage: '在堡垒机服务器执行命令',
+          confirmationMessages: {
+            title: 'BastionShell 远程执行',
+            message: new vscode.MarkdownString('执行命令：\n```sh\n' + (input.command ?? '') + '\n```')
+          }
+        }
+      },
+      invoke: async (options) => {
+        const input = options.input as { command?: string; terminal?: string }
+        const hits = findDangerous(input.command ?? '', getDangerRules())
+        if (hits.length > 0) {
+          // 不因 Always Allow 放行：直接拒绝，让人自己去终端确认后再敲
+          log(`bastion_exec 拦截高危命令：${describeDanger(hits)}`)
+          const msg =
+            '⚠️ 该命令包含高危操作，已被 BastionShell 拦截，不会执行。\n命中原因：\n' +
+            describeDanger(hits) +
+            '\n\n请让用户自己判断。如果确实要执行，请让用户在堡垒机终端里手动敲，或在部署任务/快捷命令里走人工确认流程。'
+          return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(msg)])
+        }
+        const output = await execRemote(input)
+        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(output)])
+      }
+    }),
+    vscode.lm.registerTool('bastion_connect', {
+      prepareInvocation: (options) => {
+        const input = options.input as { profile?: string; host?: string }
+        return {
+          invocationMessage: '通过堡垒机连接目标机器',
+          confirmationMessages: {
+            title: 'BastionShell 连接目标机',
+            message: new vscode.MarkdownString(
+              `连接目标机：\n- 堡垒机档案：${input.profile ?? ''}\n- 目标主机：${input.host ?? ''}`
+            )
+          }
+        }
+      },
+      invoke: async (options) => {
+        const input = options.input as { profile?: string; host?: string; userChoice?: string }
+        const output = await connectToTarget(input)
+        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(output)])
+      }
+    }),
+    vscode.lm.registerTool('bastion_listSessions', {
+      invoke: async () => {
+        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(listSessions())])
+      }
+    }),
+    vscode.lm.registerTool('bastion_listProfiles', {
+      invoke: async () => {
+        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(listProfilesForAI())])
+      }
+    }),
+    vscode.lm.registerTool('bastion_habits', {
+      prepareInvocation: (options) => {
+        const input = options.input as { action?: string; profile?: string; habit?: string; privilege?: string }
+        const action = input.action ?? 'read'
+        if (action === 'read') return { invocationMessage: '读取 BastionShell 个人习惯' }
+        const who = input.profile?.trim() || '全局'
+        return {
+          invocationMessage: action === 'remember' ? '记录个人习惯' : '设置提权习惯',
+          confirmationMessages: {
+            title: 'BastionShell 更新个人习惯',
+            message: new vscode.MarkdownString(
+              action === 'remember'
+                ? `把这条习惯记下来，以后不再重复问：\n\n> ${input.habit ?? ''}\n\n作用范围：${who}`
+                : `把提权习惯设为 \`${input.privilege ?? ''}\`\n\n作用范围：${who}`
+            )
+          }
+        }
+      },
+      invoke: async (options) => {
+        const input = options.input as { action?: string; profile?: string; habit?: string; privilege?: string }
+        const action = input.action ?? 'read'
+        const profile = input.profile?.trim() || undefined
+        const reply = (t: string): vscode.LanguageModelToolResult =>
+          new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(t)])
+        try {
+          if (action === 'read') {
+            return reply(`当前个人习惯（${profile ?? '全局'}）：\n${habitsForAI(profile)}`)
+          }
+          if (action === 'remember') {
+            const habit = input.habit ?? ''
+            if (!habit.trim()) return reply('错误：action=remember 需要 habit 参数（要记下来的那句话）')
+            const added = appendHabit(profile, habit)
+            return reply(
+              (added ? `已记录习惯（${profile ?? '全局'}）：${habit}` : `这条习惯之前已经记过，跳过：${habit}`) +
+                `\n\n当前习惯：\n${habitsForAI(profile)}`
+            )
+          }
+          if (action === 'setPrivilege') {
+            if (!isPrivilegeMode(input.privilege)) {
+              return reply('错误：privilege 必须是 none / sudo / sudo-i / ask 之一')
+            }
+            setPrivilege(profile, input.privilege)
+            return reply(`已把提权习惯设为 ${input.privilege}（${profile ?? '全局'}）。\n\n当前习惯：\n${habitsForAI(profile)}`)
+          }
+          return reply('错误：action 必须是 read / remember / setPrivilege')
+        } catch (e) {
+          const msg = `操作个人习惯文件失败: ${(e as Error).message}`
+          log(msg)
+          return reply(msg)
+        }
+      }
+    })
+  )
+}
+
+export function deactivate(): void {
+  manager.dispose()
+  disposeSlots()
+}

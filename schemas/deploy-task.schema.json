@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BastionShell 部署任务",
+  "description": "一个任务 = 「往哪些机器、上传哪些文件、跑什么命令」。保存即生效，侧边栏「部署任务」里右键运行。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "markdownDescription": "**任务名** —— 显示在侧边栏和部署报告里。",
+      "examples": ["部署 myapp 配置"]
+    },
+    "profile": {
+      "type": "string",
+      "markdownDescription": "**连接档案名**。必须和 `~/.bastionshell/profiles.jsonc` 里的 `name` 完全一致（大小写敏感）。\n\n可在侧边栏「连接档案」里看到现有档案名。\n\n> 档案分两种模式：**直连**（普通服务器）和**堡垒机**。模式决定 `hosts` 和 `userChoice` 是否生效。",
+      "examples": ["生产", "国内"]
+    },
+    "hosts": {
+      "type": "array",
+      "items": { "type": "string" },
+      "markdownDescription": "**目标机器列表**（IP 或主机名），只会**逐台**执行，每台开一个会话。\n\n⚠️ **只在堡垒机档案下有效**：\n- **堡垒机档案**：必填。程序会逐台过菜单选机 → 选用户 → 执行。\n- **直连档案**：**不用填，填了也会被忽略** —— 目标机就是档案自己那台（`profiles.jsonc` 里的 `host`），程序直接连上去执行，省掉选机和选用户两步。\n\n全部跑完会生成一份 Markdown 报告（每台的成功/失败 + **每条命令的实际输出**）。",
+      "examples": [["10.0.0.10", "10.0.0.11"]]
+    },
+    "uploads": {
+      "type": "array",
+      "items": { "type": "string" },
+      "markdownDescription": "**要上传的本地文件路径**（建议写绝对路径，如 `D:/work/myapp.yaml`）。\n\n通过 rz（ZMODEM）传到目标机的**当前目录**，所以通常先用 `preCommand` 里的 `cd` 切过去。\n\n> 遇到远端同名文件怎么办由 `bastion.uploadOverwrite` 决定（默认跳过）。",
+      "examples": [["D:/work/myapp.yaml"]]
+    },
+    "preCommand": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": { "type": "string" },
+          "markdownDescription": "**推荐写法：数组，一行一个元素** —— 不用写 `\\n`，好加好删。\n\n例：`[\"sudo -i\", \"cd /etc\"]`"
+        },
+        {
+          "type": "string",
+          "markdownDescription": "也支持字符串，用 `\\n` 分隔多行：`\"sudo -i\\ncd /etc\"`"
+        }
+      ],
+      "markdownDescription": "**上传前**在目标机执行的命令。\n\n**推荐用数组写法，一行一个元素**（和快捷命令、docker compose 一个手感）：\n```jsonc\n\"preCommand\": [\n  \"sudo -i\",\n  \"cd /etc\"\n]\n```\n也支持字符串（用 `\\n` 分隔），两种可以混用。\n\n> 命令是**逐行执行**的：每行的输出会和这行对上、写进部署报告。\n> 所以 `sudo -i` 这类交互式命令单独占一行最合适 —— 它下面那行能精确捕获输出。",
+      "examples": [["sudo -i", "cd /etc"], "sudo -i\ncd /etc"]
+    },
+    "script": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": { "type": "string" },
+          "markdownDescription": "**推荐写法：数组，一行一个元素**"
+        },
+        {
+          "type": "string",
+          "markdownDescription": "也支持字符串，用 `\\n` 分隔多行"
+        }
+      ],
+      "markdownDescription": "**上传完成后**执行的命令，写法同 `preCommand`（推荐数组，一行一个元素）。每行的输出都会记进报告。\n\n例：`[\"systemctl restart nginx\", \"systemctl status nginx\"]`",
+      "examples": [["systemctl restart nginx"], "systemctl restart nginx"]
+    },
+    "userChoice": {
+      "type": "string",
+      "markdownDescription": "堡垒机二级菜单**选用户的序号**，默认 `1`。**直连档案下会被忽略**（没有这一步）。\n\n留空字符串 `\"\"` 表示这台机器不需要选用户 —— 有些管理员账号输完 IP 就直接进 shell。\n\n（程序也能自动识别这一步有没有出现，但显式留空更确定、也更省时间。）",
+      "examples": ["1", ""]
+    }
+  },
+  "required": ["name", "profile"],
+  "defaultSnippets": [
+    {
+      "label": "完整任务骨架",
+      "description": "带全部字段的任务模板（命令用数组写法）",
+      "body": {
+        "name": "${1:新任务}",
+        "profile": "${2:生产}",
+        "hosts": ["${3:10.0.0.1}"],
+        "uploads": [],
+        "preCommand": ["${4:sudo -i}", "${5:cd /etc}"],
+        "script": ["${6:systemctl restart xxx}"],
+        "userChoice": "1"
+      }
+    }
+  ]
+}
