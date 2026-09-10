@@ -571,10 +571,16 @@ See "systemctl status myapp.service" and "journalctl -xe" for details.
 ```bash
 npm install
 npm run compile     # 只编译
-npm test            # 编译 + 跑单元测试（231 项，不需要启动 VS Code）
+npm test            # 编译 + 跑单元测试（239 项，不需要启动 VS Code）
 npm run test:only   # 不编译，直接跑已编译的测试
 npm run package     # 编译 + 打包 vsix
 ```
+
+> ⚠️ **Node 必须 ≥ 22**。`npm test` 用的是 `node --test "out/test/*.test.js"`（通配符形式），
+> Node 20 不支持把通配符交给 `--test`，会直接报 `Could not find '...\out\test\*.test.js'`；
+> 换成目录写法（`node --test out/test/`）在 Node 22+ 上又会失效 —— 两种都实测过。
+>
+> 推送/PR 会自动跑 CI（GitHub Actions）：`npm ci` → `npm test` → 打包 vsix 上传为产物。
 
 单元测试覆盖**纯逻辑层**：状态栏格式化与槽位、个人习惯读写、快捷命令三种写法解析、
 传输进度/速率/历史、终端输出整理与哨兵判定、配置文件的 JSONC 读写与容错、

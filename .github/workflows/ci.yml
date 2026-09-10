@@ -15,10 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ⚠️ 必须是 Node ≥22：npm test 用的是 `node --test "out/test/*.test.js"`（通配符），
+      # 而 Node 20 不支持把通配符交给 --test，会直接报
+      #   Could not find '...\out\test\*.test.js'
+      # 这条是实测出来的（Node 20 下必挂、Node 22/24 下正常）。
       - name: 装 Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       - name: 安装依赖
