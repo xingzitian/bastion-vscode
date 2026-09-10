@@ -1,5 +1,23 @@
 # BastionShell SSH（VS Code 扩展）
 
+<!-- 第一行动态徽标：数字自己更新，不要改成写死的静态值。第二行是平台/技术栈，属固定事实。
+     ⚠️ 别再用 Visual Studio Marketplace 那套徽标（visual-studio-marketplace/v|i|rating）：
+     shields.io 已停用，渲染出来是「retired badge」裂图（2026-09-10 实测）。
+     商店入口用下面那行文字链接。 -->
+[![CI](https://github.com/xingzitian/bastion-vscode/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/xingzitian/bastion-vscode/actions/workflows/ci.yml)
+[![license](https://img.shields.io/github/license/xingzitian/bastion-vscode?color=blue)](LICENSE)
+[![last commit](https://img.shields.io/github/last-commit/xingzitian/bastion-vscode)](https://github.com/xingzitian/bastion-vscode/commits/main)
+
+[![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.99.0-007ACC?logo=visualstudiocode&logoColor=white)](https://code.visualstudio.com/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![ssh2](https://img.shields.io/badge/SSH-ssh2-4B5563)](https://github.com/mscdex/ssh2)
+[![ZMODEM](https://img.shields.io/badge/%E4%BC%A0%E8%BE%93-rz%2Fsz%20(ZMODEM)-4B5563)](#传输进度与历史)
+[![菜单识别](https://img.shields.io/badge/%E5%A0%A1%E5%9E%92%E6%9C%BA%E8%8F%9C%E5%8D%95-%E6%AD%A3%E5%88%99%E5%8F%AF%E9%85%8D%E7%BD%AE-4B5563)](#堡垒机菜单识别)
+
+> 仓库：<https://github.com/xingzitian/bastion-vscode> ·
+> 商店：<https://marketplace.visualstudio.com/items?itemName=xingzitian.bastion-vscode> ·
+> 问题反馈：<https://github.com/xingzitian/bastion-vscode/issues>
+
 站在 VS Code 的肩膀上的堡垒机终端：**一次 MFA 认证 + 连接复用**，之后多开会话、批量部署、文件上传都免二次认证。
 
 ## 核心能力
@@ -42,8 +60,8 @@
   BastionShell 会话（2 个）
 
   生产 · deploy@10.0.0.10 · 🟢 已认证 · 已连 12m · 复用 2 会话
-  - #1 deploy@10.0.0.10  可写 · 已连 12m ← 当前
-  - #2 deploy@10.0.0.10  只读 · 已连 3m
+  - ＃1 deploy@10.0.0.10  可写 · 已连 12m ← 当前
+  - ＃2 deploy@10.0.0.10  只读 · 已连 3m
   ```
 
 - 点会话列表也能看到编号、所属档案、当前活动项。
@@ -69,7 +87,7 @@
 ```
 会话 (2)
 ┌────────────────────────────────────────┐
-│ #1 deploy@10.0.0.10  [已认证][当前] │
+│ ＃1 deploy@10.0.0.10  [已认证][当前] │
 │ 堡垒机 · 已连 12m · 复用 2 会话              │
 │ [已在前面] [设为只读] [关闭]                 │
 └────────────────────────────────────────┘
