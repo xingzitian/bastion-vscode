@@ -18,6 +18,7 @@ import { QuickCommandsProvider } from './quickCommands'
 import { ForwardRulesProvider } from './forward'
 import { TransferHistoryProvider } from './transfer'
 import { fmtDuration } from './status'
+import type { FedLine } from './localPath'
 
 export let ctx: vscode.ExtensionContext
 
@@ -114,4 +115,93 @@ export function setLastBastionProfile(p: ConnectionProfile | null): void {
 /** 分配下一个会话号（只在窗口生命周期内递增，不复用） */
 export function nextSessionNo(): number {
   return ++sessionSeq
+}
+
+// ---- 「最近一次没认出来的屏幕原文」----
+// 菜单识别失败时由 sessions.ts 存下来，供命令「从屏幕原文生成菜单规则」使用：
+// 用户不用去日志里翻，直接选一句提示就能生成规则。
+let lastUnrecognizedScreen = ''
+
+export function setLastUnrecognizedScreen(text: string): void {
+  lastUnrecognizedScreen = text
+}
+export function getLastUnrecognizedScreen(): string {
+  return lastUnrecognizedScreen
+}
+
+// ---- 广播输入（一次给多个会话发同一条命令）----
+// Electron 版有这个能力，VS Code 版一直没有。它跟「批量部署」不同：
+// 部署管的是「跑完一批命令拿报告」，广播管的是「边看边敲，所有会话同步」。
+let broadcastTargets = new Set<BastionTerminal>()
+
+export function getBroadcastTargets(): BastionTerminal[] {
+  return [...broadcastTargets]
+}
+export function setBroadcastTargets(list: BastionTerminal[]): void {
+  broadcastTargets = new Set(list)
+}
+export function clearBroadcast(): void {
+  broadcastTargets = new Set()
+}
+/** 会话关闭时把自己从广播目标里摘掉（否则底栏台数会一直虚高，还会留着已死对象） */
+export function removeBroadcastTarget(t: BastionTerminal): void {
+  broadcastTargets.delete(t)
+}
+
+/**
+ * 这份输入要转发给谁：开着广播时，**除自己以外**的所有目标。
+ *
+ * 单独抽成纯函数是为了能测：这里最容易犯的错是"把自己也放进接收者"，
+ * 那会形成自我转发（虽然 write 不回调 handleInput，但语义上就是错的）。
+ * 已关闭和只读的会话也排除 —— 前者写了没意义，后者本来就不接受人工输入。
+ */
+export function broadcastReceivers(current: BastionTerminal, targets: BastionTerminal[]): BastionTerminal[] {
+  if (targets.length === 0) return []
+  return targets.filter((t) => t !== current && !t.isReadOnly && !t.isClosed)
+}
+
+/**
+ * 广播的两种模式。
+ *
+ * - `raw`  **原样同步**（默认，和 Electron 桌面版一致）：你敲的每一个键都原样发过去。
+ *   在 vim 里改配置文件、进交互式菜单、用方向键翻历史，靠的都是它 ——
+ *   整行模式在这些场景下根本没法用（vim 的插入/命令模式切换不是"一行"）。
+ * - `line` **整行发送**：只在按回车那一刻把这一整行发过去。
+ *   敲到一半的内容、退格、方向键都不会跑过去，适合"给几台机器各敲一条命令"。
+ *
+ * 两种都只同步人工键盘输入；MFA 动态码、AI 执行、部署注入都不广播。
+ */
+export type BroadcastMode = 'raw' | 'line'
+
+/** 设置里读出来的值可能是任何东西 —— 只有明确写了 line 才是整行，其余一律按原样 */
+export function resolveBroadcastMode(configured: unknown): BroadcastMode {
+  return configured === 'line' ? 'line' : 'raw'
+}
+
+export function getBroadcastMode(): BroadcastMode {
+  return resolveBroadcastMode(vscode.workspace.getConfiguration('bastion').get('broadcastMode'))
+}
+
+export const BROADCAST_MODE_LABEL: Record<BroadcastMode, string> = {
+  raw: '原样同步',
+  line: '整行发送'
+}
+
+/**
+ * 广播要发什么内容；返回 undefined = 这一块不同步。
+ *
+ * 整行模式的判断依据是攒行器的结果（见 localPath.InputLineTracker）；
+ * 原样模式**连回车都要转发** —— 否则在 vim 里敲 `:wq` 之后那个回车过不去，
+ * 对面就永远存不了盘（这正是用户要原样同步的原因）。
+ */
+export function broadcastPayload(
+  data: string,
+  fed: Pick<FedLine, 'line' | 'multiLine'>,
+  mode: BroadcastMode
+): string | undefined {
+  if (mode === 'raw') return data || undefined
+  // 多行粘贴：整块原样同步（本地也是整块发出去的，不能只发第一行）
+  if (fed.multiLine) return data
+  if (fed.line !== undefined && fed.line.trim()) return `${fed.line}\r`
+  return undefined
 }

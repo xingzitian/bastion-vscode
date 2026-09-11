@@ -53,6 +53,32 @@ export interface DeployRun {
 /** 单条命令的输出最多保留多少字符（超了截断，避免报告变巨型日志） */
 const MAX_OUTPUT_CHARS = 4000
 
+/**
+ * 发给 AI 之前的截断。
+ *
+ * 为什么需要：报告可能几十上百 KB（每条命令最多 4000 字符 × 台数），
+ * 整段塞进聊天输入框既慢、又容易被截得莫名其妙。
+ * 截断处**写明**「后面还有多少字没发」—— 否则 AI 会以为报告到这儿就结束了，
+ * 基于不完整的信息给结论。
+ *
+ * ⚠️ 那句说明是写给 **AI** 看的，用户看不到。所以调用方还要用下面那个
+ * 「带信息的版本」把截断这件事**也告诉用户** —— 否则用户以为整份报告都发出去了，
+ * 而恰好被切掉的可能是失败那台机器的输出，AI 说"没发现问题"他就信了。
+ */
+export function capTextForAi(text: string, max = 20000): string {
+  return capForAi(text, max).text
+}
+
+/** 同 capTextForAi，但把「漏了多少字符」一并返回，供调用方提示用户 */
+export function capForAi(text: string, max = 20000): { text: string; omitted: number } {
+  if (text.length <= max) return { text, omitted: 0 }
+  const omitted = text.length - max
+  return {
+    text: `${text.slice(0, max)}\n\n…（报告太长，后面还有 ${omitted} 个字符没发。需要的话可以让我按主机分批看）`,
+    omitted
+  }
+}
+
 function fence(output: string): string {
   // 输出里可能带 ``` 把围栏弄坏，遇到就换成更长的围栏
   const ticks = output.includes('```') ? '````' : '```'

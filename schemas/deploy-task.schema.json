@@ -61,6 +61,11 @@
       "type": "string",
       "markdownDescription": "堡垒机二级菜单**选用户的序号**，默认 `1`。**直连档案下会被忽略**（没有这一步）。\n\n留空字符串 `\"\"` 表示这台机器不需要选用户 —— 有些管理员账号输完 IP 就直接进 shell。\n\n（程序也能自动识别这一步有没有出现，但显式留空更确定、也更省时间。）",
       "examples": ["1", ""]
+    },
+    "keepTerminal": {
+      "type": "boolean",
+      "markdownDescription": "可选。**本任务跑完后要不要保留会话终端**：\n\n- `true` = 保留（方便盯着现场，报告里也仍有每条命令的输出）\n- `false` = 成功后回收\n- **不写 = 跟随全局设置** `bastion.deployTerminalPolicy`\n\n为什么要有任务级开关：「这个任务想盯、那个不用」很常见，每跑一次就去改全局设置太别扭。",
+      "examples": [true, false]
     }
   },
   "required": ["name", "profile"],

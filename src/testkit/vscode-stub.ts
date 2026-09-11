@@ -94,6 +94,25 @@ export function setWorkspaceFolder(fsPath: string | undefined): void {
   workspaceFolders = fsPath ? [{ uri: { fsPath } }] : undefined
 }
 
+/** showQuickPick 的调用记录与预设返回值（先进先出；队列空 → 返回 undefined，等同用户按 Esc） */
+export const quickPickCalls: Array<{ items: unknown[]; options: unknown }> = []
+const quickPickResponses: unknown[] = []
+
+export function queueQuickPickResponse(value: unknown): void {
+  quickPickResponses.push(value)
+}
+
+/** 记录到的 showInformationMessage / showWarningMessage 文本（按调用顺序） */
+export const infoMessages: string[] = []
+export const warningMessages: string[] = []
+
+export function resetWindowRecords(): void {
+  quickPickCalls.length = 0
+  quickPickResponses.length = 0
+  infoMessages.length = 0
+  warningMessages.length = 0
+}
+
 function makeStatusBarItem(): FakeStatusBarItem {
   const item: FakeStatusBarItem = {
     text: '',
@@ -176,11 +195,23 @@ const fakeVscode = {
       clear(): void {},
       dispose(): void {}
     }),
-    showInformationMessage: async () => undefined,
-    showWarningMessage: async () => undefined,
+    showInformationMessage: async (msg: string) => {
+      infoMessages.push(String(msg))
+      return undefined
+    },
+    showWarningMessage: async (msg: string) => {
+      warningMessages.push(String(msg))
+      return undefined
+    },
     showErrorMessage: async () => undefined,
     showInputBox: async () => undefined,
-    showQuickPick: async () => undefined,
+    showQuickPick: async (items: unknown[], options: unknown) => {
+      quickPickCalls.push({ items, options })
+      const r = quickPickResponses.shift()
+      // 支持传函数：有的命令的候选项是它自己现造的，测试拿不到引用，
+      // 只能等命令把 items 递进来再决定"用户勾了哪几个"。
+      return typeof r === 'function' ? (r as (items: unknown[]) => unknown)(items) : r
+    },
     setStatusBarMessage: () => ({ dispose(): void {} })
   },
   commands: {

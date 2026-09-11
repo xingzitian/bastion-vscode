@@ -47,6 +47,30 @@ test('快捷操作里有「部署后保留终端」开关，并且显示当前�
   assert.match(html, /keepTerminal/, '要按状态显示开/关，而不是写死')
 })
 
+test('总览面板里也能看见广播：快捷开关 + 每台会话的「广播中」标记', () => {
+  assert.match(html, /toggleBroadcast/, '按钮要指向广播命令')
+  assert.match(html, /广播输入/, '标题要看得懂')
+  assert.match(html, /broadcastCount/, '要按状态显示开/关，而不是写死')
+  // 广播开着时，必须一眼看出是哪几台在收 —— 否则在同一排会话卡片里分不清
+  assert.match(html, /x\.broadcasting/, '会话卡片要按 broadcasting 标记')
+  assert.match(html, /广播中/, '要有看得见的标记文字')
+})
+
+test('每台会话卡片上能直接勾广播（不用再过一个多选列表）', () => {
+  assert.match(html, /toggleBroadcastSession/, '要有「加入/移出广播」这个动作')
+  assert.match(html, /加入广播/)
+  assert.match(html, /移出广播/, '已在广播里的那台要显示成「移出」')
+  // 只读会话不参与广播：这点必须**看得见**（禁用的按钮也要渲染出来并说明原因）
+  assert.match(html, /不参与广播/)
+  assert.match(html, /btnOff|disabled/, '禁用态要渲染出来，而不是把按钮藏掉')
+})
+
+test('广播开着时面板里要能看见并切换「原样同步 / 整行发送」', () => {
+  assert.match(html, /toggleBroadcastMode/, '要有切模式的动作')
+  assert.match(html, /广播模式：/)
+  assert.match(html, /broadcastModeLabel/, '要按当前设置显示，而不是写死')
+})
+
 test('面板依赖的关键契约都在：消息类型', () => {
   for (const t of ['state', 'focusSession', 'toggleReadOnly', 'closeSession', 'stopForward', 'stopDeploy', 'action']) {
     assert.ok(html.includes(`'${t}'`), `面板应处理消息类型 ${t}`)

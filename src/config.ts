@@ -64,10 +64,27 @@ export function readJsonFile<T>(name: string, fallback: T, validate: (v: unknown
 export function writeJsonFile(name: string, data: unknown, headerComment?: string): void {
   ensureDir()
   const fp = filePath(name)
-  const tmp = fp + '.tmp'
   try {
     const json = JSON.stringify(data, null, 2)
     const text = headerComment ? `${headerComment}\n${json}\n` : `${json}\n`
+    writeTextAtomic(fp, text)
+  } catch (e) {
+    log(`写入配置 ${name} 失败: ${(e as Error).message}`)
+    throw e
+  }
+}
+
+/**
+ * 原子写文本：先写 `.tmp` 再 rename 覆盖目标。
+ *
+ * ⚠️ **所有「改一份 jsonc 配置」的写入都该走这里** —— 包括保留注释的就地改写
+ * （`habits.ts` 以前自己写了一套 tmp+rename，没走这个重试，于是 Windows 上
+ *  目标文件被瞬间占用时 rename 抛 EPERM、写入静默失败，表现为「改了设置没生效」
+ *  以及测试偶发变红。2026-09-10 修）。
+ */
+export function writeTextAtomic(fp: string, text: string): void {
+  const tmp = fp + '.tmp'
+  try {
     fs.writeFileSync(tmp, text, 'utf8')
     renameWithRetry(tmp, fp)
   } catch (e) {
@@ -76,7 +93,6 @@ export function writeJsonFile(name: string, data: unknown, headerComment?: strin
     } catch {
       /* ignore */
     }
-    log(`写入配置 ${name} 失败: ${(e as Error).message}`)
     throw e
   }
 }

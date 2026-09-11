@@ -16,6 +16,7 @@ import {
   migrateTaskFiles,
   readDeployTaskByUri,
   normalizeCommands,
+  resolveTerminalPolicy,
   DEPLOY_TASK_HEADER,
   DEPLOY_TASK_TEMPLATE,
   TASK_EXT
@@ -75,6 +76,57 @@ test('新建任务模板用数组写法（照着加行就行，不用写 \\n）'
   const task = readDeployTaskByUri(uri)!
   assert.deepEqual(task.preCommand, ['cd /tmp'], '模板解析出来的应是数组')
   assert.deepEqual(task.script, [], '脚本默认留空数组，加行就行')
+})
+
+// ---------------------------------------------------------------------------
+// 任务级「保留终端」覆盖全局设置
+// ---------------------------------------------------------------------------
+test('keepTerminal：任务里写了就以任务为准，没写才跟随全局', () => {
+  assert.deepEqual(resolveTerminalPolicy(true, 'closeSuccess'), { policy: 'keep', from: 'task' })
+  assert.deepEqual(resolveTerminalPolicy(false, 'keep'), { policy: 'closeSuccess', from: 'task' })
+  assert.deepEqual(resolveTerminalPolicy(undefined, 'keep'), { policy: 'keep', from: 'global' })
+  assert.deepEqual(resolveTerminalPolicy(undefined, 'ask'), { policy: 'ask', from: 'global' })
+})
+
+test('keepTerminal：写错类型当作没写（手写 JSON 写错不该悄悄改变行为）', () => {
+  // 这些都不是 boolean —— 一律按「没写」处理，跟随全局
+  for (const bad of ['true', 1, 0, null, {}, []]) {
+    assert.deepEqual(
+      resolveTerminalPolicy(bad as unknown as boolean | undefined, 'keep'),
+      { policy: 'keep', from: 'global' },
+      `${JSON.stringify(bad)} 应被当作没写`
+    )
+  }
+})
+
+test('keepTerminal：从任务文件里解析出来（含写错类型的情况）', () => {
+  resetTasksDir()
+  fs.writeFileSync(
+    path.join(tasksDir, 'keep.jsonc'),
+    JSON.stringify({ name: 'K', profile: 'p', hosts: ['h'], keepTerminal: true }),
+    'utf8'
+  )
+  fs.writeFileSync(
+    path.join(tasksDir, 'nokeep.jsonc'),
+    JSON.stringify({ name: 'N', profile: 'p', hosts: ['h'], keepTerminal: false }),
+    'utf8'
+  )
+  fs.writeFileSync(
+    path.join(tasksDir, 'bad.jsonc'),
+    JSON.stringify({ name: 'B', profile: 'p', hosts: ['h'], keepTerminal: 'yes' }),
+    'utf8'
+  )
+  fs.writeFileSync(path.join(tasksDir, 'none.jsonc'), JSON.stringify({ name: 'X', profile: 'p', hosts: ['h'] }), 'utf8')
+  const tasks = listDeployTasks(ctxStub())
+  assert.equal(tasks.find((t) => t.name === 'K')!.keepTerminal, true)
+  assert.equal(tasks.find((t) => t.name === 'N')!.keepTerminal, false)
+  assert.equal(tasks.find((t) => t.name === 'B')!.keepTerminal, undefined, '字符串类型应被忽略')
+  assert.equal(tasks.find((t) => t.name === 'X')!.keepTerminal, undefined, '没写就是 undefined')
+})
+
+test('任务说明头里写了 keepTerminal（不然用户不知道有这个字段）', () => {
+  assert.ok(DEPLOY_TASK_HEADER.includes('keepTerminal'), '说明头里应提到 keepTerminal')
+  assert.ok(DEPLOY_TASK_HEADER.includes('deployTerminalPolicy'), '说明头里应说明不写时跟随全局设置')
 })
 
 test('说明头里写清了数组写法和逐行执行（用户不至于不知道多条语句怎么加）', () => {

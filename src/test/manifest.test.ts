@@ -149,6 +149,61 @@ test('配置项的默认值合法（enum 的 default 必须在 enum 里）', () 
   }
 })
 
+// ---------------------------------------------------------------------------
+// 首次使用引导（walkthroughs）：链接和文件都是"静默失败"型错误 ——
+// 路径写错只是那一步空白，命令写错只是点了没反应，都不会报错。
+// 所以这里把它们钉住。
+// ---------------------------------------------------------------------------
+test('walkthrough：每个步骤的说明文件都存在（路径错 = 那一步空白）', () => {
+  const wts = pkg.contributes.walkthroughs as Array<{
+    id: string
+    steps: Array<{ id: string; media: { markdown?: string } }>
+  }>
+  assert.ok(wts && wts.length > 0, '应有 walkthroughs（新用户第一次能自己走通）')
+  for (const w of wts) {
+    assert.ok(w.id.includes('.'), `walkthrough id 应是 <publisher>.<name> 形式：${w.id}`)
+    assert.ok(w.steps.length >= 3, '引导步骤太少没意义')
+    for (const s of w.steps) {
+      const md = s.media?.markdown
+      assert.ok(md, `步骤 ${s.id} 应有 media.markdown`)
+      const p = path.join(ROOT, md!)
+      assert.ok(fs.existsSync(p), `说明文件不存在：${md}`)
+      assert.ok(fs.readFileSync(p, 'utf8').trim().length > 50, `${md} 内容太短`)
+    }
+  }
+})
+
+test('walkthrough：completionEvents 引用的命令都存在', () => {
+  const wts = pkg.contributes.walkthroughs as Array<{
+    steps: Array<{ id: string; completionEvents?: string[] }>
+  }>
+  for (const w of wts) {
+    for (const s of w.steps) {
+      for (const ev of s.completionEvents ?? []) {
+        if (!ev.startsWith('onCommand:')) continue
+        const cmd = ev.slice('onCommand:'.length)
+        assert.ok(declaredCommands.includes(cmd), `步骤 ${s.id} 的 completionEvents 引用了不存在的命令：${cmd}`)
+      }
+    }
+  }
+})
+
+test('walkthrough：说明文件里的 command: 链接都指向真实命令（死链点了没反应）', () => {
+  const wts = pkg.contributes.walkthroughs as Array<{ steps: Array<{ media: { markdown?: string } }> }>
+  const bad: string[] = []
+  for (const w of wts) {
+    for (const s of w.steps) {
+      const md = s.media?.markdown
+      if (!md) continue
+      const text = fs.readFileSync(path.join(ROOT, md), 'utf8')
+      for (const m of text.matchAll(/command:([\w.]+)/g)) {
+        if (!declaredCommands.includes(m[1])) bad.push(`${md}: ${m[1]}`)
+      }
+    }
+  }
+  assert.deepEqual(bad, [], `引导里有死链：${bad.join(', ')}`)
+})
+
 test('主入口和图标文件存在', () => {
   assert.ok(fs.existsSync(path.join(ROOT, pkg.main.replace(/^\.\//, ''))) || true, 'main 由编译产出')
   assert.ok(pkg.icon, '应配置商店图标')

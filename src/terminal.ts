@@ -9,6 +9,24 @@ import { NodeFsZmodemIo } from './zmodemIo';
 import { trackTransfer, beginUpload } from './transfer';
 // 单向依赖：menu.ts 不 import terminal.ts，所以这里可以放心用它的提示符识别
 import { resolveMenuHints, detectPrompt } from './menu';
+import { describeConnectError, MAX_AUTH_ATTEMPTS, shouldOfferRetry } from './authError';
+import {
+  broadcastPayload,
+  broadcastReceivers,
+  getBroadcastMode,
+  getBroadcastTargets,
+  removeBroadcastTarget
+} from './state';
+import {
+  detectLocalFilePath,
+  InputLineTracker,
+  resolveUploadPromptChoice,
+  shouldHoldLocalPathInput,
+  UPLOAD_PROMPT_RUN,
+  UPLOAD_PROMPT_UPLOAD
+} from './localPath';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -102,8 +120,128 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     } else if (this.readOnly) {
       this.notifyReadOnly();
     } else if (this.stream) {
-      this.stream.write(data);
+      // 「把本地文件路径粘/拖进来」的识别：先攒出「当前这一行」，回车那一刻再看它是不是本地文件。
+      // **每一块输入都要喂给攒行器** —— 只在带回车的那一块才喂的话，
+      // 「粘一行、再单独按回车」永远攒不出内容，识别永远不触发。
+      const fed = this.lineTracker.feed(data);
+      const receivers = broadcastReceivers(this, getBroadcastTargets());
+
+      if (fed.line !== undefined && !fed.multiLine) {
+        const local = detectLocalFilePath(fed.line, (p) => {
+          try {
+            const st = fs.statSync(p);
+            return st.isFile() ? 'file' : st.isDirectory() ? 'dir' : 'none';
+          } catch {
+            return 'none';
+          }
+        });
+        if (local) {
+          // 这一行被本地"截胡"了：不发远端、不广播。
+          // 但如果这一行的字符**已经被发出去过**（手打、或没带回车地粘），远端那行上就留着这串字符，
+          // 后面再发 `rz -y` 会被接在同一行上执行 —— 用户看到的就是
+          // `-bash: c:/Users/.../DeepSeek: No such file or directory`。
+          // 所以先发一个 Ctrl-U（kill line）把它擦掉。
+          if (this.lineEchoed) {
+            this.stream.write('\x15');
+            // 原样模式下这些字符也同步给过其它会话，所以对面那一行同样要擦掉，
+            // 否则对面命令行上会留着半截路径，接着执行的什么都会带上去
+            if (getBroadcastMode() === 'raw') {
+              for (const t of receivers) t.sendRaw('\x15');
+            }
+            this.lineEchoed = false;
+          }
+          this.heldPathText = '';
+          this.askUploadLocalPath(local, fed.line, receivers);
+          return;
+        }
+      }
+
+      // 还没回车、又看起来正在粘一个本机路径 → 先扣住不发，等下一块输入再决定
+      if (shouldHoldLocalPathInput(data, this.lineTracker.current)) {
+        this.heldPathText += data;
+        return;
+      }
+
+      // 扣住的内容要按原顺序补发（顺序错了远端就乱了）
+      const held = this.heldPathText;
+      if (held) this.heldPathText = '';
+      this.stream.write(held + data);
+      this.lineEchoed = /[\r\n]/.test(data) ? false : true;
+
+      // 广播：原样模式逐键镜像（桌面版的行为，vim 里改文件靠它）；整行模式按回车发一整行。
+      // 注意这里传的是 `held + data` —— 补发的那段也必须一起镜像，
+      // 否则原样模式下本地和别的会话从这一刻起就**对不上了**（本地有那几个字符，对面没有）。
+      if (receivers.length > 0) {
+        const payload = broadcastPayload(held + data, fed, getBroadcastMode());
+        if (payload) {
+          for (const t of receivers) t.sendRaw(payload);
+        }
+      }
     }
+  }
+
+  /** 直接往远端写一段输入（广播用；不走只读/MFA 判断，也不会回调 handleInput） */
+  sendRaw(data: string): void {
+    if (this.closed || !this.stream) return;
+    try {
+      this.stream.write(data);
+    } catch (e) {
+      log(`广播写入失败（${this.profile.name}）: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * 跨按键块攒出「当前正在敲的这一行」（逻辑在 localPath.InputLineTracker，那里有测试）。
+   * 攒行的用途：① 回车那一刻判断整行是不是本机文件路径 ② 回车时把整行同步给广播目标。
+   */
+  private lineTracker = new InputLineTracker();
+
+  /** 还在「先扣住不发」的本机路径文本（等下一块输入决定是上传还是当命令执行） */
+  private heldPathText = '';
+
+  /** 远端当前那一行上是否已经有我们发过去的字符（拦下这一行时要用 Ctrl-U 擦掉） */
+  private lineEchoed = false;
+
+  /**
+   * 问一句要不要把这个本地文件上传到目标机当前目录。
+   *
+   * `line` 是整行原文（可能不止这个路径，比如 `D:\a.txt --check`）——
+   * 用户选「当命令执行」时要把**整行**发出去，只发路径等于把他后面敲的东西偷偷丢了。
+   *
+   * 三个结果（见 localPath.resolveUploadPromptChoice）：上传 / 执行整行 /
+   * **关掉询问框 = 把整行放回命令行（不执行）**。最后这条是必需的：
+   * 用户自己取消了询问，唯一不能做的就是把他敲的那一行吞掉。
+   */
+  private askUploadLocalPath(local: string, line: string, receivers: BastionTerminal[]): void {
+    const name = path.basename(local);
+    void vscode.window
+      .showInformationMessage(`这是本机文件：${local}\n要上传到目标机当前目录吗？`, UPLOAD_PROMPT_UPLOAD, UPLOAD_PROMPT_RUN)
+      .then(async (pick) => {
+        const choice = resolveUploadPromptChoice(pick);
+        if (choice === 'upload') {
+          log(`识别到本地文件路径，改为上传：${local}`);
+          // 上传不该广播：每台机器都要各传一次，悄悄替别人传是危险行为
+          await this.upload([local]);
+          return;
+        }
+        // 「当命令执行」和「把询问框关掉」都要**把整行落到远端命令行上**：
+        // 前者立刻执行，后者只放回去不执行 —— 用户自己取消询问时，绝不能把他的这一行吞掉。
+        const suffix = choice === 'run' ? '\r' : '';
+        this.stream?.write(line + suffix);
+        this.lineEchoed = choice === 'run' ? false : true;
+        if (choice === 'run') {
+          for (const t of receivers) t.sendRaw(line + '\r');
+        } else {
+          // 放回命令行：原样模式下必须让对面也回退到同一状态，否则从这一刻起两边就不一样了
+          log(`用户取消了上传询问，已把这一行放回命令行：${line}`);
+          this.emitOutput('\r\n\x1b[2m[已把这一行放回命令行，没有执行 —— 想执行就按回车，想去掉就按 Ctrl-C]\x1b[0m\r\n');
+          if (getBroadcastMode() === 'raw') {
+            for (const t of receivers) t.sendRaw(line);
+          }
+        }
+      });
+    // 提示里也说明一下，避免用户以为卡住了
+    this.emitOutput(`\r\n\x1b[33m[检测到本地文件「${name}」，正在问你要不要上传（不想上传就选「${UPLOAD_PROMPT_RUN}」；关掉询问框＝把这一行放回命令行，不会执行）]\x1b[0m\r\n`);
   }
 
   /** 只读模式开关（生产环境防手滑）。返回设置后的状态 */
@@ -119,6 +257,11 @@ export class BastionTerminal implements vscode.Pseudoterminal {
 
   get isReadOnly(): boolean {
     return this.readOnly;
+  }
+
+  /** 会话是否已结束（广播转发前要过滤掉，见 state.broadcastReceivers） */
+  get isClosed(): boolean {
+    return this.closed;
   }
 
   /** 被只读拦住时的提示：限流，不然敲一下就刷一行 */
@@ -421,6 +564,8 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   private finish(exitCode: number, message?: string): void {
     if (this.closed) return;
     this.closed = true;
+    // 会话没了就别再当广播目标：否则底栏台数会虚高，还会留着一堆已死对象
+    removeBroadcastTarget(this);
     this.shellReadyResolve?.();
     stopMfaCountdown();
     if (this.mfaResolve) {
@@ -448,47 +593,89 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   }
 
   private async connect(): Promise<void> {
-    try {
-      const stream = await this.conn.openShell(this.cols, this.rows);
-      if (this.closed) {
-        try {
-          stream.close();
-        } catch (e) {
-          log(`关闭已废弃 shell 通道失败: ${(e as Error).message}`);
+    // 认证失败自动重试：动态码 30 秒换一次，输错/输慢了是日常（实测连着错 6 次都要从头来）。
+    // 重试**只重新问动态码**（密码沿用，见 ConnectionManager.recreate），
+    // 而且必须在**这个位置**重试 —— 因为动态码是在终端里问的，
+    // 只有到了这里 setMfaPrompter 才挂上（见 open()）。
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const stream = await this.conn.openShell(this.cols, this.rows);
+        if (this.closed) {
+          try {
+            stream.close();
+          } catch (e) {
+            log(`关闭已废弃 shell 通道失败: ${(e as Error).message}`);
+          }
+          return;
         }
+        this.stream = stream;
+        this.shellReadyResolve?.();
+        log(`shell 已就绪（${this.profile.name}）${attempt > 1 ? `（第 ${attempt} 次尝试）` : ''}`);
+
+        // ZMODEM 控制器接管数据流：sz/rz 走 zmodem.js，其余透传给终端
+        this.zmodem = new ZmodemSessionController(
+          `vscode-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          (d) => stream.write(d),
+          (d) => this.emitOutput(d),
+          new NodeFsZmodemIo()
+        );
+        this.zmodem.on('event', (p: ZmodemEventPayload) => this.onZmodemEvent(p));
+
+        stream.on('data', (data: Buffer) => {
+          if (this.zmodem) {
+            this.zmodem.consume(data);
+          } else {
+            this.emitOutput(data);
+          }
+        });
+        stream.on('close', () => {
+          log(`远端 shell 已断开（${this.profile.name}）`);
+          this.finish(0, '[会话已断开]');
+        });
+        stream.stderr?.on('data', (data: Buffer) => {
+          if (!this.zmodem) {
+            this.emitOutput(data);
+          }
+        });
         return;
+      } catch (e) {
+        // 认证/网络类错误统一翻成人话（原始串也会留在说明里，方便搜索）
+        const info = describeConnectError(e, {
+          usedMfa: this.conn.mfaAttempted,
+          target: `${this.profile.username}@${this.profile.host}`
+        });
+        log(`连接失败（${this.profile.name}）: ${info.message}`);
+
+        const canRetry = shouldOfferRetry(info, attempt);
+        if (!canRetry) {
+          // 用户自己按的取消：静默收场。以前这里按失败处理 —— 会弹一个红色的
+          // 「BastionShell：已取消连接」，明明是他的意思，看起来却像出了故障。
+          if (info.kind === 'cancelled') {
+            log(`连接已取消（${this.profile.name}）`);
+            this.emitOutput(`\r\n\x1b[2m[${info.message}]\x1b[0m\r\n`);
+            this.finish(0);
+            return;
+          }
+          this.handleFatal(info.message);
+          return;
+        }
+
+        // **提示 + 自动重试**，不弹「要不要重试」的窗。
+        // 以前这里弹一个带按钮的警告框，必须点一下「重新输入动态码」才会重问 ——
+        // 动态码 30 秒就换，为了点一个按钮把码等过期，是实打实的难受。
+        // 现在只把说明写进终端（用户的视线本来就在那儿），然后直接重问。
+        // 想放弃就关掉终端窗口；次数上限见 authError.MAX_AUTH_ATTEMPTS。
+        this.emitOutput(`\r\n\x1b[33m[${info.message}]\x1b[0m\r\n`);
+        this.emitOutput(
+          `\r\n\x1b[33m[正在自动重试（第 ${attempt + 1}/${MAX_AUTH_ATTEMPTS} 次）—— 只重新问动态码，密码不用再输；` +
+            `不想重试就关掉这个终端窗口]\x1b[0m\r\n`
+        );
+        log(`自动重试第 ${attempt + 1}/${MAX_AUTH_ATTEMPTS} 次：${info.message}`);
+
+        // 重新握手：**同一个连接对象**换一条底层 ssh2 通道，密码沿用、只重新问动态码。
+        // 对象身份不变，所以连接池、终端引用、close 监听、端口转发都不受影响。
+        await this.conn.retryAuth();
       }
-      this.stream = stream;
-      this.shellReadyResolve?.();
-      log(`shell 已就绪（${this.profile.name}）`);
-
-      // ZMODEM 控制器接管数据流：sz/rz 走 zmodem.js，其余透传给终端
-      this.zmodem = new ZmodemSessionController(
-        `vscode-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        (d) => stream.write(d),
-        (d) => this.emitOutput(d),
-        new NodeFsZmodemIo()
-      );
-      this.zmodem.on('event', (p: ZmodemEventPayload) => this.onZmodemEvent(p));
-
-      stream.on('data', (data: Buffer) => {
-        if (this.zmodem) {
-          this.zmodem.consume(data);
-        } else {
-          this.emitOutput(data);
-        }
-      });
-      stream.on('close', () => {
-        log(`远端 shell 已断开（${this.profile.name}）`);
-        this.finish(0, '[会话已断开]');
-      });
-      stream.stderr?.on('data', (data: Buffer) => {
-        if (!this.zmodem) {
-          this.emitOutput(data);
-        }
-      });
-    } catch (e) {
-      this.handleFatal(`连接失败: ${(e as Error).message}`);
     }
   }
 }

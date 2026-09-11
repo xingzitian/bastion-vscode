@@ -2,7 +2,7 @@
   "name": "bastion-vscode",
   "displayName": "BastionShell SSH",
   "description": "SSH 堡垒机终端：一次 MFA + 连接复用，多开会话/批量部署/rz/sz 文件传输/端口转发/快捷命令，并提供 bastion.exec 让 VS Code 里的 AI 插件在服务器上执行命令",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "publisher": "xingzitian",
   "author": "杏子甜",
   "license": "MIT",
@@ -57,6 +57,7 @@
   ],
   "activationEvents": [
     "onStartupFinished",
+    "onWalkthrough:bastion.gettingStarted",
     "onCommand:bastion.connect",
     "onCommand:bastion.uploadToSession",
     "onCommand:bastion.addProfile",
@@ -89,6 +90,10 @@
     "onCommand:bastion.pickSession",
     "onCommand:bastion.toggleReadOnly",
     "onCommand:bastion.toggleKeepDeployTerminal",
+    "onCommand:bastion.generateMenuRule",
+    "onCommand:bastion.sendLastReportToAI",
+    "onCommand:bastion.toggleBroadcast",
+    "onCommand:bastion.toggleBroadcastMode",
     "onCommand:bastion.pickOverwriteMode",
     "onCommand:bastion.stopAllForwards",
     "onCommand:bastion.showForwards",
@@ -117,6 +122,73 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "walkthroughs": [
+      {
+        "id": "bastion.gettingStarted",
+        "title": "开始使用 BastionShell",
+        "description": "从建档案到批量部署，五步走完。每步都有可以直接点的按钮。",
+        "steps": [
+          {
+            "id": "profile",
+            "title": "建一个连接档案",
+            "description": "告诉扩展「用哪个账号连哪台堡垒机」。密码存在系统加密存储里，不落文件。",
+            "media": {
+              "markdown": "walkthroughs/01-profile.md"
+            },
+            "completionEvents": [
+              "onCommand:bastion.addProfile",
+              "onCommand:bastion.openProfilesFile"
+            ]
+          },
+          {
+            "id": "connect",
+            "title": "连上去（一次 MFA，之后复用）",
+            "description": "一次认证之后，再开会话不用重新输 MFA —— 这是它跟普通 SSH 客户端的最大区别。",
+            "media": {
+              "markdown": "walkthroughs/02-connect.md"
+            },
+            "completionEvents": [
+              "onCommand:bastion.connect",
+              "onCommand:bastion.showOverview"
+            ]
+          },
+          {
+            "id": "transfer",
+            "title": "传文件（rz / sz）",
+            "description": "上传下载都支持，带实时进度；同名文件怎么处理可以配。",
+            "media": {
+              "markdown": "walkthroughs/03-transfer.md"
+            },
+            "completionEvents": [
+              "onCommand:bastion.uploadToSession"
+            ]
+          },
+          {
+            "id": "deploy",
+            "title": "批量部署",
+            "description": "往多台机器上传文件、跑命令，跑完出一份带每条命令输出的报告。",
+            "media": {
+              "markdown": "walkthroughs/04-deploy.md"
+            },
+            "completionEvents": [
+              "onCommand:bastion.addDeployTask",
+              "onCommand:bastion.batchRunDeployTasks"
+            ]
+          },
+          {
+            "id": "ai",
+            "title": "让 AI 也能操作服务器",
+            "description": "Copilot / Cursor 等可以直接调用扩展的连接与执行能力，高危命令会被拦。",
+            "media": {
+              "markdown": "walkthroughs/05-ai.md"
+            },
+            "completionEvents": [
+              "onCommand:bastion.showLog"
+            ]
+          }
+        ]
+      }
+    ],
     "jsonValidation": [
       {
         "fileMatch": "**/tasks/*.json",
@@ -171,6 +243,40 @@
           "default": true,
           "description": "终端名前面加会话号（#1、#2…），便于区分多个会话，也让 AI 用 bastion_exec 的 terminal 参数精确指定目标（关掉后终端名就只有 用户@主机）"
         },
+        "bastion.statusBarItems": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "session",
+              "readonly",
+              "overwrite",
+              "keepterm",
+              "broadcast",
+              "broadcastmode",
+              "forward"
+            ],
+            "enumDescriptions": [
+              "会话概览（几个会话、活动的是谁）—— 点它打开「总览与进度」面板",
+              "只读 / 可写（当前会话）",
+              "上传同名文件的处理方式（跳过 / 覆盖 / 改名）",
+              "「部署结束保留终端」开关（开着才显示）",
+              "「广播输入」开关（开着才显示）",
+              "广播模式（原样同步 / 整行发送，广播开着才显示）",
+              "运行中的端口转发条数"
+            ]
+          },
+          "default": [
+            "session",
+            "readonly",
+            "overwrite",
+            "keepterm",
+            "broadcast",
+            "broadcastmode",
+            "forward"
+          ],
+          "markdownDescription": "底栏**显示哪几个常驻格子**（底栏是稀缺资源，嫌挤就删掉几个）。\n\n删除某一项 = 不显示那一格。**未知的名字会被忽略**；一个合法名字都没有时按「全部显示」处理（拼错不该让底栏空掉）。\n\n> 进度类格子（传输进度 / 部署进度 / MFA 倒计时）**不受此设置影响** —— 它们是临时反馈，关掉会让人不知道后台在干什么。\n\n改完立即生效，不用重启。"
+        },
         "bastion.menuHints.hostPromptLoose": {
           "type": "array",
           "items": {
@@ -219,6 +325,19 @@
           ],
           "default": "closeSuccess",
           "description": "批量部署结束后，怎么处理为每台机器开的会话终端"
+        },
+        "bastion.broadcastMode": {
+          "type": "string",
+          "enum": [
+            "raw",
+            "line"
+          ],
+          "enumDescriptions": [
+            "原样同步（默认，和桌面版一致）：你敲的每个键都同步过去 —— **在 vim 里改配置文件、进交互式菜单必须用这个**",
+            "整行发送：只在按回车时把这一整行同步过去，敲到一半的内容、退格、方向键都不会发过去"
+          ],
+          "default": "raw",
+          "markdownDescription": "多会话**广播输入**同步什么内容。\n\n- `raw` **原样同步**（默认）：逐键镜像。vim 的插入/命令模式切换、方向键、`:wq` 的回车都不是「一行」，只有原样同步才能一起改文件。\n- `line` **整行发送**：只在按回车时把整行发过去，适合「给几台机器各敲一条命令」，代价是全屏交互程序里用不了。\n\n两种模式都只同步**人工键盘输入**；MFA 动态码、AI 执行、部署注入都不广播。\n\n底栏广播开着时会多出一格「原样同步 / 整行发送」，点一下就能切（也可以在命令面板搜「广播模式」）。"
         },
         "bastion.uploadOverwrite": {
           "type": "string",
@@ -626,6 +745,26 @@
         "command": "bastion.toggleKeepDeployTerminal",
         "title": "BastionShell: 部署结束保留终端窗口（开关）",
         "icon": "$(terminal)"
+      },
+      {
+        "command": "bastion.generateMenuRule",
+        "title": "BastionShell: 从屏幕原文生成菜单规则（认不出菜单时用）",
+        "icon": "$(wand)"
+      },
+      {
+        "command": "bastion.sendLastReportToAI",
+        "title": "BastionShell: 把最近一次部署报告发给 AI 分析",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "bastion.toggleBroadcast",
+        "title": "BastionShell: 广播输入（一次给多个会话发同一条命令）",
+        "icon": "$(broadcast)"
+      },
+      {
+        "command": "bastion.toggleBroadcastMode",
+        "title": "BastionShell: 广播模式（原样同步 / 整行发送）",
+        "icon": "$(arrow-swap)"
       },
       {
         "command": "bastion.pickOverwriteMode",

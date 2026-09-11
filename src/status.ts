@@ -12,7 +12,7 @@ import * as vscode from 'vscode'
  * clearSlot 是幂等的，随便重复调；setSlot 会清掉上一次的自动隐藏定时器。
  */
 
-export type SlotName = 'mfa' | 'transfer' | 'deploy' | 'ai' | 'forward' | 'overwrite' | 'readonly' | 'keepterm' | 'session'
+export type SlotName = 'mfa' | 'transfer' | 'deploy' | 'ai' | 'forward' | 'overwrite' | 'readonly' | 'keepterm' | 'broadcast' | 'broadcastmode' | 'session'
 
 /** 优先级：数字越大越靠左。MFA 最紧急放最左，会话概览常驻放最右 */
 const PRIORITY: Record<SlotName, number> = {
@@ -24,6 +24,8 @@ const PRIORITY: Record<SlotName, number> = {
   overwrite: 650,
   readonly: 600,
   keepterm: 580,
+  broadcast: 570,
+  broadcastmode: 560,
   session: 500
 }
 

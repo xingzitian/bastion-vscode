@@ -1,5 +1,5 @@
 import * as vscode from 'vscode'
-import { terminals } from './state'
+import { terminals, getBroadcastTargets, setBroadcastTargets, clearBroadcast, getBroadcastMode, BROADCAST_MODE_LABEL } from './state'
 import type { BastionTerminal } from './terminal'
 import { getActiveTransfers, getTransferHistory } from './transfer'
 import { listRunningDeploys } from './deployRunning'
@@ -7,6 +7,7 @@ import { getLastDeployReport, getDeployTerminalPolicy } from './deployRun'
 import { listActiveForwards, stopForward } from './forward'
 import { abortDeployTask } from './deployRun'
 import { fmtBytes, fmtDuration, fmtSpeed, progressBar } from './status'
+import { updateStatusBar } from './slots'
 import { log, outChannel } from './log'
 
 /**
@@ -34,6 +35,8 @@ interface OverviewSession {
   mode: string
   ready: boolean
   readOnly: boolean
+  /** 这个会话是不是当前广播的接收者（开着广播时必须一眼看得出是哪几台） */
+  broadcasting: boolean
   upMs: number
   reused: number
   active: boolean
@@ -76,6 +79,10 @@ interface OverviewState {
   overwrite: string
   /** 「部署结束保留终端」开关的当前状态（面板上那个按钮要显示开/关） */
   keepTerminal: boolean
+  /** 当前广播到几个会话（0 = 没开） */
+  broadcastCount: number
+  /** 广播模式的可读名（原样同步 / 整行发送） */
+  broadcastModeLabel: string
   recent: Array<{ name: string; ok: boolean; size: string; dir: string }>
   /** 最近一次部署的结果（跑完多久都能回来点开报告） */
   lastDeploy: { name: string; okCount: number; total: number; agoMs: number } | null
@@ -151,6 +158,20 @@ export class OverviewProvider implements vscode.WebviewViewProvider {
         }
         break
       }
+      case 'toggleBroadcastSession': {
+        // 面板里直接勾广播（用户不想为了改一台还要过一个多选列表）
+        const s = find()
+        if (s && !s.term.isReadOnly) {
+          const cur = getBroadcastTargets()
+          const on = !cur.includes(s.term)
+          const next = on ? [...cur, s.term] : cur.filter((t) => t !== s.term)
+          if (next.length === 0) clearBroadcast()
+          else setBroadcastTargets(next)
+          log(`总览面板：${on ? '加入' : '移出'}广播 —— ${s.vt.name}（当前 ${next.length} 台）`)
+          updateStatusBar()
+        }
+        break
+      }
       case 'closeSession': {
         find()?.vt.dispose()
         break
@@ -205,6 +226,12 @@ async function runAction(name: string): Promise<void> {
     case 'toggleKeepTerminal':
       await vscode.commands.executeCommand('bastion.toggleKeepDeployTerminal')
       break
+    case 'toggleBroadcast':
+      await vscode.commands.executeCommand('bastion.toggleBroadcast')
+      break
+    case 'toggleBroadcastMode':
+      await vscode.commands.executeCommand('bastion.toggleBroadcastMode')
+      break
     default:
       log(`总览面板收到未知操作：${name}`)
   }
@@ -214,6 +241,7 @@ async function runAction(name: string): Promise<void> {
 function collectState(): OverviewState {
   const now = Date.now()
   const activeVt = vscode.window.activeTerminal
+  const broadcastTargets = getBroadcastTargets()
 
   const sessions: OverviewSession[] = [...terminals.entries()].map(([vt, term]) => ({
     no: term.sessionNo,
@@ -223,6 +251,7 @@ function collectState(): OverviewState {
     mode: term.profile?.mode === 'direct' ? '直连' : '堡垒机',
     ready: term.conn.connectedAt > 0 && term.conn.isAlive,
     readOnly: term.isReadOnly,
+    broadcasting: broadcastTargets.includes(term),
     upMs: term.conn.connectedAt > 0 ? now - term.conn.connectedAt : 0,
     reused: term.conn.channelCount,
     active: vt === activeVt
@@ -281,6 +310,8 @@ function collectState(): OverviewState {
     forwards,
     overwrite,
     keepTerminal,
+    broadcastCount: broadcastTargets.length,
+    broadcastModeLabel: BROADCAST_MODE_LABEL[getBroadcastMode()],
     recent,
     lastDeploy
   }
@@ -383,6 +414,9 @@ export function buildOverviewHtml(cspSource: string): string {
   const bar = (ratio) => \`<div class="bar-track"><div class="bar-fill" style="width:\${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%"></div></div>\`;
   const btn = (label, msg, cls) =>
     \`<button class="\${cls || ''}" data-msg='\${esc(JSON.stringify(msg))}'>\${esc(label)}</button>\`;
+  /** 不可用的按钮：必须**看得见**（看不见的限制等于没有），所以渲染出来但点不动 */
+  const btnOff = (label, why) =>
+    \`<button disabled title="\${esc(why)}">\${esc(label)}</button>\`;
 
   function render(s) {
     const parts = [];
@@ -396,13 +430,18 @@ export function buildOverviewHtml(cspSource: string): string {
           ? '<span class="badge ok">已认证</span>'
           : '<span class="badge err">已断开</span>';
         const ro = x.readOnly ? '<span class="badge warn">只读</span>' : '';
+        const bc = x.broadcasting ? '<span class="badge warn">广播中</span>' : '';
         const cur = x.active ? '<span class="badge">当前</span>' : '';
         parts.push('<div class="card">' +
-          '<div class="row"><span class="title">#' + x.no + ' ' + esc(x.name) + '</span>' + state + ro + cur + '</div>' +
+          '<div class="row"><span class="title">#' + x.no + ' ' + esc(x.name) + '</span>' + state + ro + bc + cur + '</div>' +
           '<div class="row sub">' + esc(x.mode) + ' · 已连 ' + dur(x.upMs) + ' · 复用 ' + x.reused + ' 会话</div>' +
           '<div class="row">' +
             btn(x.active ? '已在前面' : '聚焦', { type: 'focusSession', no: x.no }, x.active ? '' : 'primary') +
             btn(x.readOnly ? '解除只读' : '设为只读', { type: 'toggleReadOnly', no: x.no }) +
+            // 广播直接在这儿勾：改一台不用再过一个多选列表
+            (x.readOnly
+              ? btnOff('不参与广播', '只读会话不参与广播：它连人工输入都拦，广播不该往里写')
+              : btn(x.broadcasting ? '移出广播' : '加入广播', { type: 'toggleBroadcastSession', no: x.no })) +
             btn('关闭', { type: 'closeSession', no: x.no }) +
           '</div></div>');
       }
@@ -474,6 +513,10 @@ export function buildOverviewHtml(cspSource: string): string {
       btn('切换会话', { type: 'action', name: 'newSession' }) +
       btn('上传覆盖：' + s.overwrite, { type: 'action', name: 'pickOverwrite' }) +
       btn(s.keepTerminal ? '部署后保留终端：开' : '部署后保留终端：关', { type: 'action', name: 'toggleKeepTerminal' }) +
+      btn(s.broadcastCount > 0 ? '广播输入：开（' + s.broadcastCount + ' 台）' : '广播输入：关', { type: 'action', name: 'toggleBroadcast' }) +
+      (s.broadcastCount > 0
+        ? btn('广播模式：' + s.broadcastModeLabel, { type: 'action', name: 'toggleBroadcastMode' })
+        : '') +
       btn('传输历史', { type: 'action', name: 'openTransferHistory' }) +
       btn('个人习惯', { type: 'action', name: 'openHabits' }) +
       btn('停止全部转发', { type: 'action', name: 'stopAllForwards' }) +

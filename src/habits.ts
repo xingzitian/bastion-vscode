@@ -1,6 +1,6 @@
 import * as fs from 'fs'
 import { parse as parseJsonc, modify, applyEdits, ParseError, FormattingOptions } from 'jsonc-parser'
-import { configFilePath, ensureJsonFile, readJsonFile } from './config'
+import { configFilePath, ensureJsonFile, readJsonFile, writeTextAtomic } from './config'
 import { log } from './log'
 
 /**
@@ -122,11 +122,16 @@ export function getHabits(): Habits {
 
 const FMT: FormattingOptions = { insertSpaces: true, tabSize: 2, eol: '\n' }
 
-/** 就地改 habits.jsonc 的文本（保留注释）；改完先解析校验，坏了就放弃本次写入 */
+/**
+ * 就地改 habits.jsonc 的文本（保留注释）；改完先解析校验，坏了就放弃本次写入。
+ *
+ * 写入走 `writeTextAtomic`（带 rename 重试）—— 以前这里自己写 tmp+rename，
+ * 没走那个重试：Windows 上目标文件被瞬时占用时 rename 抛 EPERM，写入静默失败，
+ * 表现为「记了习惯却没生效」以及测试偶发变红（2026-09-10 修）。
+ */
 function editHabitsFile(apply: (text: string) => string): boolean {
   ensureJsonFile(HABITS_FILE, HABITS_HEADER, HABITS_TEMPLATE)
   const fp = configFilePath(HABITS_FILE)
-  const tmp = fp + '.tmp'
   try {
     const text = fs.readFileSync(fp, 'utf8')
     const next = apply(text)
@@ -137,15 +142,9 @@ function editHabitsFile(apply: (text: string) => string): boolean {
       log('习惯文件改完后解析不过，已放弃本次写入（原文件未动）')
       return false
     }
-    fs.writeFileSync(tmp, next, 'utf8')
-    fs.renameSync(tmp, fp)
+    writeTextAtomic(fp, next)
     return true
   } catch (e) {
-    try {
-      fs.unlinkSync(tmp)
-    } catch {
-      /* ignore */
-    }
     log(`写入习惯文件失败: ${(e as Error).message}`)
     return false
   }

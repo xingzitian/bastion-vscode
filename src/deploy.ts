@@ -17,8 +17,37 @@ export interface DeployTask {
   /** 上传完成后要执行的命令，**一行一条** */
   script: string[]
   userChoice: string
+  /**
+   * 本任务跑完后要不要保留会话终端。
+   * - `true`  = 保留（方便盯着现场）
+   * - `false` = 成功后回收
+   * - 不写    = 跟随全局设置 `bastion.deployTerminalPolicy`
+   *
+   * 为什么不干脆只留全局开关：批量任务里「这个想盯、那个不用」很常见，
+   * 每跑一次就去改设置太别扭。
+   */
+  keepTerminal?: boolean
   /** 任务文件 URI（编辑 / 运行 / 删除用） */
   uri: vscode.Uri
+}
+
+/** 部署结束后怎么处理会话终端 */
+export type TerminalPolicy = 'keep' | 'closeSuccess' | 'closeAll' | 'ask'
+
+/**
+ * 决定这次任务用哪个终端策略：**任务级设置优先，没写才看全局设置**。
+ *
+ * 纯函数，方便测：任务的 keepTerminal 只有明确写了 true/false 才算数，
+ * 写成别的（字符串 "true"、null、缺省）一律当作「没写」—— 因为任务文件是手写的，
+ * 写错一个类型就悄悄改变行为比报错更难查。
+ */
+export function resolveTerminalPolicy(
+  taskKeepTerminal: boolean | undefined,
+  globalPolicy: TerminalPolicy
+): { policy: TerminalPolicy; from: 'task' | 'global' } {
+  if (taskKeepTerminal === true) return { policy: 'keep', from: 'task' }
+  if (taskKeepTerminal === false) return { policy: 'closeSuccess', from: 'task' }
+  return { policy: globalPolicy, from: 'global' }
 }
 
 /**
@@ -72,6 +101,9 @@ export const DEPLOY_TASK_HEADER = [
   '//   userChoice  堡垒机二级菜单选用户的序号，默认 "1"；',
   '//               留空字符串 "" 表示这台机器不需要选用户',
   '//               （有些管理员账号输完 IP 直接进 shell，没有这一步）',
+  '//   keepTerminal 可选。本任务跑完后要不要保留会话终端：',
+  '//                 true = 保留（方便盯现场）；false = 成功后回收；',
+  '//                 不写 = 跟随全局设置 bastion.deployTerminalPolicy',
   '// ------------------------------------------------------------',
   '// 命令是**逐行执行**的：一行的输出会和这一行对上，写进部署报告。',
   '// 所以像 sudo -i 这种交互式命令单独占一行最合适 —— 它下面那行能精确捕获输出。',
@@ -114,6 +146,8 @@ function parseTaskFileFromUri(uri: vscode.Uri): DeployTask | undefined {
       preCommand: normalizeCommands(raw.preCommand),
       script: normalizeCommands(raw.script),
       userChoice: typeof raw.userChoice === 'string' ? raw.userChoice : '1',
+      // 只有真正的 boolean 才算「明确设置」，其余（缺失 / 写错类型）当作没写
+      keepTerminal: typeof raw.keepTerminal === 'boolean' ? raw.keepTerminal : undefined,
       uri
     }
   } catch (e) {

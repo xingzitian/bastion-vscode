@@ -11,7 +11,15 @@ import type { SharedConnection } from './connection'
 import type { ConnectionProfile } from './profiles'
 import { getProfiles } from './profiles'
 import type { DeployTaskItem } from './deployTree'
-import { DeployTask, listDeployTasks, createDeployTask, deleteDeployTaskFile, readDeployTaskByUri } from './deploy'
+import {
+  DeployTask,
+  listDeployTasks,
+  createDeployTask,
+  deleteDeployTaskFile,
+  readDeployTaskByUri,
+  resolveTerminalPolicy,
+  type TerminalPolicy
+} from './deploy'
 import { findDangerousIn, describeDanger } from './danger'
 import { getDangerRules } from './dangerConfig'
 import { getHabits, resolvePrivilege } from './habits'
@@ -21,7 +29,9 @@ import { log } from './log'
 import { sleep, ctx, terminals, activeIsBastion, deployProvider } from './state'
 import { updateStatusBar, updateKeepTerminalSlot } from './slots'
 import { ensureConnection, openSessionToHost, openTerminal } from './sessions'
-import { HostResult, DeployRun, renderDeployReport, type StepResult } from './deployReport'
+import { HostResult, DeployRun, renderDeployReport, capForAi, type StepResult } from './deployReport'
+import { sendTextToAIChat } from './aiChat'
+import { toReportView, showReportPanel, type ReportView } from './deployReportView'
 import {
   registerDeploy,
   unregisterDeploy,
@@ -95,12 +105,24 @@ export async function runCommandLines(
   return out
 }
 
-/** 部署结束后怎么处理那些会话终端 */
-export type DeployTerminalPolicy = 'keep' | 'closeSuccess' | 'closeAll' | 'ask'
+/** 部署结束后怎么处理那些会话终端（类型定义在 deploy.ts，那里也有任务级覆盖的纯函数） */
+export type DeployTerminalPolicy = TerminalPolicy
 
 export function getDeployTerminalPolicy(): DeployTerminalPolicy {
   const v = vscode.workspace.getConfiguration('bastion').get<string>('deployTerminalPolicy', 'closeSuccess')
   return v === 'keep' || v === 'closeAll' || v === 'ask' ? v : 'closeSuccess'
+}
+
+/**
+ * 这次任务到底用哪个策略：**任务里写了 keepTerminal 就以任务为准**，没写才看全局设置。
+ * 打一行日志说清来源，否则「为什么这次没保留终端」很难查。
+ */
+export function policyForTask(task: DeployTask): DeployTerminalPolicy {
+  const { policy, from } = resolveTerminalPolicy(task.keepTerminal, getDeployTerminalPolicy())
+  if (from === 'task') {
+    log(`终端处理策略：${policy}（来自任务设置 keepTerminal=${task.keepTerminal}）`)
+  }
+  return policy
 }
 
 /**
@@ -342,7 +364,7 @@ export async function batchConnect(): Promise<void> {
  */
 export async function runDeployTaskCore(
   task: DeployTask,
-  opts: { label?: string; openReport?: boolean } = {}
+  opts: { label?: string; openReport?: boolean; onlyHosts?: string[] } = {}
 ): Promise<DeployRun> {
   const profile = getProfiles(ctx).find((p) => p.name === task.profileId)
   if (!profile) {
@@ -351,7 +373,9 @@ export async function runDeployTaskCore(
   }
 
   const direct = profile.mode === 'direct'
-  const hosts = direct ? [profile.host] : task.hosts
+  const allHosts = direct ? [profile.host] : task.hosts
+  // 只要其中几台（报告面板的「重跑这台」）—— 顺序仍按任务里的顺序
+  const hosts = opts.onlyHosts ? allHosts.filter((h) => opts.onlyHosts!.includes(h)) : allHosts
   if (hosts.length === 0) {
     // 以前这里会静默空跑（total = 0，报告 0/0），看起来像「跑了但什么都没发生」
     const msg = `部署任务「${task.name}」没有目标机：档案「${profile.name}」是${direct ? '直连' : '堡垒机'}模式，请在任务 JSON 的 hosts 里填目标机 IP`
@@ -378,7 +402,8 @@ export async function runDeployTaskCore(
   const prefix = opts.label ? `${opts.label} ` : ''
   const t0 = Date.now()
   const results: HostResult[] = []
-  const policy = getDeployTerminalPolicy()
+  // 任务里写了 keepTerminal 就以任务为准，没写才跟随全局设置
+  const policy = policyForTask(task)
   const state = registerDeploy(task.id, task.name, hosts.length)
   deployProvider?.refresh()
 
@@ -495,18 +520,109 @@ export function getLastDeployReport(): LastReport | null {
   return lastReport
 }
 
-/** 命令：打开最近一次部署报告（跑完多久都能找回来） */
+/** 内存里最近一次的结构化结果（面板用；进程重启后从 .json 副本恢复） */
+let lastView: ReportView | null = null
+let lastReportPaths: { md: string; json: string } | null = null
+
+/** 报告旁的派生文件路径：<同一目录>/<同名>.json（结构化副本，供面板跨重启恢复） */
+function sidecarPaths(mdPath: string): { md: string; json: string } {
+  return { md: mdPath, json: mdPath.replace(/\.md$/i, '.json') }
+}
+
+/** 打开报告面板；拿不到结构化数据就退回打开 Markdown（老行为，不会更差） */
 export async function openLastDeployReport(): Promise<void> {
-  if (!lastReport) {
-    vscode.window.showInformationMessage('还没有生成过部署报告（跑一次部署任务后就有了）')
+  if (!lastView) await restoreLastReport(ctx)
+  if (lastView) {
+    showReportPanel(lastView, {
+      rerunHost: rerunHostFromReport,
+      openMarkdown: openReportMarkdown,
+      markdown: readReportMarkdown
+    })
+    return
+  }
+  await openReportMarkdown()
+}
+
+/** 打开 Markdown 原文（面板里的「打开 Markdown」按钮也走这里） */
+async function openReportMarkdown(): Promise<void> {
+  const uri = lastReport?.uri ?? (lastReportPaths ? vscode.Uri.file(lastReportPaths.md) : undefined)
+  if (!uri) {
+    void vscode.window.showInformationMessage('还没有生成过部署报告（跑一次部署任务后就有了）')
     return
   }
   try {
-    await vscode.window.showTextDocument(lastReport.uri, { preview: false })
+    await vscode.window.showTextDocument(uri, { preview: false })
   } catch (e) {
     // 报告文件可能被用户删了
     log(`打开最近部署报告失败: ${(e as Error).message}`)
-    vscode.window.showWarningMessage(`打不开报告（可能已被删除）：${lastReport.uri.fsPath}`)
+    void vscode.window.showWarningMessage(`打不开报告（可能已被删除）：${uri.fsPath}`)
+  }
+}
+
+/** 读报告 Markdown 文本（发给 AI 用） */
+async function readReportMarkdown(): Promise<string> {
+  const uri = lastReport?.uri ?? (lastReportPaths ? vscode.Uri.file(lastReportPaths.md) : undefined)
+  if (!uri) return ''
+  try {
+    return fs.readFileSync(uri.fsPath, 'utf8')
+  } catch (e) {
+    log(`读取报告失败: ${(e as Error).message}`)
+    return ''
+  }
+}
+
+/**
+ * 从报告面板重跑某一台：重读任务文件（拿最新配置），只跑这一台。
+ * 直连/批量连接产生的报告没有任务文件，这时明确告诉用户跑不了。
+ */
+export async function rerunHostFromReport(host: string): Promise<void> {
+  const uriStr = lastView?.taskUri
+  if (!uriStr) {
+    void vscode.window.showWarningMessage('这份报告不是部署任务产生的（没有任务文件），无法单独重跑。')
+    return
+  }
+  const task = readDeployTaskByUri(vscode.Uri.parse(uriStr))
+  if (!task) {
+    void vscode.window.showErrorMessage('任务文件解析失败，无法重跑。请打开任务文件检查格式。')
+    return
+  }
+  log(`从报告重跑单台：${host}（任务 ${task.name}）`)
+  await runDeployTaskCore(task, { label: `[单台 ${host}]`, onlyHosts: [host] })
+}
+
+/**
+ * 启动时恢复「最近一次报告」。
+ * 以前 lastReport 只在内存里 —— 重启 VS Code 之后报告就**再也找不回来了**
+ * （命令只会说「还没有生成过部署报告」），而报告正是批量部署唯一的产物。
+ * 所以落一个指针文件（reports/last.json）指向 .md 和 .json 副本。
+ */
+export async function restoreLastReport(context: vscode.ExtensionContext): Promise<void> {
+  const dir = vscode.Uri.joinPath(context.globalStorageUri, 'reports')
+  const ptr = vscode.Uri.joinPath(dir, 'last.json')
+  try {
+    if (!fs.existsSync(ptr.fsPath)) return
+    const info = JSON.parse(fs.readFileSync(ptr.fsPath, 'utf8')) as {
+      md: string
+      json: string
+      name?: string
+      okCount?: number
+      total?: number
+      at?: number
+    }
+    lastReportPaths = { md: info.md, json: info.json }
+    lastReport = {
+      uri: vscode.Uri.file(info.md),
+      name: info.name ?? '部署',
+      okCount: info.okCount ?? 0,
+      total: info.total ?? 0,
+      at: info.at ?? 0
+    }
+    if (info.json && fs.existsSync(info.json)) {
+      lastView = JSON.parse(fs.readFileSync(info.json, 'utf8')) as ReportView
+    }
+    log(`已恢复最近一次部署报告：${info.md}`)
+  } catch (e) {
+    log(`恢复最近部署报告失败: ${(e as Error).message}`)
   }
 }
 
@@ -527,6 +643,22 @@ export async function finishDeployReport(runs: DeployRun[]): Promise<void> {
     return
   }
   lastReport = { uri: file, name: runs.map((r) => r.task.name).join('、'), okCount, total, at: Date.now() }
+  // 结构化副本（.json）：面板重启后还能打开；再落一个指针文件指向这两份
+  try {
+    const paths = sidecarPaths(file.fsPath)
+    lastReportPaths = paths
+    lastView = toReportView(runs, runs.length === 1 ? runs[0].task.uri?.toString() : undefined)
+    fs.writeFileSync(paths.json, JSON.stringify(lastView, null, 2), 'utf8')
+    const ptr = vscode.Uri.joinPath(ctx.globalStorageUri, 'reports', 'last.json')
+    fs.writeFileSync(
+      ptr.fsPath,
+      JSON.stringify({ md: paths.md, json: paths.json, name: lastReport.name, okCount, total, at: lastReport.at }, null, 2),
+      'utf8'
+    )
+  } catch (e) {
+    // 写副本失败不影响主流程（Markdown 报告已经写好了）
+    log(`写报告副本失败（面板可能无法跨重启恢复）: ${(e as Error).message}`)
+  }
   // 路径也写进日志：万一提示错过了，日志里还能找到文件
   // （总览面板也会显示「最近一次部署」，它自己会读到 lastReport，所以这里不需要反向通知 ——
   //   反向 import overview 会形成 deployRun ↔ overview 循环依赖）
@@ -538,11 +670,46 @@ export async function finishDeployReport(runs: DeployRun[]): Promise<void> {
       '打开报告',
       '保留窗口'
     )
-    if (pick === '打开报告') await vscode.window.showTextDocument(file, { preview: false })
+    if (pick === '打开报告') await openLastDeployReport()
   } else {
-    vscode.window.showWarningMessage(`部署结束：${okCount}/${total} 台成功，${total - okCount} 台失败（已打开报告）`)
-    await vscode.window.showTextDocument(file, { preview: false })
+    // 有失败时给「发给 AI」：报告里每条命令的输出都在，正好让 AI 直接分析失败原因
+    const pick = await vscode.window.showWarningMessage(
+      `部署结束：${okCount}/${total} 台成功，${total - okCount} 台失败（已打开报告）`,
+      '发给 AI 分析'
+    )
+    await openLastDeployReport()
+    if (pick === '发给 AI 分析') await sendLastReportToAI()
   }
+}
+
+/** 命令：把最近一次部署报告发给 AI 分析（失败原因、下一步怎么办） */
+export async function sendLastReportToAI(): Promise<void> {
+  if (!lastReport) {
+    vscode.window.showInformationMessage('还没有生成过部署报告（跑一次部署任务后就有了）')
+    return
+  }
+  let text: string
+  try {
+    const raw = fs.readFileSync(lastReport.uri.fsPath, 'utf8')
+    const capped = capForAi(raw)
+    text = capped.text
+    if (capped.omitted > 0) {
+      // 只让 AI 知道被截断是不够的：用户以为整份都发出去了，而切掉的可能是失败那台
+      log(`报告过长，发给 AI 前截断：省略 ${capped.omitted} 字符（原文 ${raw.length}）`)
+      void vscode.window.showInformationMessage(
+        `报告较长（${raw.length} 字符），已截断到 ${capForAi(raw).text.length} 字符再发给 AI —— 后面的内容没发出去。`
+      )
+    }
+  } catch (e) {
+    log(`读取最近部署报告失败: ${(e as Error).message}`)
+    vscode.window.showWarningMessage(`读不到报告文件（可能已被删除）：${lastReport.uri.fsPath}`)
+    return
+  }
+  await sendTextToAIChat(
+    text,
+    `以下是我刚才那次部署的报告（${lastReport.name}，${lastReport.okCount}/${lastReport.total} 台成功）。` +
+      `请帮我分析失败原因，并给出下一步该怎么排查：`
+  )
 }
 
 export function runDeployTask(item?: DeployTaskItem): void {

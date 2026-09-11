@@ -18,7 +18,7 @@ import {
   type MenuHints, type MenuHintKey, type MenuStep
 } from './menu'
 import { log } from './log'
-import { sleep, nextSessionNo, setLastBastionTerminal, setLastBastionProfile } from './state'
+import { sleep, nextSessionNo, setLastBastionTerminal, setLastBastionProfile, setLastUnrecognizedScreen } from './state'
 import {
   ctx,
   terminals,
@@ -270,6 +270,8 @@ export async function menuStep(
  */
 function dumpScreenForHints(term: ScreenReader, hintKey: MenuHintKey, screen = term.getTail(25)): void {
   const key = `bastion.menuHints.${hintKey}`
+  // 存一份：命令「从屏幕原文生成菜单规则」会用它，用户不用去日志里翻
+  setLastUnrecognizedScreen(screen)
   log(`——— 这一步没认出来的终端原文（对照它改 ${key}）———`)
   for (const line of screen.split('\n')) {
     if (line.trim()) log(`| ${line}`)

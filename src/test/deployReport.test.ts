@@ -3,7 +3,7 @@
 import '../testkit/vscode-stub'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { renderDeployReport, type DeployRun, type HostResult } from '../deployReport'
+import { renderDeployReport, capTextForAi, capForAi, type DeployRun, type HostResult } from '../deployReport'
 import type { DeployTask } from '../deploy'
 
 function task(over: Partial<DeployTask> = {}): DeployTask {
@@ -227,4 +227,34 @@ test('没有任何结果时不崩（边界）', () => {
 test('总耗时按各任务之和呈现', () => {
   const r = renderDeployReport([run({ ms: 61000 }), run({ ms: 2000 })])
   assert.match(r.markdown, /- 总耗时：1m3s/)
+})
+
+// ---------------------------------------------------------------------------
+// 发给 AI 前的截断（报告可能几十上百 KB）
+// ---------------------------------------------------------------------------
+test('capTextForAi：短文本原样返回', () => {
+  const t = '一次部署报告'
+  assert.equal(capTextForAi(t), t)
+  assert.equal(capTextForAi('', 10), '')
+})
+
+test('capTextForAi：超长时截断，并写明「后面还有多少没发」', () => {
+  const long = 'x'.repeat(30000)
+  const out = capTextForAi(long, 20000)
+  assert.ok(out.length < long.length, '应被截断')
+  assert.ok(out.startsWith('x'.repeat(20000)), '前 20000 字符保留')
+  assert.match(out, /还有 10000 个字符没发/, '必须写明省略了多少，否则 AI 会以为报告就这么短')
+})
+
+test('capTextForAi：刚好等于上限时不截断（边界）', () => {
+  const exact = 'y'.repeat(100)
+  assert.equal(capTextForAi(exact, 100), exact)
+})
+
+test('capForAi：还要告诉调用方「漏了多少」—— 用户也该知道报告没发全', () => {
+  assert.deepEqual(capForAi('短', 100), { text: '短', omitted: 0 })
+  const long = 'x'.repeat(30000)
+  const r = capForAi(long)
+  assert.equal(r.omitted, 10000, '这就是要弹给用户看的数字')
+  assert.equal(capTextForAi(long), r.text, '两个入口必须给出同一份文本（不能各截一份）')
 })

@@ -47,7 +47,13 @@ import {
   setForwardProvider,
   setTransferProvider
 } from './state'
-import { updateStatusBar, updateReadOnlySlot, updateOverwriteSlot, updateKeepTerminalSlot } from './slots'
+import {
+  updateStatusBar,
+  updateReadOnlySlot,
+  updateOverwriteSlot,
+  updateKeepTerminalSlot,
+  updateForwardSlot
+} from './slots'
 import { connect, connectProfile, addProfile, deleteProfile, reconnect, pickSession, toggleReadOnly } from './sessions'
 import {
   addDeployTask,
@@ -59,7 +65,9 @@ import {
   batchConnect,
   openDeployTask,
   openLastDeployReport,
-  toggleKeepDeployTerminal
+  toggleKeepDeployTerminal,
+  sendLastReportToAI,
+  restoreLastReport
 } from './deployRun'
 import { execRemote, connectToTarget, listSessions, listProfilesForAI } from './aiBridge'
 import { sendSelectionToAI, sendTailToAI } from './aiChat'
@@ -81,6 +89,8 @@ import {
   copyTransferPath
 } from './transferCmd'
 import { openConfigFile, openHabitsFile, showLog, pickOverwriteMode, openDangerRules } from './configCmd'
+import { generateMenuRule } from './menuCmd'
+import { toggleBroadcast, toggleBroadcastMode } from './broadcastCmd'
 import {
   OverviewProvider,
   setOverviewProvider,
@@ -111,6 +121,10 @@ export function activate(context: vscode.ExtensionContext): void {
   // 老任务 .json → 带中文说明的 .jsonc（写新→验证→删旧，坏了不丢数据）
   migrateTaskFiles(ctx)
 
+  // 恢复「最近一次部署报告」：以前它只在内存里，重启 VS Code 之后报告就再也找不回来了
+  // （命令只会说「还没有生成过部署报告」），而报告是批量部署唯一的产物。
+  void restoreLastReport(ctx)
+
   // 详细日志开关跟着设置走
   setVerboseLogging(vscode.workspace.getConfiguration('bastion').get<boolean>('verboseLog', false))
   context.subscriptions.push(
@@ -122,6 +136,12 @@ export function activate(context: vscode.ExtensionContext): void {
       // （不然开关显示的状态和你实际设置不一致，比没有还糟）
       if (e.affectsConfiguration('bastion.deployTerminalPolicy')) {
         updateKeepTerminalSlot()
+      }
+      // 改了「底栏显示哪几格」→ 立刻重刷所有常驻格子（不用重启）
+      if (e.affectsConfiguration('bastion.statusBarItems')) {
+        updateStatusBar()
+        updateForwardSlot()
+        log(`底栏格子设置已更新（bastion.statusBarItems）`)
       }
     })
   )
@@ -165,6 +185,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('bastion.pickSession', pickSession),
     vscode.commands.registerCommand('bastion.toggleReadOnly', toggleReadOnly),
     vscode.commands.registerCommand('bastion.toggleKeepDeployTerminal', toggleKeepDeployTerminal),
+    vscode.commands.registerCommand('bastion.generateMenuRule', generateMenuRule),
+    vscode.commands.registerCommand('bastion.sendLastReportToAI', sendLastReportToAI),
+    vscode.commands.registerCommand('bastion.toggleBroadcast', toggleBroadcast),
+    vscode.commands.registerCommand('bastion.toggleBroadcastMode', toggleBroadcastMode),
     vscode.commands.registerCommand('bastion.pickOverwriteMode', pickOverwriteMode),
     vscode.commands.registerCommand('bastion.showForwards', showForwards),
     vscode.commands.registerCommand('bastion.showLog', showLog),
