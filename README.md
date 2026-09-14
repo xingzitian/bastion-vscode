@@ -170,7 +170,8 @@
 > 这种持续大流量完全不同）。**目前定位不到是链路哪一层吃掉了它** —— 怀疑在堡垒机代理对
 > pty 上持续双向流量的处理上。
 >
-> **欢迎高手来查**：复现/定位用的探针脚本都提交在 [`tools/rsync-e2e/`](tools/rsync-e2e/)（测试台），
+> **欢迎高手来查**：复现/定位用的探针脚本都提交在仓库里 ——
+> [tools/rsync-e2e](https://github.com/xingzitian/bastion-vscode/tree/main/tools/rsync-e2e)（本地端到端测试台），
 > 以及 desktop 仓库的 `tools/rsync-probe/`（当时用来把问题一段段二分出来的探针，含 `RESULTS.md` 记录）。
 > 有结论请开 issue，附上 `bastion` 日志里那几行每 3 秒一次的 `C2R/R2C` 字节数日志 —— 它正好能看出是
 > "客户端不再发" 还是 "远端不再收"。

@@ -66,7 +66,7 @@
   卡在管道里、远端也不再回数据；同一个文件用 rz 一直没问题）。本地测试台两协议全通过（含 512MB），
   所以这是**特定堡垒机环境**的问题，暂时定位不到我们这侧。要试的话打开设置 `bastion.rsyncEnabled`。
   > **求高手**：复现和二分定位用的探针都在仓库里 ——
-  > [`tools/rsync-e2e/`](tools/rsync-e2e/)（本地测试台：真 SSH + 真 pty + 真 rsync 客户端）
+  > [tools/rsync-e2e](https://github.com/xingzitian/bastion-vscode/tree/main/tools/rsync-e2e)（本地测试台：真 SSH + 真 pty + 真 rsync 客户端）
   > 和 [bastion-shell/tools/rsync-probe](https://github.com/xingzitian/bastion-shell/tree/main/tools/rsync-probe)
   > （当时逐段二分用的探针 + `RESULTS.md` 记录）。有结论请开 issue，
   > 附上日志里每 3 秒一条的 `C2R/R2C` 字节数 —— 它正好能区分「客户端不再发」和「远端不再收」。
