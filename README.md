@@ -159,6 +159,44 @@
 相对路径（`Makefile`、`./deploy.sh`）和裸 `/tmp/x` **故意不认** —— 那些在远端同样常见，认错了会误拦你的命令。
 看起来正在输入本机路径的内容会**先扣住不发**，所以不会出现「远端先报一句 `No such file or directory`，然后才问你要不要上传」。
 
+### 用 rsync 增量同步（文件和目录都能传）`实验性 · 未完成`
+
+> 🚧 **这个功能还没做完，默认是关掉的**，需要手动打开设置 `bastion.rsyncEnabled` 才会出现菜单项。
+>
+> **已知问题**：在本机测试台（真 SSH + 真 pty + 真 rsync 客户端，两个 rsync 协议版本、含 512MB 大文件）
+> **全部通过**；但在**某类堡垒机上**，大文件传到 **~95%（最后几 MB）会停住** ——
+> 链路本身很快（实测 4MB/s，22 秒传了 87MB），最后几 MB 堵在管道里、远端也不再回数据。
+> 同一个文件走 rz 一直正常（rz 是「发一块等一个确认」的小窗口，对堡垒机代理层的压力和 rsync
+> 这种持续大流量完全不同）。**目前定位不到是链路哪一层吃掉了它** —— 怀疑在堡垒机代理对
+> pty 上持续双向流量的处理上。
+>
+> **欢迎高手来查**：复现/定位用的探针脚本都提交在 [`tools/rsync-e2e/`](tools/rsync-e2e/)（测试台），
+> 以及 desktop 仓库的 `tools/rsync-probe/`（当时用来把问题一段段二分出来的探针，含 `RESULTS.md` 记录）。
+> 有结论请开 issue，附上 `bastion` 日志里那几行每 3 秒一次的 `C2R/R2C` 字节数日志 —— 它正好能看出是
+> "客户端不再发" 还是 "远端不再收"。
+
+资源管理器里右键文件**或目录** → 「**用 rsync 增量同步到当前会话**」（命令 `bastion.rsyncSyncToSession`）。
+
+- **块级增量**：传过一次的内容不会重传，反复同步一个目录很快。
+- **能整棵目录同步**：rz 只能一个一个文件传。
+- **目标机不需要 lrzsz**，只要装了 `rsync`（rz 那条路要求目标机装 lrzsz，装不了就完全传不了）。
+- 会问你**目标机目录**：填 `.` ＝ 目标机当前目录（会话停在哪儿就传到哪儿），也可以填 `/opt/app` 这种绝对路径；上次填的会记住。
+- **多选可以一起传**（右键选中多个文件/目录）。目录的语义是「把目录**里的内容**同步到目标目录」（rsync 的 `dir/` 语义）。
+- **同步中有实时进度**（已发送 / 百分比 / 速率 / 已用），完成后会告诉你「本次实际发送了多少」——
+  这样能直接看出增量省了多少。
+- **卡住不是死路**：连续 30 秒没有任何字节流动会提示，并给「断开并续传」按钮。因为一直带着 `--partial`，
+  目标机上保留已传的部分，续传只补差的那一段。
+
+> ⚠️ **打包格式会决定 rsync 有没有用**：
+> - `xxx.tar.gz`（压缩包）：改一个字节整包重排 → rsync **找不到相同块 → 每次全量重传**，白搭；
+> - `xxx.tar`（不压缩）：改动点之后的内容虽然错位，但 rsync 的滚动校验能认出来 → **只传变化的部分**；
+> - **直接同步目录**（右键那个文件夹）：最好 —— 每个文件独立比对，只有真变了的才传；
+> - 或者 `tar` + `gzip --rsyncable`（让压缩块对齐，rsync 才认得出）。
+
+怎么穿得过堡垒机：**复用当前那条已经认证、已经选完目标机的 shell 会话**，在里面注入 `rsync --server`（不开新通道 —— 也正因为如此，它比 SFTP 更能穿过堡垒机）。本机需要 rsync：Windows 默认找 `%LOCALAPPDATA%\rsync\rsync.exe`，也可以用 `bastion.rsyncPath` 指定。
+
+> 这条路的两条关键细节是实测得来的（探针记录见 [bastion-shell/tools/rsync-probe](https://github.com/xingzitian/bastion-shell/tree/main/tools/rsync-probe)）：pty 上协议起点前会有 10 字节终端噪声（`\x1b[?2004l\r\n`，bash 关括号粘贴时吐的），必须**按握手形状找到协议起点**再转发；远端结束后还必须把 EOF 传下去、并让桥的 shim 退出，否则 rsync 会和自己的子进程互等、永远不退出。这两条都有单元测试守着（`src/test/rsyncBridge.test.ts`）。
+
 **覆盖方式**由 `bastion.uploadOverwrite` 控制，默认 `skip`（远端有同名文件就跳过，最安全）。两种改法：
 
 - **点状态栏** `$(cloud-upload) 同名:跳过` → 弹出「跳过 / 覆盖 / 改名」直接选（有会话时才显示）
@@ -475,6 +513,7 @@ See "systemctl status myapp.service" and "journalctl -xe" for details.
 | `bastion.batchConnect` | 批量连接（选档案 + 主机列表） |
 | `bastion.exec` | **AI 桥接**：在活动会话执行远程命令并回传输出 |
 | `bastion.uploadToSession` | 上传文件到当前会话 |
+| `bastion.rsyncSyncToSession` | 用 rsync 增量同步文件/目录到当前会话（右键资源管理器；**实验性、默认关闭**，见上文） |
 | `bastion.addDeployTask` / `runDeployTask` / `stopDeployTask` / `openLastDeployReport` / `batchRunDeployTasks` | 部署任务 新建 / 运行 / 停止 / 打开最近报告 / 批量执行 |
 | `bastion.addQuickCommand` / `sendQuickCommand` | 快捷命令 |
 | `bastion.addForwardRule` / `startForward` | 端口转发 |
@@ -619,6 +658,45 @@ See "systemctl status myapp.service" and "journalctl -xe" for details.
 > 现在报告路径也会写进日志，并留了上面几个入口。
 
 ## 开发与测试
+
+### rsync 桥的端到端测试台（真 SSH + 真 pty）
+
+rsync 那条链路有三个 bug **只有真机才暴露**（过滤器接错方向、`stty raw` 生效前的竞态、文件带末尾斜杠），
+单元测试一个都拦不住 —— 而每轮都让用户在自己的机器上试一遍，代价太高。所以有一套本地测试台：
+
+```powershell
+# 搭一次（WSL 里起一个只听 127.0.0.1:2222 的 sshd + rsync；用 wsl -u root，不需要管理员）
+wsl -u root -d Ubuntu -- bash /mnt/c/.../tools/rsync-e2e/setup-wsl.sh
+
+# 之后每次改完，一条命令
+powershell -ExecutionPolicy Bypass -File tools/rsync-e2e/run-e2e.ps1
+```
+
+它跑的是**扩展真正在跑的 `runBridge`**（TCP 环回 + shim + 注入 + 过滤 + 收尾），
+只把会话通道换成 ssh2 的 shell 通道 —— 客户端是 Windows 上的 `rsync.exe`，远端是 WSL 里的真 sshd。
+已验证它有牙齿：把「文件带末尾斜杠」那条 bug 退回去，它会红，且报出的错和真机上看到的一模一样。
+
+**验证矩阵**（`src/test/rsyncE2EMatrix.test.ts`，16 项）：单个文件 / 整个目录 / 1MB 随机二进制 sha256 /
+8MB（重负载 64MB）大文件 / 多级目录 + 空目录 / 中文名·空格·引号·美元符文件名 / 空文件 / 多选 /
+远端多级目录自动创建 / 目标不可写的报错 / 增量（第二次 0 传输）/ 同步后会话仍可用 /
+会话被占用时明确拒绝 / 中途取消后会话恢复 / 同步中能报进度 / 目标机已有前半段时只补差 / 4 条会话并发。
+**两个协议版本都跑过**：Ubuntu rsync 3.2.7（协议 31）与 AlmaLinux rsync 3.4.4（协议 32），各 16/16。
+
+```powershell
+# 两个协议版本各搭一套测试台（密钥按端口区分，互不覆盖）
+wsl -u root -d Ubuntu        -- bash /mnt/c/.../tools/rsync-e2e/setup-wsl.sh 2222
+wsl -u root -d AlmaLinux-10  -- bash /mnt/c/.../tools/rsync-e2e/setup-wsl.sh 2223
+
+# 跑（-Heavy 打开 64MB 与连续 10 次）
+powershell -ExecutionPolicy Bypass -File tools/rsync-e2e/run-e2e.ps1 -Port 2222
+```
+
+另外 `src/test/rsyncBridgeFuzz.test.ts` 用 2700 组随机输入钉住握手过滤器的三个不变量
+（精确切在握手处、协议字节逐字节不变、分块与整块一致、伪握手不能被骗）。
+
+E2E 用例在没有测试台环境变量时**自动跳过**（`npm test` 与 CI 不受影响，只显示 19 skipped：3 项单点 + 16 项矩阵）。
+
+## 代码结构
 
 ```bash
 npm install

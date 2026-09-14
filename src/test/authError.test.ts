@@ -35,10 +35,10 @@ test('主机密钥校验失败：不能自动重试（这是唯一的中间人�
 })
 
 test('超时 / 网络类：可重试，且提示里带上目标地址', () => {
-  const t = describeConnectError(new Error('Timed out while waiting for handshake'), { usedMfa: false, target: 'jumper:22' })
+  const t = describeConnectError(new Error('Timed out while waiting for handshake'), { usedMfa: false, target: 'bastion.example.com:22' })
   assert.equal(t.kind, 'timeout')
   assert.equal(t.retryable, true)
-  assert.match(t.message, /jumper:22/)
+  assert.match(t.message, /bastion\.example\.com:22/)
 
   const n = describeConnectError(new Error('connect ECONNREFUSED 1.2.3.4:22'))
   assert.equal(n.kind, 'network')

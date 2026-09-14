@@ -80,6 +80,9 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   /** 最近一次收到远端数据的时间戳，settleScreen 靠它判断输出是否静止 */
   private lastDataAt = 0;
 
+  /** 终端打开的时刻（算「冷启动」耗时用，见 "shell 已就绪" 那行日志） */
+  private openedAt = Date.now();
+
   /** MFA 在终端内输入的状态 */
   private mfaBuffer = '';
   private mfaResolve: ((code: string) => void) | null = null;
@@ -95,6 +98,7 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   }
 
   open(initialDimensions: vscode.TerminalDimensions | undefined): void {
+    this.openedAt = Date.now();
     if (initialDimensions) {
       this.cols = Math.max(1, initialDimensions.columns);
       this.rows = Math.max(1, initialDimensions.rows);
@@ -187,6 +191,61 @@ export class BastionTerminal implements vscode.Pseudoterminal {
       this.stream.write(data);
     } catch (e) {
       log(`广播写入失败（${this.profile.name}）: ${(e as Error).message}`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 独占通道（rsync 桥用，见 rsyncTransfer.ts）
+  //
+  // 为什么需要它：rsync 走的是**这条会话自己的 shell 通道**（这样才穿得过堡垒机），
+  // 而同一个通道上原本跑着终端 UI 和 zmodem。协议期间必须由桥独占：
+  //   - 收到：不再交给终端/zmodem（它们会把二进制当成文本或 zmodem 握手，协议就废了）
+  //   - 发送：桥直接 write 通道
+  // 用完必须 releaseRawBridge()，否则这个会话就永远回不到可交互状态。
+  // ---------------------------------------------------------------------------
+  private rawBridge: { onData: (d: Buffer) => void; onClose: () => void } | null = null;
+
+  get hasRawBridge(): boolean {
+    return this.rawBridge !== null;
+  }
+
+  acquireRawBridge(h: { onData: (d: Buffer) => void; onClose: () => void }): boolean {
+    if (this.closed || !this.stream || this.rawBridge) return false;
+    this.rawBridge = h;
+    log(`rsync 桥接管会话通道（${this.profile.name}）`);
+    return true;
+  }
+
+  releaseRawBridge(): void {
+    if (this.rawBridge) {
+      this.rawBridge = null;
+      log(`rsync 桥已交还会话通道（${this.profile.name}）`);
+    }
+  }
+
+  /** 桥往远端写（只在持有时用；写完不用管，通道归桥独占） */
+  writeRawBridge(data: Buffer): void {
+    if (!this.stream) return;
+    try {
+      this.stream.write(data);
+    } catch (e) {
+      log(`rsync 桥写入失败（${this.profile.name}）: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * 给远端会话发信号（rsync 桥中止时用）。
+   *
+   * 注意：实测 OpenSSH **不认**客户端发的 signal 请求（发了没反应），所以这只是"能发就发"；
+   * 真正让远端那个卡住的 rsync 收场的是客户端侧的 `--timeout`
+   * （见 rsyncBridge.RSYNC_IO_TIMEOUT_SEC）。
+   */
+  signalRemote(name: string): void {
+    try {
+      this.stream?.signal?.(name);
+      log(`已向远端发送信号 ${name}（${this.profile.name}）`);
+    } catch (e) {
+      log(`发送信号失败（${this.profile.name}）: ${(e as Error).message}`);
     }
   }
 
@@ -610,7 +669,12 @@ export class BastionTerminal implements vscode.Pseudoterminal {
         }
         this.stream = stream;
         this.shellReadyResolve?.();
-        log(`shell 已就绪（${this.profile.name}）${attempt > 1 ? `（第 ${attempt} 次尝试）` : ''}`);
+        log(
+          `shell 已就绪（${this.profile.name}）${attempt > 1 ? `（第 ${attempt} 次尝试）` : ''}` +
+            // 冷启动耗时：从「点了连接」到「shell 可用」。用户体感慢的时候，这一行能区分
+            // 是网络/MFA/菜单识别慢，还是我们自己的激活慢。
+            `｜冷启动 ${Date.now() - this.openedAt} ms`
+        );
 
         // ZMODEM 控制器接管数据流：sz/rz 走 zmodem.js，其余透传给终端
         this.zmodem = new ZmodemSessionController(
@@ -622,6 +686,12 @@ export class BastionTerminal implements vscode.Pseudoterminal {
         this.zmodem.on('event', (p: ZmodemEventPayload) => this.onZmodemEvent(p));
 
         stream.on('data', (data: Buffer) => {
+          // 独占通道优先：rsync 桥在跑的时候，pty 上的字节是二进制协议，谁都不能碰
+          // （终端会把它当文本渲染、zmodem 会去解析握手 —— 两边都会毁掉协议流）。
+          if (this.rawBridge) {
+            this.rawBridge.onData(data);
+            return;
+          }
           if (this.zmodem) {
             this.zmodem.consume(data);
           } else {
@@ -629,11 +699,13 @@ export class BastionTerminal implements vscode.Pseudoterminal {
           }
         });
         stream.on('close', () => {
+          const bridge = this.rawBridge;
+          if (bridge) bridge.onClose();
           log(`远端 shell 已断开（${this.profile.name}）`);
           this.finish(0, '[会话已断开]');
         });
         stream.stderr?.on('data', (data: Buffer) => {
-          if (!this.zmodem) {
+          if (!this.rawBridge && !this.zmodem) {
             this.emitOutput(data);
           }
         });

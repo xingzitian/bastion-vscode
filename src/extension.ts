@@ -91,6 +91,7 @@ import {
 import { openConfigFile, openHabitsFile, showLog, pickOverwriteMode, openDangerRules } from './configCmd'
 import { generateMenuRule } from './menuCmd'
 import { toggleBroadcast, toggleBroadcastMode } from './broadcastCmd'
+import { rsyncSyncToSession } from './rsyncTransfer'
 import {
   OverviewProvider,
   setOverviewProvider,
@@ -100,6 +101,7 @@ import {
 } from './overview'
 
 export function activate(context: vscode.ExtensionContext): void {
+  const activatedAt = Date.now()
   setCtx(context)
   setActiveIsBastion(false)
 
@@ -124,6 +126,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // 恢复「最近一次部署报告」：以前它只在内存里，重启 VS Code 之后报告就再也找不回来了
   // （命令只会说「还没有生成过部署报告」），而报告是批量部署唯一的产物。
   void restoreLastReport(ctx)
+
+  // 激活耗时写进日志：用户体感"冷启动变慢"时，这一行能直接看出是激活慢还是网络/MFA 慢
+  log(`扩展激活完成：${Date.now() - activatedAt} ms（同步部分）`)
 
   // 详细日志开关跟着设置走
   setVerboseLogging(vscode.workspace.getConfiguration('bastion').get<boolean>('verboseLog', false))
@@ -189,6 +194,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('bastion.sendLastReportToAI', sendLastReportToAI),
     vscode.commands.registerCommand('bastion.toggleBroadcast', toggleBroadcast),
     vscode.commands.registerCommand('bastion.toggleBroadcastMode', toggleBroadcastMode),
+    // 右键菜单：用 rsync 增量同步（文件或目录）到当前会话。参数来自资源管理器右键
+    vscode.commands.registerCommand('bastion.rsyncSyncToSession', (uri?: vscode.Uri, uris?: vscode.Uri[]) =>
+      rsyncSyncToSession(uri, uris)
+    ),
     vscode.commands.registerCommand('bastion.pickOverwriteMode', pickOverwriteMode),
     vscode.commands.registerCommand('bastion.showForwards', showForwards),
     vscode.commands.registerCommand('bastion.showLog', showLog),

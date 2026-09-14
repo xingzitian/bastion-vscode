@@ -618,7 +618,15 @@ export async function restoreLastReport(context: vscode.ExtensionContext): Promi
       at: info.at ?? 0
     }
     if (info.json && fs.existsSync(info.json)) {
-      lastView = JSON.parse(fs.readFileSync(info.json, 'utf8')) as ReportView
+      // ⚠️ 这份 sidecar 里装着**每条命令、每台机器的输出**，几 MB 很正常。
+      //    这个函数跑在 `activate()` 里 —— 同步读 + JSON.parse 会把"第一个命令"
+      //    （也就是用户感觉到的冷启动）明显拖慢。所以改成异步、后台填。
+      void fs.promises
+        .readFile(info.json, 'utf8')
+        .then((text) => {
+          lastView = JSON.parse(text) as ReportView
+        })
+        .catch((e) => log(`读取部署报告副本失败：${(e as Error).message}`))
     }
     log(`已恢复最近一次部署报告：${info.md}`)
   } catch (e) {

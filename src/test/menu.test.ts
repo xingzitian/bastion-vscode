@@ -34,7 +34,7 @@ const REAL_HOST_MENU = [
   '\t10) 输入 ? 进行显示帮助.',
   '\t11) 输入 q 进行退出.',
   '公告：示例生产堡垒机使用注意事项',
-  '1、堡垒机域名已更新，请使用新地址登录(jumper.example-bastion.com)。',
+  '1、堡垒机域名已更新，请使用新地址登录(bastion.example.com)。',
   'Opt> Opt>'
 ].join('\n')
 

@@ -94,6 +94,7 @@
     "onCommand:bastion.sendLastReportToAI",
     "onCommand:bastion.toggleBroadcast",
     "onCommand:bastion.toggleBroadcastMode",
+    "onCommand:bastion.rsyncSyncToSession",
     "onCommand:bastion.pickOverwriteMode",
     "onCommand:bastion.stopAllForwards",
     "onCommand:bastion.showForwards",
@@ -325,6 +326,16 @@
           ],
           "default": "closeSuccess",
           "description": "批量部署结束后，怎么处理为每台机器开的会话终端"
+        },
+        "bastion.rsyncEnabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**实验性**：显示「用 rsync 增量同步到当前会话」这个右键菜单项（默认**关闭**）。\n\n为什么默认关掉：这条通道复用堡垒机的 shell 会话（pty），在真机上实测**大文件传到 95% 左右会停住**——链路本身很快（实测 4MB/s，22 秒传了 87MB），最后几 MB 堵在管道里、远端也不再回数据。同一个文件用普通上传（rz）一直没问题 —— rz 是「发一块等一个确认」的小窗口，对堡垒机代理层的压力和 rsync 这种持续大流量完全不同。本地测试台（真 SSH + 真 pty + 真 rsync 客户端，两个协议版本）**全部通过**（含 512MB），所以这是特定堡垒机环境下的问题，暂时无法定位到我们这侧。\n\n> 想试的时候打开这个开关即可。另外提醒：**打包格式决定 rsync 有没有用** —— `tar.gz` 改一个字节就整包重排，rsync 找不到相同块、每次全量重传；**直接同步目录**（右键文件夹）才能只传变化的部分。"
+        },
+        "bastion.rsyncPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "本机 `rsync` 可执行文件的路径（留空＝自动找）。\n\nWindows 上默认找 `%LOCALAPPDATA%\\rsync\\rsync.exe`，类 Unix 上找 `/usr/bin/rsync`、`/usr/local/bin/rsync`，再退回 PATH。\n\n> 「用 rsync 增量同步」走的是**当前堡垒机会话的 shell 通道**（所以穿得过堡垒机）：本机跑 rsync 客户端，远端在会话里注入 `rsync --server`。目标机需要装了 rsync。"
         },
         "bastion.broadcastMode": {
           "type": "string",
@@ -767,6 +778,12 @@
         "icon": "$(arrow-swap)"
       },
       {
+        "command": "bastion.rsyncSyncToSession",
+        "title": "BastionShell: 用 rsync 增量同步到当前会话（实验性，默认关闭）",
+        "icon": "$(sync)",
+        "enablement": "config.bastion.rsyncEnabled"
+      },
+      {
         "command": "bastion.pickOverwriteMode",
         "title": "BastionShell: 设置上传覆盖方式（跳过/覆盖/改名）",
         "icon": "$(cloud-upload)"
@@ -1065,6 +1082,11 @@
         {
           "command": "bastion.uploadToSession",
           "when": "!explorerResourceIsFolder && bastion.hasSession && bastion.activeIsBastion",
+          "group": "7_modification"
+        },
+        {
+          "command": "bastion.rsyncSyncToSession",
+          "when": "bastion.hasSession && config.bastion.rsyncEnabled",
           "group": "7_modification"
         },
         {
