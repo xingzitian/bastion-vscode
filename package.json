@@ -2,7 +2,7 @@
   "name": "bastion-vscode",
   "displayName": "BastionShell SSH",
   "description": "SSH 堡垒机终端：一次 MFA + 连接复用，多开会话/批量部署/rz/sz 文件传输/端口转发/快捷命令，并提供 bastion.exec 让 VS Code 里的 AI 插件在服务器上执行命令",
-  "version": "0.3.2",
+  "version": "0.3.5",
   "publisher": "xingzitian",
   "author": "杏子甜",
   "license": "MIT",
@@ -913,7 +913,7 @@
       },
       {
         "command": "bastion.showMcpInfo",
-        "title": "BastionShell: 查看 MCP 端点（给 AI 用的本地服务）",
+        "title": "BastionShell: 让外部 AI 连上（MCP 端点 / 一键复制配置）",
         "icon": "$(plug)"
       },
       {

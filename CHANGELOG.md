@@ -2,6 +2,22 @@
 
 本扩展遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.3.5
+
+### 新增
+
+- **两个客户端共用同一份配置**：连接档案（`profiles.jsonc`）、端口转发规则（`forwardRules.jsonc`）、
+  快捷命令（`quickCommands.jsonc`）现在都以 `~/.bastionshell/` 下那份文件为**唯一真源** ——
+  在桌面版或 VS Code 扩展任一边加机器/加规则/加命令，另一边刷新就能看到，不用配两遍。
+  - 写回时**只改自己认识的字段**，对方写的字段原样保留（桌面版的结构体里没有 `label`/`profileId`、
+    `description`/`sendEnter`/数组型 `command`，拿结构体整体重写就是把这些抹掉）；
+  - **凭据从不进共享文件**：密码各存各的系统凭据库（本扩展 SecretStorage / 桌面版 DPAPI）；
+  - 桌面版把老的 `%AppData%\bastionshell` 下的档案与转发规则**迁进来且不删原文件**。
+- **让"外部 AI 直接连上来"这件事被看见**（这个能力一直有，但藏得太深）：
+  - 首次激活弹一次提示：本扩展也是 MCP 服务端，外部客户端可以直接连上你已登录的会话；
+  - 命令改名为 **`BastionShell: 让外部 AI 连上（MCP 端点 / 一键复制配置）`**（原来叫"查看 MCP 端点"）；
+  - README 顶部新增一节 **🔌 让外部 AI 直接用你的堡垒机会话（MCP）**：不用装 node、不用 npm，
+    有 VS Code 就够了；一键复制端点+token / VS Code 片段 / 其它客户端（Claude Desktop、Trae…）片段。
 ## 0.3.2
 
 > 本版覆盖 0.2.0 之后的**全部**改动（0.3.0 / 0.3.1 是开发过程中的内部构建号，没有对外发布）。

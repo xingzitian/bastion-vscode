@@ -281,6 +281,32 @@ export async function showMcpInfo(): Promise<void> {
  * 注册 provider 必须是激活时同步完成的（VS Code 的约定），所以这里只做注册，
  * 真正启动 HTTP 监听放在 `provideMcpServerDefinitions` / 命令行里做。
  */
+/**
+ * 装完之后**主动告诉用户一次**：这个扩展也是个 MCP 服务端，外部 AI（Claude Desktop / Trae /
+ * CodeBuddy / 任何支持 HTTP MCP 的客户端）可以直接连上你**已经登录好的**堡垒机会话 ——
+ * 不用装 node、不用 npm、不用再跑一个转发器，VS Code 开着就够了。
+ *
+ * 为什么值得主动弹一次（2026-09-15 维护者反馈）：这个能力一直有，但**藏得太深** ——
+ * 我们自己都忘了它在哪，用户更不可能发现。所以：只在**第一次**激活时弹一次，
+ * 按钮直接跳到那条一键复制配置的命令。
+ */
+async function announceExternalMcpOnce(context: vscode.ExtensionContext, h: McpHttpHandle): Promise<void> {
+  const KEY = 'bastion.mcpAnnounced';
+  try {
+    if (context.globalState.get<boolean>(KEY)) return;
+    await context.globalState.update(KEY, true);
+  } catch {
+    return; // 读不到状态就别弹，免得每次激活都打扰
+  }
+  const pick = await vscode.window.showInformationMessage(
+    `BastionShell 也是一个 MCP 服务端：外部 AI 可以直接连上它（${h.url}），操作你已经登录好的会话 —— 不用装 node、不用 npm，VS Code 开着就行。`,
+    '一键复制客户端配置',
+    '看能干什么'
+  );
+  if (pick === '一键复制客户端配置') void showMcpInfo();
+  else if (pick === '看能干什么') void vscode.env.openExternal(vscode.Uri.parse('https://github.com/xingzitian/bastion-vscode#让外部-ai-直接用你的堡垒机会话mcp'));
+}
+
 export function registerMcp(context: vscode.ExtensionContext): void {
   changeEmitter = new vscode.EventEmitter<void>()
   serverVersion = (context.extension?.packageJSON?.version as string) ?? '0.0.0'
@@ -301,10 +327,11 @@ export function registerMcp(context: vscode.ExtensionContext): void {
 
   // 端点随扩展激活就起来：这样外部客户端（CodeBuddy / Trae）不必等你在 VS Code 里发一次提问
   if (mcpEnabled()) {
-    void ensureMcpServer().then(() => {
+    void ensureMcpServer().then((h) => {
       // 起来之后主动让 VS Code 重新取一次定义：扩展重载（比如刚装完新版本）后，
       // 客户端手里那张定义可能是上一轮的 URL —— 不刷新就会表现成「工具调用出错」。
       changeEmitter?.fire()
+      if (h) void announceExternalMcpOnce(context, h)
     })
   }
 
