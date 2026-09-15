@@ -129,6 +129,21 @@ export function getLastUnrecognizedScreen(): string {
   return lastUnrecognizedScreen
 }
 
+// ---- 当前 MCP 端点（哪个窗口、哪个端口）----
+// 为什么要记：AI 报「工具调用出错」时，第一件要分清的事是
+// 「端点根本没连上」还是「连上了但工具里出错」。把端点写在工具返回里，
+// 一次调用就能证明连通性；多窗口时也能看出这次调的是哪个窗口的端点。
+let mcpEndpointInfo: { url: string; port: number; portFallback: boolean; version?: string } | undefined
+
+export function setMcpEndpointInfo(
+  info: { url: string; port: number; portFallback: boolean; version?: string } | undefined
+): void {
+  mcpEndpointInfo = info
+}
+export function getMcpEndpointInfo(): { url: string; port: number; portFallback: boolean; version?: string } | undefined {
+  return mcpEndpointInfo
+}
+
 // ---- 广播输入（一次给多个会话发同一条命令）----
 // Electron 版有这个能力，VS Code 版一直没有。它跟「批量部署」不同：
 // 部署管的是「跑完一批命令拿报告」，广播管的是「边看边敲，所有会话同步」。

@@ -6,7 +6,7 @@
  */
 
 import * as vscode from 'vscode'
-import { BastionTerminal, stripAnsi, type ScreenMark } from './terminal'
+import { BastionTerminal, stripAnsi, shQuote, type ScreenMark } from './terminal'
 import { ConnectionManager, SharedConnection } from './connection'
 import type { ConnectionProfile } from './profiles'
 import { getProfiles, saveProfiles, getPassword, savePassword, deletePassword } from './profiles'
@@ -15,7 +15,8 @@ import { stopForwardsOfConn } from './forward'
 import {
   HOST_STEP, SHELL_STEP, AFTER_HOST_TIMING, AFTER_HOST_ORDER,
   planAfterHost, shouldSelectUser, resolveMenuHints, hintsToRegexes, detectPrompt,
-  type MenuHints, type MenuHintKey, type MenuStep
+  judgeAfterHost, parseAssetTable, decideAsset, describeAssets, assetPickCancelledMessage,
+  type AssetCandidate, type MenuHints, type MenuHintKey, type MenuStep
 } from './menu'
 import { log } from './log'
 import { sleep, nextSessionNo, setLastBastionTerminal, setLastBastionProfile, setLastUnrecognizedScreen } from './state'
@@ -294,17 +295,22 @@ function dumpScreenForHints(term: ScreenReader, hintKey: MenuHintKey, screen = t
  *
  * - 普通账号：输完 IP → 弹「选登录用户」菜单 → 选完才进目标机
  * - 管理员账号：输完 IP → **没有选用户这一步，直接进 shell**
+ * - **一个 IP 匹配到多条资产**：先弹一张资产表，要你输**资产 ID**，选完才轮到选用户
+ *   （两张表长得像、语义完全不同，见 menu.ts 的 assetPrompt 说明）
  *
- * 所以输完 IP 之后同时等三类界面（选用户菜单 / shell 提示符 / 又回到输 IP），
- * 按先到的那个走。老实现是傻等选用户菜单，超时后还会把用户序号
- * 打进已经进去的 shell 里（执行了一条叫 `1` 的命令），既慢又错位。
+ * 所以输完 IP 之后同时等这几类界面，按先到的那个走。老实现是傻等选用户菜单，
+ * 超时后还会把用户序号打进已经进去的 shell 里（执行了一条叫 `1` 的命令），既慢又错位。
+ *
+ * @param assetId 明确指定用哪条资产（AI 传的 / 任务文件里写的）。
+ *                不传时：只有一条候选就自动用；多条就问人（**绝不盲发数字**）。
  */
 export async function openSessionToHost(
   conn: SharedConnection,
   profile: ConnectionProfile,
   host: string,
-  userChoice: string
-): Promise<{ term: BastionTerminal; vt: vscode.Terminal }> {
+  userChoice: string,
+  assetId?: string
+): Promise<{ term: BastionTerminal; vt: vscode.Terminal; asset?: AssetPicked }> {
   const { term, vt } = openTerminal(conn, profile, `${profile.username}@${host}`)
   vt.show()
 
@@ -319,19 +325,46 @@ export async function openSessionToHost(
   // 2) 输目标机。
   //    **先打屏幕标记再写** —— 后面只认标记之后画出来的画面，
   //    否则滚动缓冲里那份旧主菜单会让「又回到输 IP」误命中。
-  const mark = term.markOutput()
+  let mark = term.markOutput()
   await term.write(`${host}\r`)
 
-  // 3) 分支：等「选用户菜单 / shell 提示符 / 又回到输 IP」里先到的那个。
+  // 3) 分支：等「资产列表 / 选用户菜单 / shell 提示符 / 又回到输 IP」里先到的那个。
   //    分几段画的屏由 awaitScreen 负责多等几轮（见它的注释）。
-  const tWait = Date.now()
-  const keys: MenuHintKey[] = selectUser ? AFTER_HOST_ORDER : ['shellPrompt']
-  // 顺序即优先级：同时命中时靠前的赢（选用户菜单优先于 shell 提示符）
-  const judge = (text: string): MenuHintKey | null => keys.find((k) => detectPrompt(text, k, hints)) ?? null
-  const { hit: matchedKey } = await awaitScreen(term, mark, judge, AFTER_HOST_TIMING.timeoutMs)
-  if (matchedKey) {
-    // 打出耗时：有些堡垒机查资产库很慢，这个数字能直接说明「菜单到底多久才出来」
-    log(`菜单导航「输目标机后」命中「${matchedKey}」（${Date.now() - tWait}ms）`)
+  //
+  //    为什么是**循环**：选资产和选用户可能连着来（先选资产 ID，再选账号）。
+  let matchedKey: MenuHintKey | null = null
+  let explicitAssetId = assetId
+  let asset: AssetPicked | undefined
+
+  for (let round = 0; round < 3; round++) {
+    const tWait = Date.now()
+    const judge = (text: string): MenuHintKey | null => judgeAfterHost(text, hints, selectUser)
+    const { hit, screen } = await awaitScreen(term, mark, judge, AFTER_HOST_TIMING.timeoutMs)
+    matchedKey = hit
+    if (hit) {
+      // 打出耗时：有些堡垒机查资产库很慢，这个数字能直接说明「菜单到底多久才出来」
+      log(`菜单导航「输目标机后」命中「${hit}」（${Date.now() - tWait}ms）`)
+    }
+    if (hit !== 'assetPrompt') break
+
+    // 一个 IP 匹配到多条资产：先选出资产 ID 再继续
+    const candidates = parseAssetTable(screen)
+    let pick = decideAsset(candidates, explicitAssetId)
+    if (pick.kind === 'ask') {
+      const chosen = await askAssetId(host, candidates, pick.why)
+      if (!chosen) {
+        throw new Error(assetPickCancelledMessage(host, candidates, pick.why))
+      }
+      pick = { kind: 'use', id: chosen, candidate: candidates.find((c) => c.id === chosen), why: `${pick.why} → 选了 ${chosen}` }
+    }
+    log(`菜单导航「选资产」：${pick.why}`)
+    if (candidates.length > 1) {
+      log(`菜单导航「选资产」候选：\n${describeAssets(candidates, host)}`)
+    }
+    asset = { id: pick.id, candidates, candidate: pick.candidate }
+    explicitAssetId = undefined // 只认第一轮：资产 ID 不能拿去当用户序号
+    mark = term.markOutput()
+    await term.write(`${pick.id}\r`)
   }
 
   const plan = planAfterHost(matchedKey, selectUser)
@@ -362,7 +395,52 @@ export async function openSessionToHost(
   if (plan.waitShell) {
     await menuStep(term, SHELL_STEP, hints, undefined, shellMark)
   }
-  return { term, vt }
+  return { term, vt, asset }
+}
+
+/** 这次连接里选中的资产（回传给 AI / 写进日志，让人知道连的是哪一条） */
+export interface AssetPicked {
+  id: string
+  candidates: AssetCandidate[]
+  candidate?: AssetCandidate
+}
+
+/**
+ * 问用户选哪条资产。
+ *
+ * 为什么是**弹窗问人**而不是"随便挑一条"：一个 IP 匹配到多条时，那几条
+ * 可能是完全不同的机器（比如一台 Linux 本体、一台网关）。随便发一个数字
+ * 就可能把命令执行到**错的机器**上 —— 这是不能赌的事。
+ */
+async function askAssetId(host: string, candidates: AssetCandidate[], why: string): Promise<string | undefined> {
+  log(`菜单导航「选资产」：${why} —— 弹窗让用户选`)
+  if (candidates.length > 0) {
+    const items = candidates.map((a) => {
+      const desc: string[] = []
+      for (const v of [a.address, a.platform, a.org]) {
+        if (v && !desc.includes(v)) desc.push(v)
+      }
+      return {
+        label: `$(server) ${a.id} · ${a.name || a.address}`,
+        description: desc.join(' · '),
+        detail: a.note || undefined,
+        assetId: a.id
+      }
+    })
+    const pick = await vscode.window.showQuickPick(items, {
+      title: `选择要登录的资产（${host} 匹配到 ${candidates.length} 条）`,
+      placeHolder: '选哪一条？拿不准就按 Esc，然后自己在终端里选',
+      ignoreFocusOut: true
+    })
+    return pick?.assetId
+  }
+  const typed = await vscode.window.showInputBox({
+    prompt: `这台堡垒机要求输入资产 ID（${host}）：请对照终端里的资产列表`,
+    placeHolder: '例如 2',
+    ignoreFocusOut: true,
+    validateInput: (v) => (/^\s*\d+\s*$/.test(v) ? undefined : '资产 ID 一般是数字')
+  })
+  return typed?.trim()
 }
 
 /**

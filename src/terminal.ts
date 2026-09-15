@@ -6,7 +6,10 @@ import { stopMfaCountdown } from './connection';
 import { log } from './log';
 import { ZmodemSessionController, ZmodemEventPayload, OverwriteMode } from './zmodem';
 import { NodeFsZmodemIo } from './zmodemIo';
+import { resolveDownloadDir } from './downloadDir';
 import { trackTransfer, beginUpload } from './transfer';
+import { fmtBytes as formatBytes } from './status';
+import { pushPath, type TransferSession } from './transferPath';
 // 单向依赖：menu.ts 不 import terminal.ts，所以这里可以放心用它的提示符识别
 import { resolveMenuHints, detectPrompt } from './menu';
 import { describeConnectError, MAX_AUTH_ATTEMPTS, shouldOfferRetry } from './authError';
@@ -279,8 +282,10 @@ export class BastionTerminal implements vscode.Pseudoterminal {
         const choice = resolveUploadPromptChoice(pick);
         if (choice === 'upload') {
           log(`识别到本地文件路径，改为上传：${local}`);
-          // 上传不该广播：每台机器都要各传一次，悄悄替别人传是危险行为
-          await this.upload([local]);
+          // 上传不该广播：每台机器都要各传一次，悄悄替别人传是危险行为。
+          // 走**标准传输工具**：能力探测 + rz / base64 降级 + 传完回读校验（和右键、AI 那条路同一套）。
+          const out = await pushPath({ localPath: local, session: this.transferSession() });
+          if (!out.ok) vscode.window.showErrorMessage(out.message);
           return;
         }
         // 「当命令执行」和「把询问框关掉」都要**把整行落到远端命令行上**：
@@ -348,8 +353,34 @@ export class BastionTerminal implements vscode.Pseudoterminal {
    * 用户根本分不清是「我的设置没生效」还是「对端拒绝了覆盖」——
    * 把实际模式带出来，这两件事就分开了。
    */
+  /**
+   * 把本终端适配成「标准传输工具」要的会话接口。
+   *
+   * 名字用 `档案:打开时刻`：能力探测按它缓存（同一个会话只探一次，不用每次传都问一遍目标机）。
+   */
+  transferSession(): TransferSession {
+    const name = `${this.profile.name}:${this.openedAt}`;
+    return {
+      name,
+      exec: (cmd) => this.exec(cmd, {}),
+      exitCode: () => this.lastExitCode,
+      rzUpload: async (paths) => {
+        const r = await this.upload(paths);
+        return { skipped: r.skipped, mode: r.mode, error: this.uploadError };
+      },
+      szDownload: (remotePath, localDir) => this.download(remotePath, localDir),
+      overwriteMode: () => {
+        const raw = vscode.workspace.getConfiguration('bastion').get<string>('uploadOverwrite', 'skip');
+        return raw === 'overwrite' || raw === 'rename' ? raw : 'skip';
+      },
+      log: (m) => log(m)
+    };
+  }
+
   async upload(paths: string[]): Promise<{ skipped: string[]; mode: OverwriteMode }> {
+    this.lastUploadError = undefined;
     if (!this.zmodem) {
+      this.lastUploadError = '会话未就绪（ZMODEM 传输层还没初始化）';
       vscode.window.showWarningMessage('会话未就绪');
       return { skipped: [], mode: 'skip' };
     }
@@ -363,6 +394,7 @@ export class BastionTerminal implements vscode.Pseudoterminal {
       await this.zmodem.sendFiles(paths, { overwrite: mode });
     } catch (e) {
       const msg = `上传失败: ${(e as Error).message}`;
+      this.lastUploadError = (e as Error).message;
       log(msg);
       vscode.window.showErrorMessage(msg);
     }
@@ -380,6 +412,75 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   private execMarkerSeen = true;
   get lastExecMarkerSeen(): boolean {
     return this.execMarkerSeen;
+  }
+
+  /** 最近一次 exec 的**退出码**（拿不到哨兵时为 undefined：交互式命令没有可靠结束标记） */
+  private lastExecExitCode: number | undefined;
+  get lastExitCode(): number | undefined {
+    return this.lastExecExitCode;
+  }
+
+  /** 最近一次上传的失败原因（upload() 平时把错误弹给人看、返回值里看不出来，AI 路径需要它） */
+  private lastUploadError: string | undefined;
+  get uploadError(): string | undefined {
+    return this.lastUploadError;
+  }
+
+  /** 下一次 sz 下载要落到哪个目录（`bastion_pull` 用；设了就跳过「选择保存目录」弹窗） */
+  private pendingDownloadDir: string | null = null;
+  /** 正在等一次下载结束（结束/失败/zmodem 事件里 resolve） */
+  private transferWaiter: ((r: { ok: boolean; localPath?: string; message?: string }) => void) | null = null;
+
+  /** 设下一次下载的落盘目录（pull 专用） */
+  setNextDownloadDir(dir: string): void {
+    this.pendingDownloadDir = dir;
+  }
+
+  /**
+   * 程序化下载一个远端文件（`sz <path>`）。
+   *
+   * 和人在终端里敲 `sz` 的区别只有一个：**不问保存目录**（用调用方给的 localDir）。
+   * 其余（ZMODEM 协商、逐文件落盘、进度/历史）走的都是同一套实现。
+   */
+  async download(
+    remotePath: string,
+    localDir: string,
+    timeoutMs = 5 * 60 * 1000
+  ): Promise<{ ok: boolean; localPath?: string; message?: string }> {
+    if (this.closed || !this.stream) return { ok: false, message: '会话已关闭' };
+    if (!remotePath.trim()) return { ok: false, message: '错误：需要 remotePath（远端文件路径）' };
+    await this.shellReady;
+    try {
+      fs.mkdirSync(localDir, { recursive: true });
+    } catch (e) {
+      return { ok: false, message: `创建本地目录失败：${(e as Error).message}` };
+    }
+
+    this.pendingDownloadDir = localDir;
+    const result = await new Promise<{ ok: boolean; localPath?: string; message?: string }>((resolve) => {
+      let settled = false;
+      const done = (r: { ok: boolean; localPath?: string; message?: string }): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.transferWaiter = null;
+        this.pendingDownloadDir = null;
+        resolve(r);
+      };
+      const timer = setTimeout(
+        () => done({ ok: false, message: `等待下载超时（${Math.round(timeoutMs / 1000)}s）：远端可能没装 lrzsz，或 sz 命令报错了` }),
+        timeoutMs
+      );
+      this.transferWaiter = done;
+      void this.write(`sz ${shQuote(remotePath)}\r`);
+    });
+
+    if (!result.ok) {
+      // 失败时把屏幕最后几行带上：`sz: command not found` 这种一眼就能看出来
+      const tail = this.getTail(8).trim();
+      if (tail) return { ...result, message: `${result.message ?? '下载失败'}\n—— 屏幕最后几行 ——\n${tail}` };
+    }
+    return result;
   }
 
   /**
@@ -505,9 +606,13 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     this.vt?.show(); // 聚焦终端，让人看到 AI 在做什么
 
     // 哨兵标记：命令结束后单独打印一行，见到即判定完成，能扛住「中间长时间静默」的命令（如 sleep 10 && echo）
+    // 尾巴上**带上退出码**：没有它，AI 只能靠读输出猜命令成没成（`systemctl restart`
+    // 失败、脚本里 `false` 这类，光看输出是看不出来的）。
     const marker = `__BASTION_DONE_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}__`;
     const safe = isMarkerSafe(command, opts.allowPlainSudo === true);
-    const cmd = safe ? `${command.replace(/\r?\n+$/, '')}; echo ${marker}` : command;
+    const cmd = safe ? `${command.replace(/\r?\n+$/, '')}; ec=$?; echo ${marker}:$ec` : command;
+    this.execMarkerSeen = true;
+    this.lastExecExitCode = undefined;
 
     return new Promise<string>((resolve) => {
       const stream = this.stream!;
@@ -516,6 +621,7 @@ export class BastionTerminal implements vscode.Pseudoterminal {
       let maxTimer: NodeJS.Timeout | null = null;
       let settled = false;
       let markerSeen = false;
+      let exitCode: number | undefined;
 
       const cleanup = (): void => {
         if (quietTimer) clearTimeout(quietTimer);
@@ -538,11 +644,15 @@ export class BastionTerminal implements vscode.Pseudoterminal {
         if (buf.length < MAX_CAPTURE) {
           buf += d.toString('utf8');
         }
-        // 哨兵命中（真实输出行 == marker，而不是命令回显里的 marker）→ 立刻完成
-        if (safe && hasMarkerLine(buf, marker)) {
-          markerSeen = true;
-          finish();
-          return;
+        // 哨兵命中（真实输出行 == marker[:rc]，而不是命令回显里的 marker）→ 立刻完成
+        if (safe) {
+          const found = readMarkerLine(buf, marker);
+          if (found.seen) {
+            markerSeen = true;
+            exitCode = found.rc;
+            finish();
+            return;
+          }
         }
         // 有新输出 → 重置「静止」计时
         if (quietTimer) clearTimeout(quietTimer);
@@ -560,6 +670,14 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   }
 
   private onZmodemEvent(p: ZmodemEventPayload): void {
+    // 程序化下载（bastion_pull）在等这一次传输的结果：先把它叫醒，再做常规追踪
+    if (this.transferWaiter && p.direction === 'receive') {
+      if (p.type === 'end') {
+        this.transferWaiter({ ok: true, localPath: p.localPath ?? p.name });
+      } else if (p.type === 'error') {
+        this.transferWaiter({ ok: false, message: p.message ?? '接收失败' });
+      }
+    }
     // 进度 / 结果全部交给传输追踪器：状态栏实时进度 + 写入传输历史
     trackTransfer(p);
     if (p.type === 'skip') {
@@ -570,8 +688,16 @@ export class BastionTerminal implements vscode.Pseudoterminal {
       log(msg);
       vscode.window.showErrorMessage(msg);
     } else if (p.type === 'end') {
-      // 完成不再弹窗打断（状态栏会闪一条回执），只留日志
-      log(`${p.direction === 'receive' ? '下载' : '上传'}完成：${p.name ?? ''}${p.message ? `（${p.message}）` : ''}`);
+      // 完成不再弹窗打断（状态栏会闪一条回执），只留日志。
+      // ⚠️ 日志里**必须带字节数和落盘路径**：用户/AI 判断"到底传成功没有"时只有这条线索，
+      //    一句「上传完成：a.txt」等于没给证据（2026-09-14 就是靠这个来回折腾的）。
+      const size = p.bytesSent ?? p.bytesTotal;
+      const sizeText = size === undefined ? '' : `（${formatBytes(size)}）`;
+      log(
+        p.direction === 'receive'
+          ? `下载完成：${p.name ?? ''}${sizeText}${p.localPath ? ` → ${p.localPath}` : ''}`
+          : `上传完成：${p.name ?? ''}${sizeText}${p.message ? `（${p.message}）` : ''}`
+      );
     } else if (p.type === 'info') {
       log(p.message ?? 'ZMODEM 提示');
     }
@@ -681,7 +807,17 @@ export class BastionTerminal implements vscode.Pseudoterminal {
           `vscode-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           (d) => stream.write(d),
           (d) => this.emitOutput(d),
-          new NodeFsZmodemIo()
+          new NodeFsZmodemIo(
+            () => {
+              const d = this.pendingDownloadDir;
+              this.pendingDownloadDir = null;
+              return d;
+            },
+            // 人工下载（用户自己敲 sz）落到哪：`bastion.downloadDir` > 工作区 .bastion-downloads。
+            // ⚠️ 这里**同步返回、绝不弹窗** —— 弹窗会把握手拖死（见 ZmodemIo.resolveDownloadDir）。
+            // 「选目录」走 bastion.setDownloadDir 命令 / bastion.downloadDir 设置。
+            () => resolveDownloadDir()
+          )
         );
         this.zmodem.on('event', (p: ZmodemEventPayload) => this.onZmodemEvent(p));
 
@@ -825,7 +961,31 @@ export function safeReadStart(buf: string, len: number): number {
 
 /** 检测哨兵是否作为「独立输出行」出现（区别于命令回显里 `; echo __MARKER__` 的 token） */
 function hasMarkerLine(s: string, marker: string): boolean {
-  return s.split(/\r?\n/).some((line) => line.trim() === marker);
+  return readMarkerLine(s, marker).seen;
+}
+
+/**
+ * 找哨兵行，并把它带的**退出码**读出来。
+ *
+ * 行格式：`<marker>:<rc>`（老版本是裸 `<marker>`，这里也兼容 —— 兼容是为了
+ * 「远端 shell 里已经有一行旧标记」这种边角情况不会把解析搞崩）。
+ */
+function readMarkerLine(s: string, marker: string): { seen: boolean; rc?: number } {
+  if (!marker) return { seen: false };
+  for (const line of s.split(/\r?\n/)) {
+    const t = line.trim();
+    if (t === marker) return { seen: true };
+    if (t.startsWith(marker + ':')) {
+      const rc = Number.parseInt(t.slice(marker.length + 1), 10);
+      return { seen: true, rc: Number.isFinite(rc) ? rc : undefined };
+    }
+  }
+  return { seen: false };
+}
+
+/** shell 单引号引用（远端路径里可能有空格/引号） */
+export function shQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 /** 从返回给 AI 的输出里剔除哨兵相关行（命令回显行 + 哨兵输出行） */

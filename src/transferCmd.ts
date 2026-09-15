@@ -4,6 +4,8 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import { TransferItem, getTransferHistory, clearTransferHistory } from './transfer'
+import { pushPath } from './transferPath'
+import { transferSessionOf } from './aiBridge'
 import { log } from './log'
 import { terminals, activeIsBastion, lastBastionTerminal, activeSession, transferProvider } from './state'
 
@@ -36,7 +38,11 @@ export async function retryTransfer(item?: TransferItem): Promise<void> {
   }
   s.vt.show()
   transferProvider.refresh()
-  await s.term.upload(paths)
+  // 走**标准传输工具**：能力探测 + rz / base64 降级 + 传完回读校验（和 AI 那条路同一套）
+  for (const p of paths) {
+    const out = await pushPath({ localPath: p, session: transferSessionOf(s.term, s.vt.name) })
+    if (!out.ok) vscode.window.showErrorMessage(out.message)
+  }
 }
 
 /** 命令：在系统文件管理器里定位这个传输的本地文件 */
@@ -85,12 +91,16 @@ export async function uploadToSession(uri?: vscode.Uri): Promise<void> {
     const uris = await vscode.window.showOpenDialog({
       canSelectFiles: true,
       canSelectMany: true,
-      openLabel: '选择要上传的文件'
+      canSelectFolders: true, // 目录也能传（标准工具会本地打包再传，远端自动解开）
+      openLabel: '选择要上传的文件或目录'
     })
     paths = (uris ?? []).map((u) => u.fsPath)
   }
   if (paths.length === 0) return
-  await term.upload(paths)
+  for (const p of paths) {
+    const out = await pushPath({ localPath: p, session: transferSessionOf(term, vt?.name ?? term.profile.name) })
+    if (!out.ok) vscode.window.showErrorMessage(out.message)
+  }
 }
 
 // ---- AI 桥接：bastion.exec 远程执行 ----

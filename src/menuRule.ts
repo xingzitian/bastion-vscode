@@ -57,14 +57,18 @@ export function suggestHintKey(line: string): MenuHintKey {
   if (/^\[[^\]]{1,64}\]\s*[$#]$/.test(s)) return 'shellPrompt'
   if (/^[A-Za-z0-9._-]{1,40}[$#]$/.test(s)) return 'shellPrompt'
 
-  // 2) 选用户/账号菜单：提到用户、账号、user、account，或者裸 ID> 提示符
+  // 2) 资产列表：要你输资产 ID 的那一屏（必须排在「用户/账号」前面 —— 两张表都能有「登录」字样）
+  if (/(资产|asset)\s*ID/i.test(s)) return 'assetPrompt'
+  if (/总数量\s*[:：]\s*\d+/.test(s)) return 'assetPrompt'
+
+  // 3) 选用户/账号菜单：提到用户、账号、user、account，或者裸 ID> 提示符
   if (/(用户|账号|账户|登录用户|user|account|username)/i.test(s)) return 'userPrompt'
   if (/^\s*id>\s*$/i.test(s)) return 'userPrompt'
 
-  // 3) 裸提示符（只有个 xxx>，没有别的内容）：弱特征单独一类
+  // 4) 裸提示符（只有个 xxx>，没有别的内容）：弱特征单独一类
   if (s.length <= 20 && /^[\[\]\w.-]{0,16}>\s*$/.test(s)) return 'hostPromptLoose'
 
-  // 4) 其余（菜单正文、公告等）
+  // 5) 其余（菜单正文、公告等）
   return 'hostPrompt'
 }
 
@@ -82,6 +86,7 @@ export const HINT_KEY_LABEL: Record<MenuHintKey, string> = {
   hostPrompt: '主菜单（输目标机）· 强特征',
   hostPromptLoose: '主菜单 · 弱特征（只有提示符）',
   userPrompt: '二级菜单（选用户）',
+  assetPrompt: '资产列表（一个 IP 匹配到多条，要选资产 ID）',
   shellPrompt: '已落到目标机（shell 提示符）'
 }
 

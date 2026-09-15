@@ -62,6 +62,11 @@
       "markdownDescription": "堡垒机二级菜单**选用户的序号**，默认 `1`。**直连档案下会被忽略**（没有这一步）。\n\n留空字符串 `\"\"` 表示这台机器不需要选用户 —— 有些管理员账号输完 IP 就直接进 shell。\n\n（程序也能自动识别这一步有没有出现，但显式留空更确定、也更省时间。）",
       "examples": ["1", ""]
     },
+    "assetId": {
+      "type": "string",
+      "markdownDescription": "**资产 ID**（可选）。**只在「一个 IP 在堡垒机里匹配到多条资产」时才需要**：\n\n同一个 IP 可能既有 Linux 本体、又有一台 Gateway（网关），这时堡垒机会列一张资产表让你输资产 ID —— 这里填**表里 ID 列的那个数字**。\n\n不写的话：只有一条候选会自动选，多条会**弹窗问你**（不会盲选一条 —— 那等于把命令执行到可能是另一台机器上）。",
+      "examples": ["1", "2"]
+    },
     "keepTerminal": {
       "type": "boolean",
       "markdownDescription": "可选。**本任务跑完后要不要保留会话终端**：\n\n- `true` = 保留（方便盯着现场，报告里也仍有每条命令的输出）\n- `false` = 成功后回收\n- **不写 = 跟随全局设置** `bastion.deployTerminalPolicy`\n\n为什么要有任务级开关：「这个任务想盯、那个不用」很常见，每跑一次就去改全局设置太别扭。",
@@ -80,7 +85,8 @@
         "uploads": [],
         "preCommand": ["${4:sudo -i}", "${5:cd /etc}"],
         "script": ["${6:systemctl restart xxx}"],
-        "userChoice": "1"
+        "userChoice": "1",
+        "assetId": ""
       }
     }
   ]

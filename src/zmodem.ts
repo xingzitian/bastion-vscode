@@ -26,6 +26,17 @@ export interface ZmodemFileInfo {
   name: string;
   size: number;
   mtime: number;
+  /**
+   * 文件权限位（**必须带上**，否则远端建出来的文件是 0000，谁都读不了）。
+   *
+   * ZMODEM 的 ZFILE 头里本来就有 mode 字段，zmodem.js 是这么发的：
+   *   `e.mode ? (32768 | e.mode).toString(8) : '0'`
+   * 而远端 lrzsz 的 `rz` **会按这个值 chmod**。我们以前没给 → 发出去的是 `'0'`
+   * → 传上去的文件全是 `----------`：`[ -r ]` 为 no，连 md5sum 都读不了
+   * （所以上传校验一直只能给"弱证据"），更要命的是**部署上去的配置文件服务也读不了**。
+   * 2026-09-14 由真机回读的 `readable=no` 定位到。
+   */
+  mode?: number;
 }
 
 export type OverwriteMode = 'skip' | 'overwrite' | 'rename';
@@ -38,7 +49,21 @@ export interface ZmodemSendOptions {
 /** 文件 I/O 抽象：扩展用真实 fs */
 export interface ZmodemIo {
   statFiles(paths: string[]): Promise<ZmodemFileInfo[]>;
-  pickDownloadDir(): Promise<string | null>;
+  /**
+   * 解析「这次下载存到哪儿」——**必须是同步、且绝对不能弹任何需要人点的东西**。
+   *
+   * 为什么这么定（2026-09-15 真机故障）：ZMODEM 的握手是有时限的 ——
+   * 对端 `sz` 发出 ZRQINIT 后会**重发**，我们在收到 ZRQINIT 之后必须**立刻**回 ZRINIT。
+   * 原来这里返回的是一个会弹「选择保存目录」对话框的 Promise，于是：
+   *   ① 弹窗期间 ZRINIT 发不出去 → 对端重发 ZRQINIT；
+   *   ② 那帧重发的 ZRQINIT 已经排在管道里，等对话框点完、会话 start() 之后才被解析，
+   *      而那时的处理器表是 `{ZFILE, ZSINIT, ZFIN}` —— 于是抛
+   *      `ZMODEM 处理失败: Unhandled header: ZRQINIT`，下载彻底失败。
+   * 结论：**目录来源必须是"已经定好的"**（程序化下载的预设 / `bastion.downloadDir` 设置 /
+   * 上次用过的目录 / 默认目录）。「选目录」这件事要放到传输之外（设置项 + 命令），
+   * 不能塞进协议握手中间。
+   */
+  resolveDownloadDir(): string;
   openWrite(dir: string, name: string): { fd: number; path: string };
   write(fd: number, data: Uint8Array): void;
   close(fd: number): void;
@@ -59,6 +84,38 @@ const ZM_SIG = [0x2a, 0x2a, 0x18, 0x42];
 
 export function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * 构造 ZMODEM 的 ZFILE 参数（`send_offer` 用）。
+ *
+ * ⚠️ **`mode` 必须给，而且绝不能是 0** —— 这里踩过一次真坑（2026-09-14）：
+ * 这个对象原来是手写的 `{ name, size, mtime, mode: 0 }`，那个 `mode: 0` 把
+ * "按本地权限上传"的改动整个盖掉了 —— 远端 rz 照着 0 chmod，传上去的文件全是
+ * `----------`（谁都读不了、连 md5sum 都读不了，部署的配置文件服务也读不了）。
+ *
+ * 规则（也回应了"Windows 上就这样"这个直觉）：
+ *   · 有真实权限位（类 Unix）→ 用它，脚本的 `+x` 能保住；
+ *   · 没给 / 是 0 / 只有文件类型位 → **兜底 0o644**（Windows 上 stat 的 mode 是合成的，
+ *     照搬会变成 world-writable，所以也走这个兜底）。
+ */
+export function buildOfferParams(
+  f: ZmodemFileInfo,
+  counters: { files_remaining: number; bytes_remaining: number }
+): Record<string, unknown> {
+  const perm = f.mode ? f.mode & 0o7777 : 0;
+  const offer: Record<string, unknown> = {
+    name: f.name,
+    size: f.size,
+    mtime: f.mtime,
+    // `& 0o7777` 去掉文件类型位；zmodem.js 会自己 OR 上 32768（S_IFREG）
+    mode: perm > 0 ? perm : 0o644
+  };
+  if (counters.files_remaining > 0) {
+    offer.files_remaining = counters.files_remaining;
+    offer.bytes_remaining = counters.bytes_remaining;
+  }
+  return offer;
 }
 
 export function parseHashOutput(out: string, algo: 'sha256' | 'md5'): Map<string, string> {
@@ -133,6 +190,10 @@ export class ZmodemSessionController extends EventEmitter {
   private roleWaiters: Array<() => void> = [];
   private destroyed = false;
   private filterZack = false;
+  /** 接收（sz）会话里是否已经有文件开始收了 —— 决定迟到的 ZRQINIT 要不要补发 ZRINIT */
+  private receiveStarted = false;
+  /** 这次接收会话里我们回过几次 ZRINIT（排障用：日志能一眼看出握手到底答上没有） */
+  private zrinitCount = 0;
   private capture: { buf: string } | null = null;
   /** 终端输出过滤的暂存缓冲（跨 chunk 的十六进制帧剥离） */
   private terminalCarry: number[] = [];
@@ -162,12 +223,18 @@ export class ZmodemSessionController extends EventEmitter {
         const role: 'receive' | 'send' = detection.get_session_role();
         if (role === 'receive') {
           const session = detection.confirm();
+          // ⚠️ 这个字段必须在这里赋值：下面 consume() 里靠它判断"该不该把迟到的
+          // ZRQINIT 当成正常现象吞掉"。第一版漏了它 → 判断永远为假 →
+          // 用户机器上那句 Unhandled header: ZRQINIT 照样冒出来（2026-09-15 真机）。
+          this.detectionRole = 'receive';
+          this.receiveStarted = false;
           this.zsession = session;
           session.on('session_end', () => {
             this.zsession = null;
+            this.receiveStarted = false;
           });
-          this.emitEvent('info', { message: '检测到远端 sz 文件传输，请选择保存目录' });
-          void this.runReceiveSession(session);
+          this.emitEvent('info', { message: '检测到远端 sz 文件传输' });
+          this.runReceiveSession(session);
         } else {
           this.detectionRole = 'send';
           try {
@@ -203,8 +270,51 @@ export class ZmodemSessionController extends EventEmitter {
     try {
       this.sentry.consume(payload);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // 对端**重发**的 ZRQINIT 是正常现象，不是我们的错：
+      //   lrzsz 的 sz 发完 ZRQINIT 会等应答、超时就重发。只要我们已经 start()
+      //   （ZRINIT 已发出），这帧迟到的重发就会落在一个"准备收 ZFILE"的会话上，
+      //   zmodem.js 会抛 "Unhandled header: ZRQINIT"。
+      // 处理方式（2026-09-15 真机两轮迭代后的结论）：
+      //   - **还没开始收任何文件**（说明对端根本没收到过我们的 ZRINIT，多半是第一帧丢了
+      //     或者被堡垒机链路吞了）→ **补发一次 ZRINIT**。这是协议规定的正确应答
+      //     （ZRQINIT 的语义就是"你在吗？把你的 ZRINIT 发我"），也是让下载真的能跑起来的关键。
+      //   - 已经在收文件了 → 只把这帧当噪音吞掉，别重复发 ZRINIT（那会让对端从头重传）。
+      // 抛错发生在 zmodem.js 清空处理器表**之前**，所以会话本身仍然有效，可以继续用。
+      if (msg.includes('ZRQINIT') && this.detectionRole === 'receive' && this.zsession) {
+        if (!this.receiveStarted) {
+          this.sendZrinit();
+        } else {
+          logVerbose('[zmodem] 忽略一帧迟到的 ZRQINIT（文件已在接收中）');
+        }
+        return;
+      }
+      if (msg.includes('Peer aborted session')) {
+        // 对端放弃了这次传输（常见于它等太久）。这是**结果**不是原因，
+        // 用 info 说一句就够，别报成红色错误吓人。
+        this.emitEvent('info', { message: '对端放弃了这次文件传输（可能是等应答超时）' });
+        return;
+      }
+      this.emitEvent('error', { message: `ZMODEM 处理失败: ${msg}` });
+    }
+  }
+
+  /**
+   * 补发一帧 ZRINIT（协议规定：收到 ZRQINIT 就该回 ZRINIT）。
+   *
+   * 为什么不复用会话自己的 `_send_ZRINIT()`：那是 zmodem.js 的私有方法，版本一变就没了。
+   * 这里用它的公开 API `Header.build` 自己拼一帧**一模一样**的 ZRINIT
+   * （标志位和 zmodem.js 的 Receive 会话一致：CANFDX / CANOVIO / CANFC32）。
+   */
+  private sendZrinit(): void {
+    try {
+      const octets = Zmodem.Header.build('ZRINIT', ['CANFDX', 'CANOVIO', 'CANFC32']).to_hex();
+      this.writeToSession(Buffer.from(octets));
+      this.zrinitCount += 1;
+      logVerbose(`[zmodem] 已回应 ZRQINIT（第 ${this.zrinitCount} 次发 ZRINIT）`);
+    } catch (err) {
       this.emitEvent('error', {
-        message: `ZMODEM 处理失败: ${err instanceof Error ? err.message : String(err)}`,
+        message: `补发 ZRINIT 失败: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
   }
@@ -228,6 +338,8 @@ export class ZmodemSessionController extends EventEmitter {
     this.abortAll();
     this.detectionRole = null;
     this.filterZack = false;
+    this.receiveStarted = false;
+    this.zrinitCount = 0;
   }
 
   destroy(): void {
@@ -429,11 +541,7 @@ export class ZmodemSessionController extends EventEmitter {
     overwrite: OverwriteMode
   ): Promise<void> {
     const transferId = `z${++transferSeq}`;
-    const offer: any = { name: f.name, size: f.size, mtime: f.mtime, mode: 0 };
-    if (counters.files_remaining > 0) {
-      offer.files_remaining = counters.files_remaining;
-      offer.bytes_remaining = counters.bytes_remaining;
-    }
+    const offer = buildOfferParams(f, counters);
     const xfer: any = await zsession.send_offer(offer);
     if (!xfer) {
       // 远端拒绝了这次传输。原因分两种情况，**必须说清是哪一种** ——
@@ -506,30 +614,34 @@ export class ZmodemSessionController extends EventEmitter {
   }
 
   /** sz 下载：接收对端会话，逐文件落盘 */
-  private async runReceiveSession(zsession: any): Promise<void> {
-    let dir: string | null = null;
-    try {
-      dir = await this.io.pickDownloadDir();
-      if (!dir) {
-        try {
-          zsession.abort();
-        } catch {
-          /* ignore */
-        }
-        this.emitEvent('info', { message: '用户取消接收' });
-        return;
-      }
-    } catch (err) {
-      this.emitEvent('error', { message: `选择保存目录失败: ${err instanceof Error ? err.message : String(err)}` });
-      return;
-    }
-
+  private runReceiveSession(zsession: any): void {
     const open: Array<{ transferId: string; fd: number; name: string; path: string; received: number; total: number }> = [];
 
+    // ⚠️ 顺序是**契约**，别调换：
+    //   1. 先挂 offer / session_end；
+    //   2. 立刻 start()（= 发 ZRINIT）。
+    // 反过来的话，ZRINIT 一发出去对端的 ZFILE 随时会到，而那时还没有 offer 处理器。
+    // 更关键的是：**start() 之前不能有任何 await**（原来这里先 await 一个弹窗，
+    // 直接把握手拖死，见 ZmodemIo.resolveDownloadDir 的注释）。
     zsession.on('offer', (xfer: any) => {
       const transferId = `z${++transferSeq}`;
       const details = xfer.get_details() ?? {};
       const name = sanitizeName(details.name ?? `file-${Date.now()}`);
+      const dir = this.io.resolveDownloadDir();
+      if (!dir) {
+        this.emitEvent('error', {
+          transferId,
+          direction: 'receive',
+          name,
+          message: '没有可用的下载目录（下载目录为空）—— 请设置 bastion.downloadDir',
+        });
+        try {
+          xfer.skip();
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
       let fd = -1;
       let path = '';
       try {
@@ -552,6 +664,7 @@ export class ZmodemSessionController extends EventEmitter {
       }
       const rec = { transferId, fd, name, path, received: 0, total: details.size ?? 0, _lastEmitAt: 0 };
       open.push(rec);
+      this.receiveStarted = true;
       this.emitEvent('start', { transferId, direction: 'receive', name, bytesTotal: rec.total, localPath: path });
 
       xfer.on('complete', () => {
@@ -608,11 +721,16 @@ export class ZmodemSessionController extends EventEmitter {
         }
       }
       open.length = 0;
-      this.emitEvent('info', { message: 'ZMODEM 接收会话结束' });
+      this.receiveStarted = false;
+      this.emitEvent('info', { message: `ZMODEM 接收会话结束（本次回过 ${this.zrinitCount} 次 ZRINIT）` });
+      this.zrinitCount = 0;
     });
 
     try {
       zsession.start();
+      // start() 会自己发第一帧 ZRINIT —— 记上。这样日志里的「回过 N 次 ZRINIT」
+      // 才是真实次数：排障时靠它区分「我们答应了但链路没送到」和「我们压根没答应」。
+      this.zrinitCount = 1;
     } catch (err) {
       this.emitEvent('error', { message: `启动接收会话失败: ${err instanceof Error ? err.message : String(err)}` });
     }

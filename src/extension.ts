@@ -25,10 +25,8 @@ import {
 } from './transfer'
 import { getProfiles, PROFILES_FILE, PROFILES_HEADER } from './profiles'
 import { listDeployTasks, migrateLegacyDeployTasks, migrateTaskFiles, exportDeployTasks } from './deploy'
-import { HABITS_FILE, habitsForAI, appendHabit, setPrivilege, isPrivilegeMode } from './habits'
+import { HABITS_FILE } from './habits'
 import { configDir } from './config'
-import { findDangerous, describeDanger } from './danger'
-import { getDangerRules } from './dangerConfig'
 import { disposeSlots } from './status'
 import { log, setVerboseLogging } from './log'
 import {
@@ -69,7 +67,10 @@ import {
   sendLastReportToAI,
   restoreLastReport
 } from './deployRun'
-import { execRemote, connectToTarget, listSessions, listProfilesForAI } from './aiBridge'
+import { execRemote } from './aiBridge'
+// 会话能力的唯一实现：语言模型工具和 MCP 工具都走它（这样两条路的行为不会分叉）
+import { sessionApi } from './aiSessionApi'
+import { registerMcp, showMcpInfo, stopMcp } from './mcpRegister'
 import { sendSelectionToAI, sendTailToAI } from './aiChat'
 import { addQuickCommand, sendQuickCommand, deleteQuickCommand, openQuickCommandsFile } from './quickCmd'
 import {
@@ -88,6 +89,7 @@ import {
   revealTransferItem,
   copyTransferPath
 } from './transferCmd'
+import { setDownloadDir, clearDownloadDir } from './downloadDir'
 import { openConfigFile, openHabitsFile, showLog, pickOverwriteMode, openDangerRules } from './configCmd'
 import { generateMenuRule } from './menuCmd'
 import { toggleBroadcast, toggleBroadcastMode } from './broadcastCmd'
@@ -199,10 +201,15 @@ export function activate(context: vscode.ExtensionContext): void {
       rsyncSyncToSession(uri, uris)
     ),
     vscode.commands.registerCommand('bastion.pickOverwriteMode', pickOverwriteMode),
+    // 查看/复制 MCP 端点信息（URL、token、给其它 AI 客户端的配置片段）
+    vscode.commands.registerCommand('bastion.showMcpInfo', () => showMcpInfo()),
     vscode.commands.registerCommand('bastion.showForwards', showForwards),
     vscode.commands.registerCommand('bastion.showLog', showLog),
     vscode.commands.registerCommand('bastion.stopAllForwards', stopAllForwardsCommand),
     vscode.commands.registerCommand('bastion.showTransferHistory', showTransferHistory),
+    // 下载目录：把"选目录"放到传输之外做（握手中途弹窗会把握手拖死，见 downloadDir.ts）
+    vscode.commands.registerCommand('bastion.setDownloadDir', setDownloadDir),
+    vscode.commands.registerCommand('bastion.resetDownloadDir', clearDownloadDir),
     vscode.commands.registerCommand('bastion.retryTransfer', retryTransfer),
     vscode.commands.registerCommand('bastion.clearTransferHistory', clearTransferHistoryCommand),
     vscode.commands.registerCommand('bastion.revealTransferItem', revealTransferItem),
@@ -289,17 +296,8 @@ export function activate(context: vscode.ExtensionContext): void {
       },
       invoke: async (options) => {
         const input = options.input as { command?: string; terminal?: string }
-        const hits = findDangerous(input.command ?? '', getDangerRules())
-        if (hits.length > 0) {
-          // 不因 Always Allow 放行：直接拒绝，让人自己去终端确认后再敲
-          log(`bastion_exec 拦截高危命令：${describeDanger(hits)}`)
-          const msg =
-            '⚠️ 该命令包含高危操作，已被 BastionShell 拦截，不会执行。\n命中原因：\n' +
-            describeDanger(hits) +
-            '\n\n请让用户自己判断。如果确实要执行，请让用户在堡垒机终端里手动敲，或在部署任务/快捷命令里走人工确认流程。'
-          return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(msg)])
-        }
-        const output = await execRemote(input)
+        // 高危命令的拦截在 sessionApi 里做（和 MCP 工具同一条路径）
+        const output = await sessionApi.exec(input)
         return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(output)])
       }
     }),
@@ -317,19 +315,67 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       },
       invoke: async (options) => {
-        const input = options.input as { profile?: string; host?: string; userChoice?: string }
-        const output = await connectToTarget(input)
+        const input = options.input as { profile?: string; host?: string; userChoice?: string; assetId?: string }
+        const output = await sessionApi.connect(input)
         return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(output)])
       }
     }),
     vscode.lm.registerTool('bastion_listSessions', {
       invoke: async () => {
-        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(listSessions())])
+        const output = await sessionApi.listSessions()
+        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(output)])
+      }
+    }),
+    vscode.lm.registerTool('bastion_tail', {
+      // 只读：不弹确认（和 MCP 侧的 readOnlyHint 一致）
+      invoke: async (options) => {
+        const input = options.input as { terminal?: string; lines?: number }
+        const output = await sessionApi.tail(input)
+        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(output)])
+      }
+    }),
+    vscode.lm.registerTool('bastion_push', {
+      prepareInvocation: (options) => {
+        const input = options.input as { localPath?: string; remoteDir?: string }
+        return {
+          invocationMessage: '上传文件到远端',
+          confirmationMessages: {
+            title: 'BastionShell 上传文件',
+            message: new vscode.MarkdownString(
+              `上传本机文件到远端：\n- 本机：\`${input.localPath ?? ''}\`\n- 远端目录：\`${input.remoteDir || '（会话当前目录）'}\``
+            )
+          }
+        }
+      },
+      invoke: async (options) => {
+        const input = options.input as { localPath?: string; remoteDir?: string; terminal?: string }
+        const output = await sessionApi.push(input)
+        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(output)])
+      }
+    }),
+    vscode.lm.registerTool('bastion_pull', {
+      prepareInvocation: (options) => {
+        const input = options.input as { remotePath?: string; localDir?: string }
+        return {
+          invocationMessage: '从远端下载文件',
+          confirmationMessages: {
+            title: 'BastionShell 下载文件',
+            message: new vscode.MarkdownString(
+              `把远端文件拉回本机：\n- 远端：\`${input.remotePath ?? ''}\`\n- 本机目录：\`${input.localDir || '（工作区 .bastion-downloads/）'}\``
+            )
+          }
+        }
+      },
+      invoke: async (options) => {
+        const input = options.input as { remotePath?: string; localDir?: string; terminal?: string }
+        const output = await sessionApi.pull(input)
+        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(output)])
       }
     }),
     vscode.lm.registerTool('bastion_listProfiles', {
       invoke: async () => {
-        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(listProfilesForAI())])
+        const output = await sessionApi.listProfiles()
+        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(output)])
       }
     }),
     vscode.lm.registerTool('bastion_habits', {
@@ -352,42 +398,19 @@ export function activate(context: vscode.ExtensionContext): void {
       },
       invoke: async (options) => {
         const input = options.input as { action?: string; profile?: string; habit?: string; privilege?: string }
-        const action = input.action ?? 'read'
-        const profile = input.profile?.trim() || undefined
-        const reply = (t: string): vscode.LanguageModelToolResult =>
-          new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(t)])
-        try {
-          if (action === 'read') {
-            return reply(`当前个人习惯（${profile ?? '全局'}）：\n${habitsForAI(profile)}`)
-          }
-          if (action === 'remember') {
-            const habit = input.habit ?? ''
-            if (!habit.trim()) return reply('错误：action=remember 需要 habit 参数（要记下来的那句话）')
-            const added = appendHabit(profile, habit)
-            return reply(
-              (added ? `已记录习惯（${profile ?? '全局'}）：${habit}` : `这条习惯之前已经记过，跳过：${habit}`) +
-                `\n\n当前习惯：\n${habitsForAI(profile)}`
-            )
-          }
-          if (action === 'setPrivilege') {
-            if (!isPrivilegeMode(input.privilege)) {
-              return reply('错误：privilege 必须是 none / sudo / sudo-i / ask 之一')
-            }
-            setPrivilege(profile, input.privilege)
-            return reply(`已把提权习惯设为 ${input.privilege}（${profile ?? '全局'}）。\n\n当前习惯：\n${habitsForAI(profile)}`)
-          }
-          return reply('错误：action 必须是 read / remember / setPrivilege')
-        } catch (e) {
-          const msg = `操作个人习惯文件失败: ${(e as Error).message}`
-          log(msg)
-          return reply(msg)
-        }
+        const text = await sessionApi.habits(input)
+        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(text)])
       }
     })
   )
+
+  // MCP：把同一批会话工具通过 MCP 暴露出去（VS Code 里的 Copilot 等支持 MCP 的助手可用）
+  registerMcp(context)
 }
 
 export function deactivate(): void {
   manager.dispose()
   disposeSlots()
+  // 尽力关掉 MCP 端点（deactivate 不能 await；端口随进程结束也会释放）
+  void stopMcp()
 }

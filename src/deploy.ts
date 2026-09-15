@@ -18,6 +18,14 @@ export interface DeployTask {
   script: string[]
   userChoice: string
   /**
+   * 资产 ID（可选）。**只在「一个 host 在堡垒机里匹配到多条资产」时才需要**：
+   * 同一个 IP 可能既有 Linux 本体、又有一台 Gateway，堡垒机会列一张资产表要你选。
+   *
+   * 不写的话：只有一条候选会自动选，多条会弹窗问你（不会盲选一条 ——
+   * 那等于把命令执行到可能是另一台机器上）。
+   */
+  assetId?: string
+  /**
    * 本任务跑完后要不要保留会话终端。
    * - `true`  = 保留（方便盯着现场）
    * - `false` = 成功后回收
@@ -101,6 +109,10 @@ export const DEPLOY_TASK_HEADER = [
   '//   userChoice  堡垒机二级菜单选用户的序号，默认 "1"；',
   '//               留空字符串 "" 表示这台机器不需要选用户',
   '//               （有些管理员账号输完 IP 直接进 shell，没有这一步）',
+  '//   assetId     可选。**一个 IP 在堡垒机里匹配到多条资产时**才需要：',
+  '//               同一个 IP 可能既有 Linux 本体、又有一台 Gateway，',
+  '//               堡垒机会列一张资产表让你选，这里填表里 ID 列的数字。',
+  '//               不写的话：只有一条候选自动选，多条会弹窗问你。',
   '//   keepTerminal 可选。本任务跑完后要不要保留会话终端：',
   '//                 true = 保留（方便盯现场）；false = 成功后回收；',
   '//                 不写 = 跟随全局设置 bastion.deployTerminalPolicy',
@@ -146,6 +158,8 @@ function parseTaskFileFromUri(uri: vscode.Uri): DeployTask | undefined {
       preCommand: normalizeCommands(raw.preCommand),
       script: normalizeCommands(raw.script),
       userChoice: typeof raw.userChoice === 'string' ? raw.userChoice : '1',
+      // 只在写了非空字符串时才算指定了资产
+      assetId: typeof raw.assetId === 'string' && raw.assetId.trim() ? raw.assetId.trim() : undefined,
       // 只有真正的 boolean 才算「明确设置」，其余（缺失 / 写错类型）当作没写
       keepTerminal: typeof raw.keepTerminal === 'boolean' ? raw.keepTerminal : undefined,
       uri

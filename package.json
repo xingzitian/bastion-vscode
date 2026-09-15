@@ -2,7 +2,7 @@
   "name": "bastion-vscode",
   "displayName": "BastionShell SSH",
   "description": "SSH 堡垒机终端：一次 MFA + 连接复用，多开会话/批量部署/rz/sz 文件传输/端口转发/快捷命令，并提供 bastion.exec 让 VS Code 里的 AI 插件在服务器上执行命令",
-  "version": "0.2.0",
+  "version": "0.3.2",
   "publisher": "xingzitian",
   "author": "杏子甜",
   "license": "MIT",
@@ -95,10 +95,13 @@
     "onCommand:bastion.toggleBroadcast",
     "onCommand:bastion.toggleBroadcastMode",
     "onCommand:bastion.rsyncSyncToSession",
+    "onCommand:bastion.showMcpInfo",
     "onCommand:bastion.pickOverwriteMode",
     "onCommand:bastion.stopAllForwards",
     "onCommand:bastion.showForwards",
     "onCommand:bastion.showTransferHistory",
+    "onCommand:bastion.setDownloadDir",
+    "onCommand:bastion.resetDownloadDir",
     "onCommand:bastion.retryTransfer",
     "onCommand:bastion.clearTransferHistory",
     "onCommand:bastion.revealTransferItem",
@@ -111,6 +114,9 @@
     "onLanguageModelTool:bastion_listSessions",
     "onLanguageModelTool:bastion_listProfiles",
     "onLanguageModelTool:bastion_habits",
+    "onLanguageModelTool:bastion_tail",
+    "onLanguageModelTool:bastion_push",
+    "onLanguageModelTool:bastion_pull",
     "onCommand:bastion.showLog",
     "onCommand:bastion.openProfilesFile",
     "onCommand:bastion.openForwardsFile",
@@ -302,6 +308,14 @@
           "default": [],
           "markdownDescription": "堡垒机**二级菜单**（提示你选登录用户）的识别正则。留空用内置默认；填了整组替换。"
         },
+        "bastion.menuHints.assetPrompt": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "**资产列表**（一个 IP 匹配到多条资产，要你输资产 ID）的识别正则。留空用内置默认；填了整组替换。\n\n内置的是实测原文：`资产ID直接登录`、`输入资产ID`、`总数量：N`。\n\n⚠️ 这一组要写得**窄**：主菜单里也常出现「请输入资产名称/资产编号」，认成资产列表会让主菜单那一步走错分支。另外程序还会按**表结构**（同时有 ID 列、名称列、地址/平台列，且没有用户名/账号列）认出资产表 —— 所以就算提示语不一样，通常也能认出来。"
+        },
         "bastion.menuHints.shellPrompt": {
           "type": "array",
           "items": {
@@ -326,6 +340,16 @@
           ],
           "default": "closeSuccess",
           "description": "批量部署结束后，怎么处理为每台机器开的会话终端"
+        },
+        "bastion.mcpEnabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "把堡垒机会话通过 **MCP**（Model Context Protocol）暴露给 VS Code 里的 AI：装完扩展就自动注册好，Copilot（agent 模式）等支持 MCP 的助手可以直接列会话、连目标机、执行命令，**不用手写任何配置**。\n\n工具和「语言模型工具」是同一批（`bastion_listSessions` / `bastion_listProfiles` / `bastion_exec` / `bastion_connect` / `bastion_habits`），也共用同一套安全策略：命中高危规则的命令**一律拒绝**，只读工具不弹确认、其它工具由 VS Code 弹确认。\n\n端点只监听 `127.0.0.1`、需要 token（存在 `~/.bastionshell/mcp.json`）；关掉这个开关端点就不启动。想看端点地址、拿到给其它 AI 客户端（CodeBuddy / Trae / Cline 等）的配置片段，运行命令「BastionShell: 查看 MCP 端点」。"
+        },
+        "bastion.mcpPort": {
+          "type": "number",
+          "default": 39311,
+          "markdownDescription": "MCP 端点监听的本地端口（只在 `127.0.0.1` 上监听）。\n\n固定端口是为了让**外部 AI 客户端**（CodeBuddy / Trae / Cline 等）里粘的配置一直有效 —— 上次端口和 token 都记在 `~/.bastionshell/mcp.json` 里。端口被别的程序（比如另一个 VS Code 窗口）占用时会自动退到一个随机端口，并在日志里说明。"
         },
         "bastion.rsyncEnabled": {
           "type": "boolean",
@@ -363,7 +387,12 @@
             "远端自动改名保留旧文件（rz -E），新文件叫 xxx.0 之类"
           ],
           "default": "skip",
-          "description": "上传（rz）时遇到远端同名文件的处理方式。下载（sz）的落盘位置仍由每次的目录选择决定。"
+          "description": "上传（rz）时遇到远端同名文件的处理方式。"
+        },
+        "bastion.downloadDir": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "下载（`sz`）的文件存到哪个目录。留空 = 工作区下的 `.bastion-downloads/`（没有工作区则 `~/.bastionshell/downloads/`）；AI 的 `bastion_pull` 落在同一个地方。\n\n⚠️ 为什么不每次弹窗问你：ZMODEM 握手有时限（对端发出 ZRQINIT 后会重发），弹窗期间答应不上就会失败并报 `Unhandled header: ZRQINIT`（2026-09-15 真机故障）。所以目录取**已经定好的**值；换目录用命令 `BastionShell: 设置下载目录`，或者直接改这一项。\n\n支持写 `~/xxx`。"
         }
       }
     },
@@ -436,6 +465,12 @@
         "contents": "还没有会话。\n\n这个面板停在右侧，会实时显示会话、传输进度、部署进度和端口转发，里面的按钮可以直接操作。\n[新建连接](command:bastion.connect)"
       }
     ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "bastion",
+        "label": "BastionShell（堡垒机会话）"
+      }
+    ],
     "languageModelTools": [
       {
         "name": "bastion_exec",
@@ -444,7 +479,7 @@
         "userDescription": "在堡垒机服务器上执行 shell 命令并返回输出",
         "canBeReferencedInPrompt": true,
         "icon": "$(terminal)",
-        "modelDescription": "在堡垒机（BastionShell）连接的服务器上执行一条 shell 命令并返回输出。用于操作通过堡垒机连接的服务器：执行命令、查看状态、排查问题等。命令会在 VS Code 的堡垒机终端里实时显示并流式输出，输出在命令结束后（输出静止约 3 秒）返回。若同时有多个会话，可用 terminal 参数指定目标会话（名字见 bastion_listSessions），不填则用当前活动/最近的堡垒机会话。提权方式不要写死成 sudo -i：先看这台机器的「提权习惯」——bastion_connect 和 bastion_listProfiles 的返回里都带，也可以用 bastion_habits（action=read）单独查。习惯为 sudo 表示该账号 sudo 免密，直接执行 `sudo <命令>` 即可，不要进 sudo -i；习惯为 none 表示这台机器不需要提权；习惯为 sudo-i 表示要先 `sudo -i` 进交互式 root。习惯为 ask 或没有记录时，先问用户一次他实际怎么做，然后立刻用 bastion_habits 的 setPrivilege（提权方式）+ remember（一句话习惯）记下来，以后不再重复问。如果返回输出里出现密码提示（password / 密码 / 口令），说明正在等密码：此时停止执行，让用户到堡垒机终端里手动输入密码完成认证，等用户明确说认证完成后，再用本工具继续执行后续命令；同时用 bastion_habits 把这次真实的提权方式修正记录。",
+        "modelDescription": "在堡垒机（BastionShell）连接的服务器上执行一条 shell 命令并返回输出。用于操作通过堡垒机连接的服务器：执行命令、查看状态、排查问题等。命令会在 VS Code 的堡垒机终端里实时显示并流式输出，输出在命令结束后（输出静止约 3 秒）返回。若同时有多个会话，可用 terminal 参数指定目标会话（名字见 bastion_listSessions），不填则用当前活动/最近的堡垒机会话。提权方式不要写死成 sudo -i：先看这台机器的「提权习惯」——bastion_connect 和 bastion_listProfiles 的返回里都带，也可以用 bastion_habits（action=read）单独查。习惯为 sudo 表示该账号 sudo 免密，直接执行 `sudo <命令>` 即可，不要进 sudo -i；习惯为 none 表示这台机器不需要提权；习惯为 sudo-i 表示要先 `sudo -i` 进交互式 root。习惯为 ask 或没有记录时，先问用户一次他实际怎么做，然后立刻用 bastion_habits 的 setPrivilege（提权方式）+ remember（一句话习惯）记下来，以后不再重复问。如果返回输出里出现密码提示（password / 密码 / 口令），说明正在等密码：此时停止执行，让用户到堡垒机终端里手动输入密码完成认证，等用户明确说认证完成后，再用本工具继续执行后续命令；同时用 bastion_habits 把这次真实的提权方式修正记录。（写习惯的时机：用户明确说了、或同一做法已观察到 2~3 次才写；记录与实际不符则立刻更正，见 bastion_habits）⚠️ 会话是**人和 AI 共用**的同一条：需要人工操作时（选资产、选账号、输密码、输动态码、过菜单），让用户在终端里做完，然后你直接在同一条会话上继续执行命令（不需要重新连接或认证）；如果这条会话还停在菜单上，本工具**不会把命令发出去**（发出去会被菜单吃掉），会告诉你去让用户先走完那一步 —— 这时不要说「目标机连不上」，而是把情况告诉用户。",
         "tags": [
           "ssh",
           "terminal",
@@ -475,7 +510,7 @@
         "userDescription": "连接一个档案对应的服务器（直接 SSH 或过堡垒机菜单）",
         "canBeReferencedInPrompt": true,
         "icon": "$(plug)",
-        "modelDescription": "通过 BastionShell 连接一个档案对应的服务器。档案分两种模式（用 bastion_listProfiles 可看到）：直接 SSH（普通服务器，连上直接进 shell，无需 host）和堡垒机（连上后要过菜单选目标机，需要 host 与可选 userChoice）。如果 profile 不明确或档案有多个，先调用 bastion_listProfiles 列出档案并向用户确认用哪个，不要自己猜。连接成功后用 bastion_exec 在这台机器上执行命令。连接成功的返回里会带这台机器的「提权习惯」，按它执行特权命令（sudo=账号免密，直接 `sudo <命令>`；none=不用提权；sudo-i=先 `sudo -i`）；若为 ask 或没有记录，先问用户一次他的实际做法，再用 bastion_habits 记下来，不要每次都问。",
+        "modelDescription": "通过 BastionShell 连接一个档案对应的服务器。档案分两种模式（用 bastion_listProfiles 可看到）：直接 SSH（普通服务器，连上直接进 shell，无需 host）和堡垒机（连上后要过菜单选目标机，需要 host 与可选 userChoice）。如果 profile 不明确或档案有多个，先调用 bastion_listProfiles 列出档案并向用户确认用哪个，不要自己猜。连接成功后用 bastion_exec 在这台机器上执行命令。连接成功的返回里会带这台机器的「提权习惯」，按它执行特权命令（sudo=账号免密，直接 `sudo <命令>`；none=不用提权；sudo-i=先 `sudo -i`）；若为 ask 或没有记录，先问用户一次他的实际做法，再用 bastion_habits 记下来，不要每次都问。⚠️ 一个 IP 在堡垒机里可能匹配到多条资产（例如同一 IP 既有 Linux 本体、又有一台 Gateway 网关），这时堡垒机会列一张资产表要你输资产 ID：已知要哪条就传 assetId；不知道就不要猜 —— 不传 assetId，只有一条候选会自动选，多条会弹给用户选，返回值里会写明这次登录的是哪条资产、还有哪些候选（连到错的机器上后果很严重，拿不准就问用户）。",
         "tags": [
           "ssh",
           "remote",
@@ -495,6 +530,10 @@
             "userChoice": {
               "type": "string",
               "description": "仅堡垒机模式：二级菜单选择用户序号，默认 1。如果这台机器不需要选用户（有些管理员账号输完 IP 直接进 shell），传空字符串表示跳过这一步"
+            },
+            "assetId": {
+              "type": "string",
+              "description": "仅堡垒机模式：资产 ID。同一个 IP 在堡垒机里匹配到多条资产时（例如同一 IP 既有 Linux 本体、又有一台 Gateway），堡垒机会列一张资产表让你输资产 ID —— 这时用它指明要哪一条（就是表里 ID 列的数字）。拿不准就**不要猜**：不传这个参数，只有一条候选会自动选，多条会弹给用户选，返回值里会写明这次登录的是哪条、还有哪些候选"
             }
           },
           "required": [
@@ -509,7 +548,7 @@
         "userDescription": "列出当前堡垒机会话",
         "canBeReferencedInPrompt": true,
         "icon": "$(list-unordered)",
-        "modelDescription": "列出当前所有堡垒机（BastionShell）会话的终端名，用于确定有哪些会话、以及配合 bastion_exec 的 terminal 参数指定目标会话。",
+        "modelDescription": "列出当前所有堡垒机（BastionShell）会话的终端名，并标出每条会话现在能不能直接执行命令（在 shell 里 / 还停在堡垒机菜单上），用于确定有哪些会话、以及配合 bastion_exec 的 terminal 参数指定目标会话。这些会话是**人和 AI 共用**的同一条：需要人工操作（MFA、选资产、选账号、输密码、过菜单）时，让用户在终端里做完，然后直接在同一条会话上继续执行命令，不需要重新连接或认证。",
         "tags": [
           "ssh",
           "terminal",
@@ -544,7 +583,7 @@
         "userDescription": "读取或记录个人操作习惯（提权方式、常用目录、口头习惯）",
         "canBeReferencedInPrompt": true,
         "icon": "$(person)",
-        "modelDescription": "读写 BastionShell 的「个人习惯」（~/.bastionshell/habits.jsonc），用来避免每次会话都重复问同样的提权问题。action=read 读取某个档案当前生效的提权习惯、常用目录和习惯条目；action=remember 追加一条习惯（habit 参数，一句话，自动去重）；action=setPrivilege 设置提权方式（privilege 参数：none / sudo / sudo-i / ask）。profile 参数省略表示写全局，给了就只作用于该连接档案（名字见 bastion_listProfiles）。典型用法：用户第一次告诉你「这台 su 直接用 sudo 就行，不用 sudo -i」时，setPrivilege(profile, 'sudo') 再把细节 remember 下来；此后每次连接都会自动带上这些习惯，不需要再问。写入会保留文件里手写的中文注释。",
+        "modelDescription": "读写 BastionShell 的「个人习惯」（~/.bastionshell/habits.jsonc），用来避免每次会话都重复问同样的提权问题。action=read 读取某个档案当前生效的提权习惯、常用目录和习惯条目；action=remember 追加一条习惯（habit 参数，一句话，自动去重）；action=setPrivilege 设置提权方式（privilege 参数：none / sudo / sudo-i / ask）。profile 参数省略表示写全局，给了就只作用于该连接档案（名字见 bastion_listProfiles）。典型用法：用户第一次告诉你「这台 su 直接用 sudo 就行，不用 sudo -i」时，setPrivilege(profile, 'sudo') 再把细节 remember 下来；此后每次连接都会自动带上这些习惯，不需要再问。写入会保留文件里手写的中文注释。⚠️ 什么时候才该写进习惯文件（写进去会长期影响以后所有会话）：① 用户明确说了做法 → 立刻记；② 只是你第一次观察到某个做法 → 先别写，等同一做法再遇到一次（累计 2~3 次观察）再记；③ 记录与实际不符（习惯写免密、实际弹密码）→ 立刻更正；④ 只是猜的/只见过一次 → 不写。错误记忆比没有记忆更糟。",
         "tags": [
           "ssh",
           "bastion",
@@ -583,6 +622,101 @@
           },
           "required": [
             "action"
+          ]
+        }
+            },
+      {
+        "name": "bastion_tail",
+        "toolReferenceName": "bastionTail",
+        "displayName": "BastionShell 读会话屏幕",
+        "userDescription": "读某条堡垒机会话屏幕上最后几行",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(screen-full)",
+        "modelDescription": "读某个堡垒机会话**屏幕上最后几行**（默认 40 行，最多 200）。用途：① 命令看起来没反应、输出不完整、或不确定远端现在是什么状态时，先看一眼屏幕再决定下一步；② 用户在终端里手动操作完（过了菜单、输了密码、选了资产）之后，用它确认走到了哪一步。terminal 参数指定会话（名字见 bastion_listSessions），不填用当前活动/最近会话。",
+        "tags": [
+          "ssh",
+          "terminal",
+          "bastion"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "terminal": {
+              "type": "string",
+              "description": "会话终端名（如 deploy@10.0.0.10）；不填则用当前活动/最近会话"
+            },
+            "lines": {
+              "type": "number",
+              "description": "要读多少行（默认 40，最多 200）"
+            }
+          }
+        }
+      },
+      {
+        "name": "bastion_push",
+        "toolReferenceName": "bastionPush",
+        "displayName": "BastionShell 上传文件到远端",
+        "userDescription": "把本机文件传到堡垒机目标机（rz）",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(cloud-upload)",
+        "modelDescription": "把一个**本机文件**传到远端服务器（走 rz/ZMODEM，和用户在终端里敲 rz 是同一套）。只支持单个文件 —— 目录请先在本地打包（tar/zip），或让用户用部署任务传。remoteDir 会先 cd 过去再传（rz 只能传到会话当前目录），不填就传到当前目录。远端已有同名文件时按用户设置 bastion.uploadOverwrite 处理（skip 会跳过并明确告诉你，别以为传上去了）。terminal 指定会话，不填用当前活动/最近会话。",
+        "tags": [
+          "ssh",
+          "upload",
+          "bastion"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "localPath": {
+              "type": "string",
+              "description": "本机文件路径（建议绝对路径）"
+            },
+            "remoteDir": {
+              "type": "string",
+              "description": "远端目标目录（不填 = 会话当前目录）；会先 cd 过去再传"
+            },
+            "terminal": {
+              "type": "string",
+              "description": "会话终端名；不填则用当前活动/最近会话"
+            }
+          },
+          "required": [
+            "localPath"
+          ]
+        }
+      },
+      {
+        "name": "bastion_pull",
+        "toolReferenceName": "bastionPull",
+        "displayName": "BastionShell 从远端下载文件",
+        "userDescription": "把目标机上的文件拉回本机（sz）",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(cloud-download)",
+        "modelDescription": "把一个**远端文件**拉回本机（sz）。默认落在工作区的 .bastion-downloads/ 目录下 —— 这样你可以直接用自己的文件读取工具去读它；想放别处就传 localDir。terminal 指定会话，不填用当前活动/最近会话。",
+        "tags": [
+          "ssh",
+          "download",
+          "bastion"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "remotePath": {
+              "type": "string",
+              "description": "远端文件路径"
+            },
+            "localDir": {
+              "type": "string",
+              "description": "本机落盘目录；默认工作区下的 .bastion-downloads/"
+            },
+            "terminal": {
+              "type": "string",
+              "description": "会话终端名；不填则用当前活动/最近会话"
+            }
+          },
+          "required": [
+            "remotePath"
           ]
         }
       }
@@ -778,6 +912,11 @@
         "icon": "$(arrow-swap)"
       },
       {
+        "command": "bastion.showMcpInfo",
+        "title": "BastionShell: 查看 MCP 端点（给 AI 用的本地服务）",
+        "icon": "$(plug)"
+      },
+      {
         "command": "bastion.rsyncSyncToSession",
         "title": "BastionShell: 用 rsync 增量同步到当前会话（实验性，默认关闭）",
         "icon": "$(sync)",
@@ -810,6 +949,15 @@
       {
         "command": "bastion.showTransferHistory",
         "title": "BastionShell: 打开传输历史"
+      },
+      {
+        "command": "bastion.setDownloadDir",
+        "title": "BastionShell: 设置下载目录",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "bastion.resetDownloadDir",
+        "title": "BastionShell: 下载目录恢复默认"
       },
       {
         "command": "bastion.retryTransfer",

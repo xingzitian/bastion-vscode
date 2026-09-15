@@ -17,6 +17,13 @@
 > 仓库：<https://github.com/xingzitian/bastion-vscode> ·
 > 商店：<https://marketplace.visualstudio.com/items?itemName=xingzitian.bastion-vscode> ·
 > 问题反馈：<https://github.com/xingzitian/bastion-vscode/issues>
+>
+> ⚠️ **本扩展是功能最全的版本。** 同一个产品的桌面版（Wails 原生窗口，
+> <https://github.com/xingzitian/bastion-shell>）是**另一套独立实现**（Go + React）：
+> 它已经有了会话登记表、命令执行引擎、MCP 出口（8 个工具，含**传文件**）、高危拦截与个人习惯，
+> 并且**菜单规则 / 高危规则 / 个人习惯三个文件与本扩展读的是同一份**（`~/.bastionshell/*.jsonc`）；
+> 但它**还不能让 AI 自己连机器**，也没有部署报告。
+> 两边到底各有什么，见 **[两个版本的能力对照](https://github.com/xingzitian/bastion-vscode/blob/main/docs/two-flavors.md)**。
 
 站在 VS Code 的肩膀上的堡垒机终端：**一次 MFA 认证 + 连接复用**，之后多开会话、批量部署、文件上传都免二次认证。
 
@@ -154,6 +161,29 @@
 ## 传输进度与历史
 
 上传/下载时底栏实时显示进度、平均速率和剩余时间，不用盯着终端猜还要多久。传完写进「传输历史」视图，失败的上传右键就能重试（会把原文件再传一遍）。
+
+### 传文件只有一套说法（标准工具）
+
+不管从哪进（右键上传、粘本地路径、部署任务、传输历史重试、AI 的 `bastion_push` / `bastion_pull`），
+底层都是**同一个传输工具**，所以规则完全一致：
+
+| 你要传的 | 走哪条 | 备注 |
+|---|---|---|
+| **单个文件** | `rz` | 目标机要装 lrzsz（`yum install -y lrzsz` / `apt-get install -y lrzsz`） |
+| **目录** | 本地 `tar` 打包 → 传 → 远端自动解开 → 删临时包 | 以前只会拒绝目录 |
+| **没有 lrzsz 的目标机** | **自动降级 base64**（上传分块塞进 shell / 下载打出来本地解码） | 不用装任何东西；超过 4 MB 会明确拒绝（那条路不划算） |
+
+- **覆盖方式只有三个人话词**：`跳过`（默认）/ `覆盖` / `改名` —— 由 `bastion.uploadOverwrite` 决定。
+  （`rz -y`、`rz -E` 是实现细节，不会出现在任何提示里。）
+- **传完会回读远端给你证据**：远端绝对路径 + 内容哈希 + 大小。
+  哈希一致才说"✅ 已上传"；对不上就说"❌ 上传没成功"。
+  **不要再用 `ls` / `md5sum` 自己验一遍** —— 远端本来就有同名旧文件时，那样会验出假成功。
+- **会先探测目标机有什么**（rz/sz/base64/tar/md5sum，每个会话探一次并缓存），
+  "用了哪条通道、为什么降级"都写进日志（搜 `[transfer]`）。
+
+> **ZMODEM 会保留源文件的 mtime**：传过去的文件，远端 mtime 等于本机源文件的 mtime。
+> 所以远端 `ls -l` 看到的时间"很旧"是正常的（那正是你本机那份的时间），**不代表没传上去** ——
+> 我们一度按 mtime 判断上传成功，结果每次都误报，这条已经写进代码注释和测试里了。
 
 **把本地文件路径粘/拖进终端**也能传：在终端里回车，如果这一整行是一个**存在的本机绝对路径**（`D:\...`、`\\server\share\...`、WSL 的 `/mnt/d/...`），会问一句「上传到当前目录吗」，而不是把路径当命令发出去。
 相对路径（`Makefile`、`./deploy.sh`）和裸 `/tmp/x` **故意不认** —— 那些在远端同样常见，认错了会误拦你的命令。
@@ -392,14 +422,39 @@ See "systemctl status myapp.service" and "journalctl -xe" for details.
 2. 然后把用户序号（默认 `1`）**打进已经进去的 shell 里** —— 等于执行了一条叫 `1` 的命令
 3. 后面的前置命令、脚本全部错位
 
-现在输完 IP 之后是**同时等三种界面**，按先到的走：
+现在输完 IP 之后是**同时等四种界面**，按先到的走：
 
 | 先等到 | 判定 | 动作 |
 |---|---|---|
+| **资产列表**（一个 IP 匹配到多条） | 要先选**资产 ID** | 只匹配到一条 → 自动选；多条 → **弹窗让你选**（AI 也可以直接传 `assetId`），选完再继续 |
 | 「选登录用户」菜单 | 普通账号 | 发 userChoice，再等 shell |
 | shell 提示符 | **管理员账号，没有这一步** | **跳过选用户，直接开始干活** |
 | 又回到「输目标机」 | IP 没被接受 | **直接报错说明原因**，不再硬着头皮往下发 |
 | 都超时 | 认不出来 | 按旧行为兜底发 userChoice（并在日志里告诉你怎么调） |
+
+### 一个 IP 匹配到多条资产（资产 ID）
+
+同一个 IP 在堡垒机里可能是**两台不同的机器** —— 比如既有一台 Linux 本体、又有一台 Gateway 网关。
+这时堡垒机不会直接登录，而是列一张表让你输**资产 ID**：
+
+```
+ID | 名称                      | 地址          | 平台    | 组织     | 备注
+  1  | 172.20.30.143             | 172.20.30.143 | Linux   | 默认组织 |
+  2  | 研发网域172.20.30.143     | 172.20.30.143 | Gateway | 默认组织 |
+提示：输入资产ID直接登录，二级搜索使用 // + 字段，如：//192
+```
+
+程序会**把这张表解析出来**，然后三选一（**绝不会盲发一个数字** —— 那可能把命令执行到错的机器上）：
+
+- **指定了 `assetId`** → 直接用（AI 调用时传，或部署任务里写 `"assetId": "2"`）；
+- **只匹配到一条** → 自动选它（人也是这么做的）；
+- **匹配到多条** → **弹窗列出「ID · 名称 · 地址 · 平台 · 组织」让你挑**；你按 Esc 取消时，AI 会收到一条带候选列表和「带 assetId 重试」提示的消息。
+
+连接成功后 AI 也会被告知**这次登录的是哪一条、还有哪些候选**（多条同名资产时，这是唯一能看出差别的地方）。
+
+> 以前这一屏会被主菜单规则误命中（那句「输入资产ID直接登录」里有「输入…资产」），
+> 于是被判成「又回到输 IP」→ 报「这个 IP 没被堡垒机接受」。**AI 收到的是一句错误的结论**，
+> 只能去怀疑 IP 或档案不对。现在资产列表排在最前面判定，并且有回归测试钉着。
 
 想让它确定地跳过选用户（而不是靠识别），把 `userChoice` 留空即可：
 
@@ -463,7 +518,7 @@ See "systemctl status myapp.service" and "journalctl -xe" for details.
 
 | 要识别什么 | 配在哪 | 内置默认 |
 |---|---|---|
-| 菜单提示（主菜单 / 选用户 / shell 提示符） | 设置 `bastion.menuHints.*` | 某厂商堡垒机（实测）、JumpServer、齐治、中英日常见写法 |
+| 菜单提示（主菜单 / **选资产** / 选用户 / shell 提示符） | 设置 `bastion.menuHints.*` | 某厂商堡垒机（实测）、JumpServer、齐治、中英日常见写法 |
 | 密码提示（决定问密码还是问 MFA） | 设置 `bastion.passwordPromptPatterns` | `password`、`密码`、`密碼`、`口令`、`パスワード`、`암호` 等 |
 | 高危命令 | `~/.bastionshell/dangerRules.jsonc` | 12 条（删根、格式化、写块设备…） |
 | 提权方式 / 常用目录 / 口头习惯 | `~/.bastionshell/habits.jsonc` | — |
@@ -515,6 +570,7 @@ See "systemctl status myapp.service" and "journalctl -xe" for details.
 | `bastion.exec` | **AI 桥接**：在活动会话执行远程命令并回传输出 |
 | `bastion.uploadToSession` | 上传文件到当前会话 |
 | `bastion.rsyncSyncToSession` | 用 rsync 增量同步文件/目录到当前会话（右键资源管理器；**实验性、默认关闭**，见上文） |
+| `bastion.showMcpInfo` | 查看/复制 MCP 端点（URL、token、给 VS Code 与其它 AI 客户端用的配置片段） |
 | `bastion.addDeployTask` / `runDeployTask` / `stopDeployTask` / `openLastDeployReport` / `batchRunDeployTasks` | 部署任务 新建 / 运行 / 停止 / 打开最近报告 / 批量执行 |
 | `bastion.addQuickCommand` / `sendQuickCommand` | 快捷命令 |
 | `bastion.addForwardRule` / `startForward` | 端口转发 |
@@ -566,28 +622,109 @@ See "systemctl status myapp.service" and "journalctl -xe" for details.
 
 每个会话的终端名为 `用户名@主机`（部署/批量连接的会话为 `用户名@目标IP`）。AI 或用户可据此识别会话。
 
-## AI 桥接（让 Copilot / Cursor / CodeBuddy 操作服务器）
+## AI 桥接（让 AI 在你**已经认证好的**会话上执行命令）
 
-堡垒机的 MFA 无法自动输入，是 AI 与服务器交互的最大障碍。本扩展用「一次认证 + 连接复用」解决它。
+堡垒机的 MFA 无法自动输入，是 AI 与服务器交互的最大障碍。本扩展用「一次认证 + 连接复用」解决它：
+**密码和动态码始终由你在终端里手动输入，AI 拿到的只是「一条已经登录好的会话」的句柄。**
 
-本扩展向 Copilot（agent 模式）等 AI 注册了五个**语言模型工具**：
+同一批工具（下表）有**三条**给 AI 用的路，按助手支持什么来选：
 
-| 工具 | 作用 |
-|---|---|
-| `bastion_connect` | 通过堡垒机菜单连接到目标机器（参数：`profile` 档案名 + `host` 目标 IP + `userChoice` 选用户，默认 1） |
-| `bastion_exec` | 在会话上执行 shell 命令并返回输出（参数：`command`，可选 `terminal` 指定会话） |
-| `bastion_listSessions` | 列出当前所有会话的终端名 |
-| `bastion_listProfiles` | 列出连接档案及其提权习惯 |
-| `bastion_habits` | 读写个人习惯（`action`：`read` / `remember` / `setPrivilege`） |
+| AI 助手 | 走哪条路 | 你要做什么 |
+|---|---|---|
+| **Copilot（agent 模式）** | ① 语言模型工具（`contributes.languageModelTools`） | 什么都不用做 |
+| **任何支持 MCP 的助手**（Copilot / Cursor / Windsurf / Cline / Roo / Continue / CodeBuddy / 通义灵码 / Trae / Claude Code…） | ② **MCP 服务**（推荐，跨助手） | VS Code 里零配置；外部客户端运行一次「BastionShell: 查看 MCP 端点」复制配置 |
+| 只能读写文件、既不支持 LM 工具也不支持 MCP 的 | ③ 文件桥（`bastion-command.txt` → `bastion-last-output.txt`） | 让 AI 把命令写进文件 |
+
+| 工具 | 作用 | 只读 |
+|---|---|---|
+| `bastion_listSessions` | 列出当前所有会话的终端名 + **每条会话现在能不能用**（在 shell 里 / 还停在菜单上） | ✅ |
+| `bastion_health` | **端点自检**：端点地址/端口、扩展版本、工具个数、会话状态。AI 遇到「工具调用出错」时先调它 | ✅ |
+| `bastion_tail` | **读某条会话屏幕上最后几行**（排障；也是「人操作完 → AI 接着干」的确认手段） | ✅ |
+| `bastion_listProfiles` | 列出连接档案及其提权习惯 | ✅ |
+| `bastion_exec` | 在会话上执行 shell 命令并返回输出 + **退出码**（参数：`command`，可选 `terminal` 指定会话） | |
+| `bastion_connect` | 通过堡垒机菜单连接到目标机器（参数：`profile` + `host` + `userChoice` + `assetId`） | |
+| `bastion_push` | **传本机文件到远端**（rz；参数：`localPath`，可选 `remoteDir`） | |
+| `bastion_pull` | **把远端文件拉回本机**（sz；参数：`remotePath`，可选 `localDir`，默认落工作区 `.bastion-downloads/`） | |
+| `bastion_habits` | 读写个人习惯（`action`：`read` / `remember` / `setPrivilege`） | |
+
+> 三个"能干活"的细节：
+> - **退出码**：`bastion_exec` 的返回末尾会带 `[退出码 0：命令成功]` / `[退出码 1：命令以非 0 退出，通常表示失败]`。
+>   以前 AI 只能靠读输出猜成败（`systemctl restart` 失败、脚本里 `false` 这类根本看不出来）。
+>   交互式命令拿不到结束标记时会明确写「退出码未知」或「没等到命令结束标记 —— 这条命令很可能没执行完」，不让它把不完整的输出当正常结果。
+> - **传文件走的是同一套 rz/sz**：和你在终端里手动 rz/sz 完全一样的实现（进度、传输历史、覆盖方式设置都共用）。
+>   只支持单个文件 —— 目录请先打包；`bastion_push` 的 `remoteDir` 会先 `cd` 过去再传（rz 只能传到会话当前目录）。
+> - **`bastion_pull` 默认落到工作区的 `.bastion-downloads/`**：这样 AI 能用它自己的文件工具直接读回来。
+>   （建议把这个目录加进项目的 `.gitignore`。）
+
 
 **生产堡垒机完整流程**（AI 自动走，不用口头约定）：
 
 1. 先手动连一次堡垒机（输密码 + MFA），连接保持复用。
-2. AI 调 `bastion_connect({profile, host, userChoice})` → 自动经过菜单（输 IP 选主机 → 选用户）落到目标机，返回里带上该机器的**提权习惯**。
-3. AI 调 `bastion_exec({command})` 执行命令，命令与输出**实时显示在终端**（人全程看得见）。提权方式按习惯走，不再每次问 `sudo -i`。
+2. AI 调 `bastion_connect({profile, host, userChoice, assetId?})` → 自动经过菜单（输 IP → 匹配到多条时选资产 → 选用户）落到目标机，返回里带上该机器的**提权习惯**（以及多条资产时**这次选的是哪条**）。
+3. AI 调 `bastion_exec({command})` 执行命令，命令与输出**实时显示在终端**（人全程看得见，随时能接手敲键盘）。提权方式按习惯走，不再每次问 `sudo -i`。
 4. 多会话时用 `bastion_listSessions` 看名字，`bastion_exec` 的 `terminal` 参数指定目标。
 
-命令也会写到 `<工作区>/.vscode/bastion-command.txt` / `bastion-last-output.txt`（文件桥兜底，供不支持 LM 工具的 AI 用）。完成判定优先用哨兵标记（命令结束时打印一行唯一标记），标记不适用于交互式命令时退回「输出静止 3 秒」。
+### MCP 服务（跨助手那条路）
+
+装完本扩展就**自动注册**好一个 MCP 服务（`contributes.mcpServerDefinitionProviders`），Copilot 那侧零配置。
+想在别的 AI 客户端里用，跑一次命令「**BastionShell: 查看 MCP 端点**」→ 复制对应格式的配置片段即可
+（VS Code 用 `servers`，CodeBuddy / Trae / Cline 等用 `mcpServers`，两者都给你）。
+
+- **只监听 `127.0.0.1`**，并且需要 token（存在 `~/.bastionshell/mcp.json`，权限 0600；删掉文件即换新 token）。
+- **自动注册需要 VS Code 1.101+**（`lm.registerMcpServerDefinitionProvider` 从那时起稳定）；更老的版本不会报错，只是这一条不生效，命令「查看 MCP 端点」仍然能拿到 URL/token 手动配置。
+- **端口和 token 固定**（默认端口 39311），所以外部客户端里粘一次的配置**一直有效**；端口被占时自动退到随机端口并在日志里说明。
+- **它不自己持有 SSH**：服务只是个「遥控器」，真正的会话在 VS Code 的扩展宿主里 —— 所以 **VS Code 得开着**，MFA 也仍然由你手动完成。
+- **安全策略和人类/AI 那两条路完全一致**：命中高危规则的命令**一律拒绝**；只读工具带 `readOnlyHint`（客户端不弹确认），`exec` / `connect` 由客户端弹确认。
+- 出问题看两处：命令面板那条「查看 MCP 端点」（复制 URL/token/配置），以及「输出 → BastionShell」日志（端点地址、请求错误都记在那里）。
+
+> **在 VS Code 里，工具名长这样**：`mcp_<服务器名>_<工具名>`，也就是
+> `mcp_bastionshell_bastion_listSessions` / `mcp_bastionshell_bastion_exec` / `mcp_bastionshell_bastion_connect` …
+> （服务器名故意用 `bastionshell` 而不是带连字符的写法：模型复述这个长名字时少一个出错点。）
+>
+> **AI 说「工具调用出错」时，按这三层查**（一层的证伪成本都不到 10 秒）：
+>
+> | 现象 | 多半是 | 怎么确认 |
+> |---|---|---|
+> | 报「工具不存在 / 未知工具」 | 模型把 `mcp_…` 那个长名字记错了（它自己在 planning 里就会纠结用哪个） | 直接告诉它用 `mcp_bastionshell_bastion_listSessions`，或在聊天里输入 `#` 从工具列表里选 |
+> | 报连接失败 / 超时 | 端点当时不可用：**刚装完扩展**（宿主重载的那一瞬间）、或默认端口被别的窗口占了退到随机端口而客户端还拿着旧 URL | 看「输出 → BastionShell」里那两行端点日志（有没有「已退到随机端口」）；`MCP: List Servers` 里重启一次 |
+> | 返回里带着 `工具执行失败：…` | 工具真的跑了但内部抛错 | 这就是真 bug，把这段文字发过来 |
+>
+> **我们已经在工具说明里写了一条自救路径**，AI 不需要自己摸索：
+> **① 原样重试一次 → ② 调 `bastion_health`（只读，能返回就说明端点、鉴权、协议都是好的）→
+> ③ 连它都调不动，就让用户重启 MCP 服务器（`MCP: List Servers` → BastionShell → Restart）**。
+> 说明里还明确写了「不要因为一次工具调用失败就让用户手工去敲命令」——
+> 那会把一个可修的小问题变成「用户自己干活」。
+>
+> 另外：**任何一次 `bastion_listSessions` 的成功返回里都会带一行**
+> `（本次调用来自 MCP 端点 http://127.0.0.1:<port>/mcp）` —— 有这行就说明端点是通的（多窗口时还能看出调的是哪个窗口），
+> 没有这行而 AI 却说它拿到了结果，那一定是别的东西在冒充。
+
+> 为什么不做成「自己连 SSH 的独立 MCP 服务器」（社区里那些 `ssh-mcp`）：那样就必须把密码/私钥交给 AI 那一侧、
+> 也过不了交互式 MFA 和堡垒机菜单。这里刻意反过来 —— **复用你已经登录好的会话**。
+
+### 人和 AI 共用同一条会话（双向接手）
+
+这一条值得单独说，因为它**只有这种架构做得到**：
+
+```
+你手动过 MFA / 选资产 / 输密码  →  AI 接着在同一条会话上执行命令
+AI 遇到需要人来的地方           →  你直接在终端里操作  →  AI 继续
+```
+
+- **你随时可以抢过键盘**：AI 正在干（或者卡住）的时候，你可以直接在终端里敲 —— 补一条它没想周全的命令、
+  过掉一个菜单、输一次密码。AI 不需要重新连接，下一次 `bastion_exec` 就在**同一条**会话上继续。
+- **会话状态会告诉 AI 实情**：`bastion_listSessions` 会标出每条会话是「✅ 在 shell 里」还是
+  「⚠️ 还停在堡垒机菜单上」；会话停在菜单上时，`bastion_exec` **不会把命令发出去**
+  （发出去只会被菜单当成菜单输入吃掉），而是告诉 AI 去请你先把这一步走完。
+- **不需要把凭据交给 AI**：密码在系统加密存储里，动态码你手输，AI 侧只有「一条已经登录好的会话」这个句柄。
+  那些自己连 SSH 的 MCP 工具做不到这一点 —— 它们必须拿到密码/私钥，而且验证码得在**连接前**就备好
+  （`SSH_MCP_2FA_CODE` 那类做法）。Teleport 官方的 MCP 也在 RFD 里写明 **不支持 per-session MFA**。
+
+> 这条协作方式是被用户发现的（2026-09-13：一个 IP 匹配到多条资产时，用户自己在终端里选完，
+> AI 直接接管继续干活）——当时程序还给了一句错误结论（见上面那张资产表的说明），所以这一版把它
+> 从「碰巧能用」变成了**明确支持**：状态标注、菜单上的执行拦截、以及工具说明里写清这套协作方式。
+
+命令也会写到 `<工作区>/.vscode/bastion-command.txt` / `bastion-last-output.txt`（文件桥兜底，供不支持 LM 工具/MCP 的 AI 用）。完成判定优先用哨兵标记（命令结束时打印一行唯一标记），标记不适用于交互式命令时退回「输出静止 3 秒」。
 
 > 会话终端名默认是 `用户@主机`（或 `用户@目标IP`）。VS Code 不允许扩展改终端名，但你可以手动右键终端标签「重命名」，重命名后 `bastion_exec` 的 `terminal` 参数能按名字匹配。
 
@@ -599,6 +736,8 @@ See "systemctl status myapp.service" and "journalctl -xe" for details.
 - `bastion.sessionNumber`：终端名前加会话号（`#1`、`#2`…），默认 `true`。
 - `bastion.uploadOverwrite`：上传遇到远端同名文件怎么办，`skip`（默认）/ `overwrite` / `rename`。
 - `bastion.deployTerminalPolicy`：部署结束后会话终端的处理，默认 `closeSuccess`。
+- `bastion.mcpEnabled`：把会话工具通过 **MCP** 暴露给 AI，默认 `true`（装完即自动注册给 VS Code；关掉则端点不启动）。
+- `bastion.mcpPort`：MCP 端点监听的本地端口，默认 `39311`（只在 `127.0.0.1` 上监听；被占用会自动退到随机端口）。
 - `bastion.statusBarItems`：底栏显示哪几个常驻格子，默认全部（`session` / `readonly` / `overwrite` / `keepterm` / `broadcast` / `forward`）。删掉某一项 = 不显示那一格；进度类格子不受此设置影响。
 - `bastion.menuHints.hostPrompt` / `hostPromptLoose` / `userPrompt` / `shellPrompt`：堡垒机菜单提示识别正则，留空用内置默认。
 
@@ -643,6 +782,7 @@ See "systemctl status myapp.service" and "journalctl -xe" for details.
 | `preCommand` | 上传前执行的命令（**数组，一行一个元素**） |
 | `script` | 上传完成后执行的命令（同 `preCommand`） |
 | `userChoice` | 堡垒机选用户序号，默认 `1`；**留空 `""` = 这台机器不需要选用户** |
+| `assetId` | 可选。**一个 IP 在堡垒机里匹配到多条资产时**要选的资产 ID（就是资产表里 ID 列的数字）。不写：只有一条候选自动选，多条会**弹窗问你** |
 
 任务文件存在扩展专用目录（`.jsonc`，可写注释），不混进项目文件；「导出」按钮即复制到目标文件夹。
 
@@ -754,6 +894,9 @@ npm run package     # 编译 + 打包 vsix
 | `habits.ts` | 个人习惯（提权方式 / 常用目录 / 口头笔记） |
 | `quickCommands.ts` / `forward.ts` | 快捷命令、端口转发的数据层与树视图 |
 | `aiBridge.ts` | AI 桥接：`bastion_exec` 等语言模型工具的后端 |
+| `aiSessionApi.ts` | 会话能力的**唯一实现**：语言模型工具和 MCP 工具共用它（拦高危命令、提权习惯等不会分叉） |
+| `mcpTools.ts` / `mcpServer.ts` | MCP：工具定义与分发 / JSON-RPC + Streamable HTTP 端点（都不依赖 vscode，可单独测） |
+| `mcpRegister.ts` | 把 MCP 端点注册给 VS Code（`registerMcpServerDefinitionProvider`）+ token/端口持久化 |
 | `aiChat.ts` | 把终端选中内容 / 最近输出发给 AI 聊天 |
 | `*Cmd.ts` | 各功能的界面命令（`quickCmd` / `forwardCmd` / `transferCmd` / `configCmd`） |
 

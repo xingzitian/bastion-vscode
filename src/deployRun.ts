@@ -252,7 +252,7 @@ export async function deployToHost(
   const t0 = Date.now()
   let vt: vscode.Terminal | undefined
   try {
-    const opened = await openSessionToHost(conn, profile, host, task.userChoice)
+    const opened = await openSessionToHost(conn, profile, host, task.userChoice, task.assetId)
     vt = opened.vt
     return await runTaskOnTerminal(opened.term, profile, task, host, policy, vt, false)
   } catch (e) {

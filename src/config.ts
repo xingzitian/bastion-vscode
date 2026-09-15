@@ -4,8 +4,19 @@ import * as os from 'os'
 import { parse as parseJsonc, ParseError } from 'jsonc-parser'
 import { log } from './log'
 
-/** 配置文件目录：~/.bastionshell/ */
+/**
+ * 配置文件目录：`~/.bastionshell/`
+ *
+ * ⚠️ 这个目录**和桌面版共享**（habits.jsonc / dangerRules.jsonc / menuHints.jsonc
+ * 两个实现读同一份，见 docs/two-flavors.md）。桌面版自己那套档案/端口配置在
+ * `%AppData%\bastionshell`，别把两边搞混。
+ *
+ * `BASTIONSHELL_SHARED_DIR` 可以改写它：测试用它避免碰用户真实配置，
+ * 也给便携版留了口子（桌面版认同一个环境变量）。
+ */
 export function configDir(): string {
+  const override = (process.env.BASTIONSHELL_SHARED_DIR ?? '').trim()
+  if (override) return override
   return path.join(os.homedir(), '.bastionshell')
 }
 

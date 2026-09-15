@@ -154,6 +154,7 @@ test('新建任务：写 .jsonc、带中文说明头、且能解析回任务', (
   assert.match(text, /BastionShell 部署任务/, '要有中文说明头')
   assert.match(text, /userChoice/, '要说明 userChoice')
   assert.match(text, /不需要选用户/, '要说明留空=不选用户')
+  assert.match(text, /assetId/, '要说明 assetId（一个 IP 匹配到多条资产时用）')
   const parsed = readDeployTaskByUri(uri)
   assert.ok(parsed, '说明头 + JSON 体应能被解析')
   assert.equal(parsed!.profileId, '生产')
@@ -279,4 +280,30 @@ test('模板常量本身健康', () => {
   assert.ok(DEPLOY_TASK_TEMPLATE.name, '模板要有 name')
   assert.equal(DEPLOY_TASK_TEMPLATE.userChoice, '1')
   assert.ok(Array.isArray(DEPLOY_TASK_TEMPLATE.hosts))
+})
+
+test('assetId：写了才生效，空串/写错类型都当没写（不能让手滑的配置改变行为）', () => {
+  resetTasksDir()
+  fs.writeFileSync(
+    path.join(tasksDir, 'a1.json'),
+    JSON.stringify({ name: 'A1', profile: 'p', hosts: ['h'], assetId: '2' }),
+    'utf8'
+  )
+  fs.writeFileSync(
+    path.join(tasksDir, 'a2.json'),
+    JSON.stringify({ name: 'A2', profile: 'p', hosts: ['h'], assetId: '   ' }),
+    'utf8'
+  )
+  fs.writeFileSync(
+    path.join(tasksDir, 'a3.json'),
+    JSON.stringify({ name: 'A3', profile: 'p', hosts: ['h'], assetId: 3 }),
+    'utf8'
+  )
+  fs.writeFileSync(path.join(tasksDir, 'a4.json'), JSON.stringify({ name: 'A4', profile: 'p', hosts: ['h'] }), 'utf8')
+
+  const byId = new Map(listDeployTasks(ctxStub()).map((t) => [t.name, t]))
+  assert.equal(byId.get('A1')!.assetId, '2', '写了就用（一个 IP 匹配到多条资产时靠它选）')
+  assert.equal(byId.get('A2')!.assetId, undefined, '空白串 = 没写')
+  assert.equal(byId.get('A3')!.assetId, undefined, '类型写错 = 没写（宁可弹窗问，也不拿数字 3 去猜）')
+  assert.equal(byId.get('A4')!.assetId, undefined, '不写就是没写')
 })

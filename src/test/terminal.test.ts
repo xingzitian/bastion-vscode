@@ -2,7 +2,12 @@
 import '../testkit/vscode-stub'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import * as fs from 'fs'
+import * as os from 'os'
+import * as path from 'path'
 import { tailText, isMarkerSafe, stripAnsi, safeReadStart } from '../terminal'
+import { NodeFsZmodemIo, uploadModeOf } from '../zmodemIo'
+import { buildOfferParams } from '../zmodem'
 
 // ---------------------------------------------------------------------------
 // ANSI 分块：这是真实咬过的 bug —— 菜单明明在屏幕上、dump 出来也干净，就是认不出来。
@@ -182,3 +187,79 @@ test('isMarkerSafe：后台任务 / exec 换 shell 不加哨兵', () => {
   assert.equal(isMarkerSafe('cat a | exec b'), false)
   assert.equal(isMarkerSafe('   '), false)
 })
+
+// ───────── 上传文件的权限位：不给 mode 就会传成 0000（真机惨案） ─────────
+//
+// 2026-09-14 实测：远端回读 `NA|536838|…|no|/tmp/xxx.vsix` —— 第 4 列 readable=no，
+// 文件在但谁都读不了。根因在 ZMODEM 的 ZFILE 头：zmodem.js 是
+//   `e.mode ? (32768 | e.mode).toString(8) : '0'`
+// 我们没给 mode → 发 '0' → 远端 lrzsz 的 rz 按 0000 建文件。
+// 后果不只是"校验拿不到哈希"，**部署上去的配置文件服务也读不了**。
+
+test('上传权限位：Windows 给 0o644，类 Unix 保留真实位，且**绝不能是 0**', () => {
+  // Windows 上 st.mode 是合成的（可写 0o666 / 只读 0o444），照搬会让远端文件 world-writable
+  assert.equal(uploadModeOf({ mode: 0o100666 }), process.platform === 'win32' ? 0o644 : 0o666)
+  if (process.platform !== 'win32') {
+    assert.equal(uploadModeOf({ mode: 0o100755 }), 0o755, '脚本的 +x 要保住')
+    assert.equal(uploadModeOf({ mode: 0 }), 0o644, '算出来是 0 就兜底 0o644')
+  }
+  assert.notEqual(uploadModeOf({ mode: 0o100666 }), 0, '**绝不能给 0** —— 远端会建出谁都读不了的文件')
+})
+
+test('statFiles 一定带上 mode（不带就会被远端建成 0000）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bastion-mode-'))
+  try {
+    const f = path.join(dir, 'a.txt')
+    fs.writeFileSync(f, 'x')
+    const io = new NodeFsZmodemIo()
+    const [info] = await io.statFiles([f])
+    assert.ok(info, '应当读到文件信息')
+    assert.ok(typeof info.mode === 'number' && info.mode > 0, `mode 必须是正的权限位，实际 ${info.mode}`)
+    assert.equal(info.mode! & 0o170000, 0, '不能把文件类型位塞进来（zmodem.js 会自己 OR 32768）')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+
+// ───────── ZFILE 的 mode：**回归测试**（真机上传权限 0000 的那个 bug） ─────────
+//
+// 上一轮我修错了层：把本地权限读进了 statFiles，但真正发出去的 offer 是手写的
+// `{ name, size, mtime, mode: 0 }` —— 那个 0 把改动整个盖掉了。所以这里直接测
+// 「构造出来的 offer 里 mode 是什么」，而不是测"我读到了权限"。
+
+test('ZFILE offer 的 mode 绝不能是 0（remote 会照它 chmod 成 0000）', () => {
+  const base = { path: '/x/a.txt', name: 'a.txt', size: 10, mtime: 1757000000 }
+  const zero = { files_remaining: 0, bytes_remaining: 0 }
+
+  assert.equal(buildOfferParams({ ...base, mode: 0 }, zero).mode, 0o644, 'mode=0 要兜底成 644')
+  assert.equal(buildOfferParams({ ...base }, zero).mode, 0o644, '完全没给 mode 也要兜底成 644')
+
+  const offer = buildOfferParams({ ...base, mode: 0o755 }, zero)
+  assert.equal(offer.mode, 0o755, '类 Unix 上的真实权限位要保留（脚本的 +x）')
+  assert.equal(offer.mode! & 0o170000, 0, '不能把文件类型位塞进去（zmodem.js 会 OR 32768）')
+  assert.equal(offer.name, 'a.txt')
+  assert.equal(offer.size, 10)
+  assert.equal(offer.mtime, 1757000000, 'mtime 也要带（远端会保留源文件时间戳）')
+})
+
+test('ZFILE offer：多文件时带上 files_remaining / bytes_remaining', () => {
+  const off = buildOfferParams(
+    { path: '/x/a', name: 'a', size: 1, mtime: 1, mode: 0o644 },
+    { files_remaining: 3, bytes_remaining: 100 }
+  )
+  assert.equal(off.files_remaining, 3)
+  assert.equal(off.bytes_remaining, 100)
+})
+
+test('sendOne 必须用 buildOfferParams（不许再手写 offer 把 mode 写死）', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'zmodem.ts'), 'utf8')
+  assert.match(src, /const offer = buildOfferParams\(f, counters\)/)
+  // 只看代码，不看注释 —— 注释里正在解释这个坑，会误伤
+  const code = src
+    .split('\n')
+    .filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l))
+    .join('\n')
+  assert.doesNotMatch(code, /mode:\s*0\s*[,}]/, '不许再出现手写的 mode: 0')
+})
+

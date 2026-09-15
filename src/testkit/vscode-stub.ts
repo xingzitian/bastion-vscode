@@ -104,13 +104,33 @@ export function queueQuickPickResponse(value: unknown): void {
 
 /** 记录到的 showInformationMessage / showWarningMessage 文本（按调用顺序） */
 export const infoMessages: string[] = []
+
+/** showOpenDialog 的预设返回值（先进先出；空了返回 undefined = 用户取消） */
+export const openDialogResults: Array<Array<{ fsPath: string }> | undefined> = []
+
+/** showOpenDialog 收到的 options（用来断言"默认定位在哪个目录"之类） */
+export const openDialogCalls: unknown[] = []
+
+export function setOpenDialogResult(result: Array<{ fsPath: string }> | undefined): void {
+  openDialogResults.push(result)
+}
 export const warningMessages: string[] = []
+
+/** 配置变化监听器（`workspace.onDidChangeConfiguration` 注册进来的） */
+const configChangeListeners: Array<(e: { affectsConfiguration(section: string): boolean }) => void> = []
+
+/** 模拟「用户在设置里改了某项」：只通知 affectsConfiguration 为真的那些监听器 */
+export function fireConfigChange(section: string): void {
+  for (const l of configChangeListeners) l({ affectsConfiguration: (s: string) => s === section || section.startsWith(s + '.') })
+}
 
 export function resetWindowRecords(): void {
   quickPickCalls.length = 0
   quickPickResponses.length = 0
   infoMessages.length = 0
   warningMessages.length = 0
+  openDialogResults.length = 0
+  openDialogCalls.length = 0
 }
 
 function makeStatusBarItem(): FakeStatusBarItem {
@@ -168,6 +188,8 @@ const fakeVscode = {
   EventEmitter: FakeEventEmitter,
   Uri: {
     file: (p: string) => ({ fsPath: p, scheme: 'file' }),
+    // MCP 端点注册要用它（扩展把 http://127.0.0.1:port/mcp 包成 Uri 交给 VS Code）
+    parse: (s: string) => ({ toString: () => s, fsPath: s, scheme: s.split(':')[0] }),
     joinPath: (base: { fsPath: string }, ...segs: string[]) => ({
       fsPath: [base.fsPath, ...segs].join('/')
     })
@@ -175,6 +197,11 @@ const fakeVscode = {
   workspace: {
     get workspaceFolders(): unknown {
       return workspaceFolders
+    },
+    // 配置变化监听：MCP 端点要靠它响应 bastion.mcpEnabled / mcpPort 的切换
+    onDidChangeConfiguration: (listener: (e: { affectsConfiguration(section: string): boolean }) => void) => {
+      configChangeListeners.push(listener)
+      return { dispose(): void {} }
     },
     getConfiguration: (section?: string) => ({
       get: <T>(key: string, def?: T): T => {
@@ -195,6 +222,10 @@ const fakeVscode = {
       clear(): void {},
       dispose(): void {}
     }),
+    showOpenDialog: async (options?: unknown) => {
+      openDialogCalls.push(options)
+      return openDialogResults.shift()
+    },
     showInformationMessage: async (msg: string) => {
       infoMessages.push(String(msg))
       return undefined
@@ -217,7 +248,15 @@ const fakeVscode = {
   commands: {
     executeCommand: async () => undefined,
     registerCommand: () => ({ dispose(): void {} })
-  }
+  },
+  // MCP 相关的两个 API：默认「不存在」（模拟 1.101 以下的 VS Code），测试可以赋值上来
+  // 模拟新版本。
+  //
+  // ⚠️ 为什么必须在这里先声明成 undefined：`import * as vscode from 'vscode'` 编译后是
+  // `__importStar(require('vscode'))`，它只给**导入那一刻已存在的键**建 getter；
+  // 事后再往这个对象上加 `lm`，被测模块是看不到的（踩过一次）。
+  lm: undefined as unknown,
+  McpHttpServerDefinition: undefined as unknown
 }
 
 let installed = false
