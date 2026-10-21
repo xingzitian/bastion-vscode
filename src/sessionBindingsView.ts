@@ -40,9 +40,9 @@ export function updateAiBindingSlot(): void {
   setSlot('ai', {
     text: `$(hubot) AI ${total}`,
     tooltip: new vscode.MarkdownString(
-      ['**AI 会话绑定**', ...lines, '', '点击查看 / 解绑（`BastionShell: 查看 AI 会话绑定`）'].join('\n')
+      ['**AI 会话绑定**', ...lines, '', '点这里打开左侧「AI 访问」：看权限、解绑、签发令牌'].join('\n')
     ),
-    command: 'bastion.showAiBindings'
+    command: 'bastion.aiAccess.focus'
   })
 }
 

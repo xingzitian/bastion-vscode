@@ -9,6 +9,9 @@ import { abortDeployTask } from './deployRun'
 import { fmtBytes, fmtDuration, fmtSpeed, progressBar } from './status'
 import { updateStatusBar } from './slots'
 import { log, outChannel } from './log'
+import { buildAiModel } from './aiAccess'
+import { mcpClientTokens, mcpMainToken } from './mcpRegister'
+import { loadBindings } from './sessionBindings'
 
 /**
  * 「总览与进度」面板 —— 停在右侧辅助侧边栏里的一个固定小窗。
@@ -40,6 +43,16 @@ interface OverviewSession {
   upMs: number
   reused: number
   active: boolean
+  /** 谁绑着这条会话（`A(主令牌)` / `B(claude)`）—— 两个 AI 并行时一眼看出谁在动它 */
+  owners: string[]
+}
+
+interface OverviewAiClient {
+  label: string
+  scopeLabel: string
+  plain: string
+  bindings: string[]
+  isMain: boolean
 }
 
 interface OverviewTransfer {
@@ -73,6 +86,8 @@ interface OverviewForward {
 interface OverviewState {
   hasAny: boolean
   sessions: OverviewSession[]
+  /** AI 客户端与它们的绑定（大总览里必须看得见，而不是只在状态栏一个小数字） */
+  ai: { clients: OverviewAiClient[]; hasCustom: boolean }
   transfers: OverviewTransfer[]
   deploys: OverviewDeploy[]
   forwards: OverviewForward[]
@@ -211,6 +226,12 @@ async function runAction(name: string): Promise<void> {
     case 'openTransferHistory':
       await vscode.commands.executeCommand('bastion.showTransferHistory')
       break
+    case 'showAiAccess':
+      await vscode.commands.executeCommand('bastion.aiAccess.focus')
+      break
+    case 'issueAiToken':
+      await vscode.commands.executeCommand('bastion.issueAiToken')
+      break
     case 'stopAllForwards':
       await vscode.commands.executeCommand('bastion.stopAllForwards')
       break
@@ -254,8 +275,33 @@ function collectState(): OverviewState {
     broadcasting: broadcastTargets.includes(term),
     upMs: term.conn.connectedAt > 0 ? now - term.conn.connectedAt : 0,
     reused: term.conn.channelCount,
-    active: vt === activeVt
+    active: vt === activeVt,
+    owners: [] as string[]
   }))
+
+  // AI 客户端与绑定（与左侧「AI 访问」同一份模型）
+  const aiEntries = [...terminals.entries()]
+  const aiModel = buildAiModel({
+    tokens: mcpClientTokens().map((c) => ({ label: c.label, scope: c.scope, token: c.token })),
+    clients: loadBindings().clients ?? {},
+    sessions: aiEntries.map(([vt, t]) => ({ id: t.sessionId, name: vt.name })),
+    mainToken: mcpMainToken()
+  })
+  const aiClients: OverviewAiClient[] = aiModel.clients.map((c) => ({
+    label: c.label,
+    scopeLabel: c.scopeLabel,
+    plain: c.plain,
+    bindings: c.bindings.map((b) => b.alias + ' → ' + b.sessionId + ' ' + b.name),
+    isMain: c.isMain
+  }))
+  const ownerBySid = new Map<string, string[]>()
+  for (const s of aiModel.sessions) {
+    ownerBySid.set(s.id, s.owners.map((o) => o.alias + '(' + o.label + ')'))
+  }
+  for (const [vt, t] of aiEntries) {
+    const row = sessions.find((x) => x.no === t.sessionNo)
+    if (row) row.owners = ownerBySid.get(t.sessionId) ?? []
+  }
 
   const transfers: OverviewTransfer[] = getActiveTransfers().map((t) => {
     const total = t.bytesTotal > 0 ? t.bytesTotal : t.bytesSent
@@ -303,8 +349,9 @@ function collectState(): OverviewState {
   const lastDeploy = lr ? { name: lr.name, okCount: lr.okCount, total: lr.total, agoMs: now - lr.at } : null
 
   return {
-    hasAny: sessions.length > 0 || transfers.length > 0 || deploys.length > 0 || forwards.length > 0,
+    hasAny: sessions.length > 0 || transfers.length > 0 || deploys.length > 0 || forwards.length > 0 || aiModel.hasCustom,
     sessions,
+    ai: { clients: aiClients, hasCustom: aiModel.hasCustom },
     transfers,
     deploys,
     forwards,
@@ -432,8 +479,9 @@ export function buildOverviewHtml(cspSource: string): string {
         const ro = x.readOnly ? '<span class="badge warn">只读</span>' : '';
         const bc = x.broadcasting ? '<span class="badge warn">广播中</span>' : '';
         const cur = x.active ? '<span class="badge">当前</span>' : '';
+        const own = (x.owners && x.owners.length) ? '<span class="badge warn">AI ' + x.owners.join(' · ') + '</span>' : '';
         parts.push('<div class="card">' +
-          '<div class="row"><span class="title">#' + x.no + ' ' + esc(x.name) + '</span>' + state + ro + bc + cur + '</div>' +
+          '<div class="row"><span class="title">#' + x.no + ' ' + esc(x.name) + '</span>' + state + ro + bc + cur + own + '</div>' +
           '<div class="row sub">' + esc(x.mode) + ' · 已连 ' + dur(x.upMs) + ' · 复用 ' + x.reused + ' 会话</div>' +
           '<div class="row">' +
             btn(x.active ? '已在前面' : '聚焦', { type: 'focusSession', no: x.no }, x.active ? '' : 'primary') +
@@ -445,6 +493,25 @@ export function buildOverviewHtml(cspSource: string): string {
             btn('关闭', { type: 'closeSession', no: x.no }) +
           '</div></div>');
       }
+    }
+
+    // ── AI 与会话：谁有多大的权限、绑在哪条会话上（不能只藏在状态栏里）──
+    const ai = s.ai || { clients: [], hasCustom: false };
+    parts.push('<h2>AI 与会话' + (ai.clients.length ? ' (' + ai.clients.length + ')' : '') + '</h2>');
+    for (const c of ai.clients) {
+      parts.push('<div class="card">' +
+        '<div class="row"><span class="title">' + esc(c.label) + '</span>' +
+        '<span class="badge ' + (c.isMain ? 'ok' : '') + '">' + esc(c.scopeLabel) + '</span></div>' +
+        '<div class="row sub">' + esc(c.plain) + '</div>' +
+        (c.bindings.length
+          ? '<div class="row sub mono" style="flex-wrap:wrap;gap:4px">' + c.bindings.map((b) => '<span class="badge">' + esc(b) + '</span>').join('') + '</div>'
+          : '<div class="row sub">还没绑定会话</div>') +
+        '<div class="row">' + btn('在左侧「AI 访问」里管理', { type: 'action', name: 'showAiAccess' }) + '</div>' +
+      '</div>');
+    }
+    if (!ai.hasCustom) {
+      parts.push('<div class="row sub" style="flex-wrap:wrap;gap:4px">所有人都在用主令牌（全权）。想限制某个 AI，就给它单独签发一个只读令牌。</div>');
+      parts.push('<div class="actions">' + btn('签发只读令牌', { type: 'action', name: 'issueAiToken' }, 'primary') + '</div>');
     }
 
     parts.push('<h2>传输 ' + (s.transfers.length ? '· 进行中 ' + s.transfers.length : '') + '</h2>');

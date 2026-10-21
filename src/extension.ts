@@ -91,7 +91,9 @@ import {
 } from './transferCmd'
 import { setDownloadDir, clearDownloadDir } from './downloadDir'
 import { registerSessionBindingsView, showAiBindings } from './sessionBindingsView'
-import { manageAiTokens } from './mcpRegister'
+import { changeTokenScopeFlow, issueTokenFlow, manageAiTokens, revokeTokenFlow } from './mcpRegister'
+import { focusAiSession, registerAiAccess } from './aiAccessTree'
+import { loadBindings, saveBindings, unbind as unbindBinding } from './sessionBindings'
 import { openConfigFile, openHabitsFile, showLog, pickOverwriteMode, openDangerRules } from './configCmd'
 import { generateMenuRule } from './menuCmd'
 import { toggleBroadcast, toggleBroadcastMode } from './broadcastCmd'
@@ -120,6 +122,8 @@ export function activate(context: vscode.ExtensionContext): void {
   // 总览面板：实例只要活到 deactivate，其它模块通过 setOverviewProvider 拿到它
   const overviewProvider = new OverviewProvider()
   setOverviewProvider(overviewProvider)
+  // 「AI 访问」：令牌 / 权限 / 绑定 —— 和档案一样在左侧树里看和管（先建好，命令里要用它刷新）
+  const aiAccessProvider = registerAiAccess(context)
   context.subscriptions.push({ dispose: () => disposeOverview() })
 
   // 迁移旧版 globalState 部署任务为文件
@@ -161,6 +165,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider('bastion.quickCommands', quickCommandsProvider),
     vscode.window.registerTreeDataProvider('bastion.forwards', forwardProvider),
     vscode.window.registerTreeDataProvider('bastion.transfers', transferProvider),
+  // 「AI 访问」树：令牌 / 权限 / 绑定都在这儿看和改（不再藏在命令面板里）
+  // （「AI 访问」树在下面用 registerAiAccess 注册）
     // 右侧辅助侧边栏里的「总览与进度」面板：点状态栏任意格子都会展开它
     vscode.window.registerWebviewViewProvider(OverviewProvider.viewId, overviewProvider, {
       webviewOptions: { retainContextWhenHidden: true }
@@ -212,6 +218,7 @@ export function activate(context: vscode.ExtensionContext): void {
           getProfiles(context).map((p) => ({ label: p.name, description: `${p.username}@${p.host}`, name: p.name })),
           { placeHolder: '清除哪个档案保存的密码？（下次连接会提示重新输入）' }
         )
+
         if (!picked) return
         name = picked.name
       }
@@ -222,6 +229,32 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('bastion.showAiBindings', () => showAiBindings()),
     vscode.commands.registerCommand('bastion.manageAiTokens', () => manageAiTokens()),
+    vscode.commands.registerCommand('bastion.issueAiToken', () => issueTokenFlow().then(() => aiAccessProvider.refresh())),
+    vscode.commands.registerCommand('bastion.revokeAiToken', (label?: string) => revokeTokenFlow(typeof label === 'string' ? label : undefined).then(() => aiAccessProvider.refresh())),
+    vscode.commands.registerCommand('bastion.changeAiTokenScope', (label?: string) =>
+      label ? changeTokenScopeFlow(label).then(() => aiAccessProvider.refresh()) : undefined
+    ),
+    vscode.commands.registerCommand('bastion.focusAiSession', (sid?: string) => {
+      if (typeof sid === 'string') focusAiSession(sid)
+    }),
+    vscode.commands.registerCommand('bastion.unbindAiSession', (node?: { client?: { clientId: string; label: string }; bindingAlias?: string; sessionId?: string }) => {
+      const clientId = node?.client?.clientId
+      const alias = node?.bindingAlias
+      const sid = node?.sessionId
+      if (!clientId || (!alias && !sid)) {
+        void vscode.window.showInformationMessage('从左侧「AI 访问」树里右键某条绑定来解绑。')
+        return
+      }
+      const f = loadBindings()
+      const ok = unbindBinding(f, clientId, alias ? { alias } : { sessionId: sid! })
+      if (ok) {
+        saveBindings(f)
+        void vscode.window.showInformationMessage('已解绑 ' + String(node?.client?.label ?? clientId) + ' 的 ' + String(alias ?? sid))
+      } else {
+        void vscode.window.showWarningMessage('没找到这条绑定（可能已经被清掉了）')
+      }
+      aiAccessProvider.refresh()
+    }),
     vscode.commands.registerCommand('bastion.showMcpInfo', () => showMcpInfo()),
     vscode.commands.registerCommand('bastion.showForwards', showForwards),
     vscode.commands.registerCommand('bastion.showLog', showLog),

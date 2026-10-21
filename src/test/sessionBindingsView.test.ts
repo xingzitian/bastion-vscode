@@ -36,7 +36,7 @@ test('有绑定时状态栏显示「AI N」，没绑定就清掉（不占底栏�
     const item = slotItem('ai')
     assert.ok(item, '应该出现 AI 绑定格')
     assert.match(item!.text, /AI 1/, `要显示绑定条数：${item!.text}`)
-    assert.equal(item!.command?.command, 'bastion.showAiBindings', '点一下要能打开面板')
+    assert.equal(item!.command?.command, 'bastion.aiAccess.focus', '点一下要打开左侧「AI 访问」')
     const tip = String((item!.tooltip as { value?: string })?.value ?? '')
     assert.match(tip, /claude/, 'tooltip 里要写清是哪个客户端绑的')
 

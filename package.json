@@ -97,7 +97,13 @@
     "onCommand:bastion.rsyncSyncToSession",
 "onCommand:bastion.forgetPassword",
 "onCommand:bastion.manageAiTokens",
-                "onCommand:bastion.showAiBindings",
+                "onView:bastion.aiAccess",
+                "onCommand:bastion.issueAiToken",
+                "onCommand:bastion.revokeAiToken",
+                "onCommand:bastion.changeAiTokenScope",
+                "onCommand:bastion.unbindAiSession",
+                "onCommand:bastion.focusAiSession",
+                                "onCommand:bastion.showAiBindings",
                 "onCommand:bastion.showMcpInfo",
     "onCommand:bastion.pickOverwriteMode",
     "onCommand:bastion.stopAllForwards",
@@ -436,6 +442,10 @@
         {
           "id": "bastion.transfers",
           "name": "传输历史"
+        },
+        {
+          "id": "bastion.aiAccess",
+          "name": "AI 访问"
         }
       ],
       "bastionOverview": [
@@ -447,6 +457,10 @@
       ]
     },
     "viewsWelcome": [
+    {
+      "view": "bastion.aiAccess",
+      "contents": "还没有签发过 AI 令牌 —— 现在所有外部 AI 都在用主令牌（全权）。\n[签发只读令牌](command:bastion.issueAiToken)"
+    },
       {
         "view": "bastion.profiles",
         "contents": "还没有连接档案。\n[新建连接档案](command:bastion.addProfile)"
@@ -924,6 +938,31 @@
         "title": "BastionShell: 管理外部 AI 令牌（只读 / 可写分档）",
         "icon": "$(key)"
             },
+                        {
+        "command": "bastion.issueAiToken",
+        "title": "BastionShell: 签发 AI 令牌（只读 / 可写 / 全权）",
+        "icon": "$(key)"
+            },
+            {
+        "command": "bastion.revokeAiToken",
+        "title": "BastionShell: 吊销 AI 令牌",
+        "icon": "$(trash)"
+            },
+            {
+        "command": "bastion.changeAiTokenScope",
+        "title": "BastionShell: 修改 AI 令牌权限",
+        "icon": "$(settings-gear)"
+            },
+            {
+        "command": "bastion.unbindAiSession",
+        "title": "BastionShell: 解绑 AI 会话绑定",
+        "icon": "$(debug-disconnect)"
+            },
+            {
+        "command": "bastion.focusAiSession",
+        "title": "BastionShell: 聚焦 AI 绑定的会话",
+        "icon": "$(terminal)"
+            },
             {
         "command": "bastion.showAiBindings",
         "title": "BastionShell: 查看 AI 会话绑定（谁在用哪条会话）",
@@ -1019,6 +1058,11 @@
     ],
     "menus": {
       "view/title": [
+      {
+        "command": "bastion.issueAiToken",
+        "when": "view == bastion.aiAccess",
+        "group": "navigation@1"
+      },
         {
           "command": "bastion.showAiBindings",
           "when": "view == bastion.profiles",
@@ -1128,6 +1172,26 @@
         }
       ],
       "view/item/context": [
+      {
+        "command": "bastion.unbindAiSession",
+        "when": "view == bastion.aiAccess && viewItem == aiBinding",
+        "group": "1_主操作@1"
+      },
+      {
+        "command": "bastion.focusAiSession",
+        "when": "view == bastion.aiAccess && viewItem == aiSession",
+        "group": "1_主操作@1"
+      },
+      {
+        "command": "bastion.changeAiTokenScope",
+        "when": "view == bastion.aiAccess && viewItem == aiClient",
+        "group": "2_管理@1"
+      },
+      {
+        "command": "bastion.revokeAiToken",
+        "when": "view == bastion.aiAccess && viewItem == aiClient",
+        "group": "2_管理@2"
+      },
         {
           "command": "bastion.forgetPassword",
           "when": "view == bastion.profiles && viewItem == profile",

@@ -25,6 +25,7 @@ import { MCP_TOOL_DEFS } from './mcpTools'
 import { newMcpToken, startMcpHttpServer, toMcpTool, type McpHttpHandle } from './mcpServer'
 import { setMcpEndpointInfo } from './state'
 import { normalizeClientId } from './sessionBindings'
+import { normalizeAiScope, SCOPE_INFO } from './aiAccess'
 import type { McpClientToken, McpScope } from './mcpServer'
 
 /** 必须和 package.json 里 `contributes.mcpServerDefinitionProviders[0].id` 一致 */
@@ -235,6 +236,33 @@ async function restartAfterTokenChange(): Promise<void> {
   changeEmitter?.fire()
 }
 
+/** 主令牌（给 UI 显示掩码用；不要直接打印完整值） */
+export function mcpMainToken(): string {
+  return loadOrCreateState().token
+}
+
+/** 只改权限档、不重启（测试用） */
+export function setClientScopeState(label: string, scope: McpScope): boolean {
+  const state = loadOrCreateState()
+  const clients = state.clients ?? []
+  let hit = false
+  const next = clients.map((c) => {
+    if (normalizeClientId(c.label) !== normalizeClientId(label)) return c
+    hit = true
+    return { ...c, scope }
+  })
+  if (!hit) return false
+  writeState({ ...state, clients: next, updatedAt: new Date().toISOString() })
+  log(`已把客户端 ${label} 的权限改成 ${scope}`)
+  return true
+}
+
+export async function setClientScope(label: string, scope: McpScope): Promise<boolean> {
+  const ok = setClientScopeState(label, scope)
+  if (ok) await restartAfterTokenChange()
+  return ok
+}
+
 /** 只写状态、不重启端点（测试用；生产走 issueClientToken） */
 export function writeClientToken(label: string, scope: McpScope): McpClientToken | { error: string } {
   const clean = label.trim().slice(0, 32)
@@ -272,6 +300,82 @@ export async function revokeClientToken(label: string): Promise<boolean> {
   const removed = removeClientToken(label)
   if (removed) await restartAfterTokenChange()
   return removed
+}
+
+/** 签发流程：权限档用**人话**讲清能做什么 / 不能做什么（树和命令面板都调它） */
+export async function issueTokenFlow(): Promise<void> {
+  if (!mcpEnabled()) {
+    void vscode.window.showWarningMessage('MCP 端点是关的（bastion.mcpEnabled），签了令牌也连不上。')
+    return
+  }
+  const scope = await vscode.window.showQuickPick(
+    (['observer', 'operator', 'full'] as McpScope[]).map((s) => ({
+      label: `${SCOPE_INFO[s].label}（${s}）`,
+      description: SCOPE_INFO[s].plain,
+      detail: `能：${SCOPE_INFO[s].can.join('・')}　不能：${SCOPE_INFO[s].cannot.join('・') || '（没有限制）'}`,
+      s
+    })),
+    { placeHolder: '这个 AI 客户端能做什么？' }
+  )
+  if (!scope) return
+  const label = await vscode.window.showInputBox({
+    prompt: '给它起个标签（会出现在左侧「AI 访问」和 listSessions 的 owners 里）',
+    placeHolder: 'claude / trae / 排障-AI',
+    ignoreFocusOut: true
+  })
+  if (!label) return
+  const created = await issueClientToken(label, scope.s)
+  if ('error' in created) {
+    void vscode.window.showWarningMessage(created.error)
+    return
+  }
+  const copy = await vscode.window.showInformationMessage(
+    `已签发：${created.label}（${SCOPE_INFO[scope.s].label}）\n` +
+      `能：${SCOPE_INFO[scope.s].can.join('・')}` +
+      (SCOPE_INFO[scope.s].cannot.length ? `\n不能：${SCOPE_INFO[scope.s].cannot.join('・')}` : '') +
+      `\n\n令牌：${created.token}\n\n⚠️ 只显示这一次，现在粘到那个 AI 客户端的配置里。`,
+    '复制令牌'
+  )
+  if (copy) await vscode.env.clipboard.writeText(created.token)
+}
+
+/** 吊销流程（树右键 / 命令面板共用） */
+export async function revokeTokenFlow(label?: string): Promise<void> {
+  const clients = mcpClientTokens()
+  if (clients.length === 0) {
+    void vscode.window.showInformationMessage('还没有单独签发的令牌（所有人都在用主令牌）。')
+    return
+  }
+  const target =
+    label ??
+    (await vscode.window.showQuickPick(
+      clients.map((c) => ({ label: c.label, description: `${SCOPE_INFO[normalizeAiScope(c.scope)].label} · ${c.token.slice(0, 6)}…` })),
+      { placeHolder: '吊销哪个客户端的令牌？' }
+    ))?.label
+  if (!target) return
+  const ok = await vscode.window.showWarningMessage(`吊销「${target}」的令牌？它那个 AI 会立刻连不上。`, '吊销', '取消')
+  if (ok !== '吊销') return
+  const done = await revokeClientToken(target)
+  void vscode.window.showInformationMessage(done ? `已吊销 ${target}` : `没找到 ${target}`)
+}
+
+/** 改权限流程（树右键） */
+export async function changeTokenScopeFlow(label: string): Promise<void> {
+  const cur = mcpClientTokens().find((c) => normalizeClientId(c.label) === normalizeClientId(label))
+  const pick = await vscode.window.showQuickPick(
+    (['observer', 'operator', 'full'] as McpScope[]).map((s) => ({
+      label: `${SCOPE_INFO[s].label}（${s}）${cur && normalizeAiScope(cur.scope) === s ? ' ← 当前' : ''}`,
+      description: SCOPE_INFO[s].plain,
+      detail: `能：${SCOPE_INFO[s].can.join('・')}　不能：${SCOPE_INFO[s].cannot.join('・') || '（没有限制）'}`,
+      s
+    })),
+    { placeHolder: `把「${label}」改成哪一档？` }
+  )
+  if (!pick) return
+  const ok = await setClientScope(label, pick.s)
+  void vscode.window.showInformationMessage(
+    ok ? `${label} 的权限已改为 ${SCOPE_INFO[pick.s].label}（${SCOPE_INFO[pick.s].plain}）` : `没找到 ${label}`
+  )
 }
 
 /** 命令：管理外部 AI 的令牌（签发 / 查看 / 吊销） */
