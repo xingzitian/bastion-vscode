@@ -77,6 +77,8 @@ export interface McpSessionApi {
     userChoice?: string
     assetId?: string
     clientId?: string
+    /** 连接时直接给会话起别名（省掉一次 bastion_use） */
+    as?: string
   }): Promise<string>
   /** 把调用者绑定到某条会话（别名 A/B…）：让"我在哪条会话上"由服务端记住 */
   use(input: { session?: string; as?: string; unbind?: boolean; clientId?: string }): Promise<string>
@@ -281,6 +283,12 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
         profile: { type: 'string', description: '连接档案名（和 profiles.jsonc 里的 name 一致）' },
         host: { type: 'string', description: '目标机 IP 或主机名（堡垒机档案必填；直连档案不用填）' },
         userChoice: { type: 'string', description: '堡垒机菜单里选用户的序号，默认 "1"；某些机器不需要选用户则传空字符串' },
+        as: {
+          type: 'string',
+          description:
+            '连接时直接给这条会话起别名（如 db1 / jump / 排障-A）：之后 exec 传 session:"db1" 就行，'
+            + '不用再调一次 bastion_use 改名。不填则自动按 A/B/C… 分配'
+        },
         assetId: {
           type: 'string',
           description:
@@ -421,7 +429,16 @@ export function createToolDispatch(
         const host = typeof a.host === 'string' ? a.host : undefined
         const userChoice = typeof a.userChoice === 'string' ? a.userChoice : undefined
         const assetId = typeof a.assetId === 'string' ? a.assetId : undefined
-        return { text: await api.connect({ profile, host, userChoice, assetId, clientId }) }
+        return {
+          text: await api.connect({
+            profile,
+            host,
+            userChoice,
+            assetId,
+            clientId,
+            as: typeof a.as === 'string' ? a.as : undefined
+          })
+        }
       }
       case 'bastion_habits': {
         const action = typeof a.action === 'string' ? a.action : 'read'

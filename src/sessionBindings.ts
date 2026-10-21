@@ -15,7 +15,7 @@ import { log } from './log'
 export const BINDINGS_FILE = 'mcp-bindings.json'
 
 /** 一个客户端最多绑定几条会话（别名 A..H） */
-const MAX_ALIASES = 8
+const MAX_ALIASES = 32
 /** 绑定多久没更新就丢掉 */
 const TTL_MS = 12 * 60 * 60 * 1000
 
@@ -176,10 +176,27 @@ export function bindingByAlias(cb: ClientBindings, alias: string): Binding | und
 }
 
 /** 下一个空闲别名 A..H；满了返回 undefined */
+/**
+ * 第 n 个默认别名的名字（0→A … 25→Z, 26→AA, 27→AB …）。
+ *
+ * 用 Excel 列那种进制：26 个单字母用完之后接着 AA/AB/…，所以上限 32 时
+ * 名字是 A..Z + AA..AF —— 不再受"A 到 H 只有 8 个"的限制。
+ */
+export function aliasName(index: number): string {
+  let n = Math.max(0, Math.floor(index))
+  const chars: string[] = []
+  for (;;) {
+    chars.unshift(String.fromCharCode(65 + (n % 26)))
+    n = Math.floor(n / 26) - 1
+    if (n < 0) break
+  }
+  return chars.join("")
+}
+
 export function nextAlias(cb: ClientBindings): string | undefined {
   const used = new Set(Object.keys(cb.sessions).map((a) => a.toUpperCase()))
   for (let i = 0; i < MAX_ALIASES; i++) {
-    const a = String.fromCharCode(65 + i)
+    const a = aliasName(i)
     if (!used.has(a)) return a
   }
   return undefined

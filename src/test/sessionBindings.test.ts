@@ -205,3 +205,33 @@ test('绑定文件：真的落盘、能读回来（用临时共享目录，不�
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('别名命名：26 个字母用完之后接着 AA/AB（上限抬到 32 也不撞名）', async () => {
+  const { aliasName } = await import('../sessionBindings')
+  assert.equal(aliasName(0), 'A')
+  assert.equal(aliasName(7), 'H')
+  assert.equal(aliasName(25), 'Z')
+  assert.equal(aliasName(26), 'AA')
+  assert.equal(aliasName(27), 'AB')
+  assert.equal(aliasName(31), 'AF')
+})
+
+test('★ 绑定上限 32：第 9 条不再撞墙（以前只有 A..H 8 个）', async () => {
+  const { bindSession } = await import('../sessionBindings')
+  const f = { version: 1, clients: {} } as unknown as Parameters<typeof bindSession>[0]
+  const seen: string[] = []
+  for (let i = 0; i < 32; i++) {
+    const r = bindSession(f, 'default', { id: 'sid-' + i, name: '#i h' + i, no: i, state: 'shell', cursor: 0 }, undefined)
+    assert.ok('alias' in r, `第 ${i + 1} 条应该绑定成功：${JSON.stringify(r)}`)
+    seen.push((r as { alias: string }).alias)
+  }
+  assert.equal(seen[0], 'A')
+  assert.equal(seen[7], 'H')
+  assert.equal(seen[8], 'I', '第 9 条应该是 I —— 这正是原来会失败的地方')
+  assert.equal(seen[25], 'Z')
+  assert.equal(seen[26], 'AA')
+  assert.equal(seen[31], 'AF')
+  const over = bindSession(f, 'default', { id: 'sid-32', name: '#32 h32', no: 32, state: 'shell', cursor: 0 }, undefined)
+  assert.ok('error' in over)
+  assert.match((over as { error: string }).error, /32/)
+})

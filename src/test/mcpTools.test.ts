@@ -167,7 +167,7 @@ test('分发：connect 把 assetId 原样传给能力层（一个 IP 多条资�
     })
   )
   await dispatch('bastion_connect', { profile: '生产', host: '10.0.0.1', userChoice: '2', assetId: '2' })
-  assert.deepEqual(seen, { profile: '生产', host: '10.0.0.1', userChoice: '2', assetId: '2', clientId: undefined })
+  assert.deepEqual(seen, { profile: '生产', host: '10.0.0.1', userChoice: '2', assetId: '2', clientId: undefined, as: undefined })
 
   // 不传就是 undefined（决策层据此去问人，而不是瞎猜一条）
   await dispatch('bastion_connect', { profile: '生产', host: '10.0.0.1' })
@@ -260,4 +260,19 @@ test('写习惯的时机规则必须写在说明里（第一次观察到先别�
   const exec = MCP_TOOL_DEFS.find((t) => t.name === 'bastion_exec')!
   assert.match(exec.description, /第一次/)
   assert.match(MCP_INSTRUCTIONS, /2~3 次/)
+})
+
+
+test('分发：connect 的 as（连接时定别名）原样传给能力层', async () => {
+  let seen: { as?: string } | undefined
+  const dispatch = createToolDispatch(
+    fakeApi({
+      connect: async (i) => {
+        seen = i
+        return '已连接'
+      }
+    })
+  )
+  await dispatch('bastion_connect', { profile: '生产', host: '10.0.0.1', as: 'db1' })
+  assert.equal(seen!.as, 'db1')
 })

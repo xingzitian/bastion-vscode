@@ -177,7 +177,9 @@ export function findSession(
 export function autoBind(
   clientId: string | undefined,
   term: BastionTerminal,
-  vt: vscode.Terminal
+  vt: vscode.Terminal,
+  /** 连接时就能定别名（不用再调一次 bastion_use 改名） */
+  as?: string
 ): { alias: string; existing: boolean } | { error: string } {
   const bindings = loadBindings()
   const ref: SessionRef = {
@@ -187,7 +189,7 @@ export function autoBind(
     state: sessionScreenState(term),
     cursor: term.screenCursor ?? 0
   }
-  const r = bindSession(bindings, normalizeClientId(clientId), ref)
+  const r = bindSession(bindings, normalizeClientId(clientId), ref, as)
   if ('error' in r) return r
   saveBindings(bindings)
   return r
@@ -271,6 +273,8 @@ export async function connectToTarget(input?: {
   assetId?: string
   /** 调用它的客户端（X-BastionShell-Client）；用来把新会话自动绑到它身上 */
   clientId?: string
+  /** 连接时就给这条会话起别名（A/B… 或 db1/jump 这类自己好记的名字） */
+  as?: string
 }): Promise<string> {
   const profileName = input?.profile ?? ''
   const host = input?.host ?? ''
@@ -288,7 +292,7 @@ export async function connectToTarget(input?: {
   if (profile.mode === 'direct') {
     const { term, vt } = openTerminal(conn, profile, `${profile.username}@${profile.host}`)
     vt.show()
-    const b = autoBind(input?.clientId, term, vt)
+    const b = autoBind(input?.clientId, term, vt, input?.as)
     return (
       `已直接连接 ${profile.username}@${profile.host} —— 会话 ${term.sessionId}（${vt.name}），${bindNoteOf(b)}。` +
       `之后 bastion_exec 不传 session 时就落在这条会话上（绑定多于一条时必须指定）。` +
@@ -311,7 +315,7 @@ export async function connectToTarget(input?: {
   }
 
   const assetNote = assetNoteOf(host, opened.asset)
-  const bound = autoBind(input?.clientId, opened.term, opened.vt)
+  const bound = autoBind(input?.clientId, opened.term, opened.vt, input?.as)
   return (
     `已连接到目标 ${host} —— 会话 ${opened.term.sessionId}（${opened.vt.name}），${bindNoteOf(bound)}。` +
     `之后 bastion_exec 不传 session 时就落在这条会话上（绑定多于一条时必须指定）。` +
