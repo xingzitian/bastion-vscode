@@ -1,3 +1,43 @@
+## 0.3.11
+
+> 0.3.10 压测（另一轮 AI 实机跑了 A~H 共 20 多个用例）暴露的问题全部修掉，含一个会把会话锁死的 P0。
+
+### 修复（P0）
+
+- **作业完成后状态永不翻转**（会话被锁死）：完成判定原来绑在 exec 的等待窗口里，exec 一超时返回、
+  监听器被摘掉，就再没人看结束标记 —— 命令早跑完了，状态永远 `working`，下一条命令被"还有命令在跑"拒绝。
+  现在**作业自己持有哨兵与 quietMs**：每来一块输出就扫 `‹marker›:‹rc›`，命中即完成（退出码 0 也能正确识别）；
+  exec 只在看到哨兵时收作业，其余交给看门狗。
+- **静默不再单独判完成**：`sleep 45` 这类"长时间没输出"不再被误判成结束；兜底条件改成
+  **静默 + 提示符已回**，并区分"shell 退出（回堡垒机菜单）→ `failed/session_exited`"。
+- **会话关闭后作业不终结**：终端关闭/销毁时把它上面的作业置 `failed/session_lost`（原来会永远 working）。
+
+### 修复（P1）
+
+- **`bastion_exec` 的 schema 缺参数**：`waitMs/quietMs/mode/background/logToFile/force/session` 之前只加进了分发、
+  没进 `inputSchema`，而 schema 是 `additionalProperties:false` —— 严格客户端根本传不进来。已补齐，
+  并加**元测试**（用 Proxy 记录 dispatch 实际读取的参数键，与 schema 对账）防止再漏。
+- **两种"找不到会话"文案相同**：现在"会话 s-xxxx 已关闭（刚才还活着）"与"指认不到"分开，下一步动作不同。
+- **`initialize` 请求非法版本静默降级**：改为 `-32022`（和 `MCP-Protocol-Version` 头路径一致）。
+- **Tasks 扩展声明了却给不了任务**：门槛里多余的 `modern &&` 去掉 —— 按扩展规范只看客户端是否声明；
+  声明了就一定拿到 `resultType:"task"`，没声明绝不塞。
+
+### 修复（P2）
+
+- `force:true` 插队后旧作业的 `reason=force_superseded` 在 wait/job 返回里可见。
+- `bastion_job` 的 `maxBytes` 下限从 1024 降到 **1**（并写进 schema），不再"传 50 得 102）。
+- `bastion_job`/`bastion_wait` 的 `structuredContent` 补上 `chunk`（正文）、`markerSeen`、`reason`。
+- 绑定统一在加载时清扫（`loadBindingsSwept`）：死会话不再长期占着别名；`health`/树/列表三处一致。
+
+### 文档
+
+- `docs/exec-protocol.md` 新增「谁负责判完成」分工表（作业 / exec / 看门狗），并写明"静默不能单独判完成"。
+
+### 桌面版
+
+- 同样的 P0 修复：作业自持哨兵、静默 + 提示符兜底、会话关闭置 `session_lost`；
+- exec schema 补齐 `session/waitMs/quietMs/mode/background/force`；
+- "刚关闭的会话"与"指认不到"文案分开；版本 0.9.2。
 ## 0.3.10
 
 > MCP 协议升级：**一步到 2026-07-28**（modern），同时保留 legacy —— 老客户端照旧能用。

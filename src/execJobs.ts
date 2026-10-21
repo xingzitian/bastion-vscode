@@ -39,8 +39,16 @@ export interface ExecJob {
   hint?: string
   /** 远端 tee 的日志路径（有则给 AI 事后 cat） */
   logPath?: string
-  /** failed 的原因：session_lost / exit_nonzero / force_superseded */
+  /** failed 的原因：session_lost / session_exited / exit_nonzero / force_superseded */
   reason?: string
+  /** 哨兵（`<marker>:<rc>` 出现在输出里就算完成）——作业**自己**持有它，不依赖 exec 的等待窗口 */
+  marker?: string
+  /** 输出静止多久算"没输出了"（兜底完成判定；必须配合"提示符已回"） */
+  quietMs: number
+  /** 最后一次收到输出的时间（静默兜底的依据） */
+  lastOutputAt: number
+  /** 扫描标记时保留的重叠尾巴（防止标记被切在两块之间） */
+  scanTail: string
   /** 等待者（waitJob 注册；状态或输出变化时唤醒） */
   waiters: Set<() => void>
 }
@@ -84,14 +92,19 @@ export function createJob(input: {
   command: string
   cursorAtStart: number
   logPath?: string
+  /** 哨兵：作业自己拿着它扫输出，这样 exec 超时返回后仍然能判完成 */
+  marker?: string
+  /** 静默兜底窗口（默认 15s） */
+  quietMs?: number
   now?: number
 }): ExecJob {
+  const now = input.now ?? Date.now()
   const job: ExecJob = {
     id: newJobId(),
     sessionId: input.sessionId,
     sessionNo: input.sessionNo,
     command: input.command,
-    startedAt: input.now ?? Date.now(),
+    startedAt: now,
     state: 'working',
     buffer: Buffer.alloc(0),
     dropped: 0,
@@ -99,6 +112,10 @@ export function createJob(input: {
     markerSeen: false,
     cursorAtStart: input.cursorAtStart,
     logPath: input.logPath,
+    marker: input.marker,
+    quietMs: input.quietMs ?? 15_000,
+    lastOutputAt: now,
+    scanTail: '',
     waiters: new Set()
   }
   jobs.set(job.id, job)
@@ -138,11 +155,55 @@ export function appendJobOutput(job: ExecJob, chunk: Buffer | string): void {
     job.buffer = job.buffer.subarray(drop)
     job.dropped += drop
   }
+  const text = buf.toString('utf8')
+  job.lastOutputAt = Date.now()
   const tail = job.buffer.subarray(Math.max(0, job.buffer.length - 4096)).toString('utf8')
   const lines = tail.split(/\r?\n/).filter((l) => l.trim() !== '')
   if (lines.length > 0) job.lastLine = lines[lines.length - 1].slice(0, 300)
+
+  // ★ 完成判定归作业自己：exec 超时返回后，标记仍然能被这里解析出来。
+  //   （上一版把完成判定绑在 exec 的等待窗口里，超时一返回就没人再看标记了 → 作业永远 working）
+  const hit = scanMarkerTick(job, text)
+  // ⚠️ 退出码 0 是 falsy —— 必须用 !== undefined（否则"成功"会被当成"没命中"，永远 working）
+  if (hit !== undefined) {
+    completeJob(job, { exitCode: hit, markerSeen: true })
+    return
+  }
   wake(job)
 }
+
+/**
+ * 在"上一块的尾巴 + 这一块"里找哨兵，返回退出码。
+ *
+ * 为什么要拼尾巴：标记可能被切在两次数据块之间。
+ * 为什么不担心匹配到命令回显：回显里是字面量 `: $ec`（没有数字），正则要求 `:<数字>` 才算。
+ */
+function scanMarkerTick(job: ExecJob, chunkText: string): number | undefined {
+  if (!job.marker || (job.state !== 'working' && job.state !== 'input_required')) return undefined
+  const hay = job.scanTail + chunkText
+  const esc = job.marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const m = new RegExp(`${esc}:(\\d+)`).exec(hay)
+  job.scanTail = hay.slice(-(job.marker.length + 64))
+  if (!m) return undefined
+  const rc = Number.parseInt(m[1], 10)
+  return Number.isFinite(rc) ? rc : undefined
+}
+
+/** 输出已经静止够久了吗（静默兜底的**前提**是"提示符已回"，不能只看时间） */
+export function quietExpired(job: ExecJob, now = Date.now()): boolean {
+  if (job.state !== 'working') return false
+  return now - job.lastOutputAt >= job.quietMs
+}
+
+/**
+ * 静默兜底完成：没看到哨兵，但提示符已经回来了，说明命令确实跑完了。
+ *
+ * 调用方必须自己判断"提示符已回"（那需要终端/屏幕状态，不在这个纯逻辑模块里）。
+ */
+export function completeByQuiet(job: ExecJob, exitCode?: number): void {
+  completeJob(job, { exitCode, markerSeen: false })
+}
+
 
 /** 结束（正常/非 0） */
 export function completeJob(job: ExecJob, input: { exitCode?: number; markerSeen?: boolean }): void {
@@ -184,7 +245,7 @@ export function cancelJob(job: ExecJob): void {
 }
 
 /** 会话丢了（会话被关掉/断线）—— 必须和"参数指认不到"区分开 */
-export function failJob(job: ExecJob, reason: 'session_lost' | 'force_superseded', note?: string): void {
+export function failJob(job: ExecJob, reason: 'session_lost' | 'session_exited' | 'force_superseded' | 'exec_error', note?: string): void {
   if (job.state === 'completed' || job.state === 'failed' || job.state === 'cancelled') return
   job.state = 'failed'
   job.reason = reason

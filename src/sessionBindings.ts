@@ -102,6 +102,51 @@ export function loadBindings(): BindingsFile {
   return f ?? emptyFile()
 }
 
+/**
+ * 加载并**就地清扫**：丢掉"会话已经没了"的绑定。
+ *
+ * 为什么必须在加载时做：压测里出现过"死会话的绑定长期占着别名 A"，
+ * 新会话只能拿到 B/C；而且 health 与 listSessions 两处显示不一致。
+ * 现在所有读绑定的地方都走这个入口，别名分配就不会被僵尸占住。
+ */
+export function loadBindingsSwept(): BindingsFile {
+  const f = loadBindings()
+  if (sweepDeadBindings(f, liveSessionIds())) saveBindings(f)
+  return f
+}
+
+/** 当前还活着的会话 id（由宿主注入，避免这个模块 import vscode/state） */
+let liveIdsResolver: () => string[] = () => []
+export function setLiveSessionIds(fn: () => string[]): void {
+  liveIdsResolver = fn
+}
+function liveSessionIds(): string[] {
+  try {
+    return liveIdsResolver()
+  } catch {
+    return []
+  }
+}
+
+/** 清掉绑定里指向已不存在会话的项；返回是否有改动 */
+export function sweepDeadBindings(f: BindingsFile, live: string[]): boolean {
+  const alive = new Set(live)
+  const born = alive.size === 0
+  let changed = false
+  for (const cid of Object.keys(f.clients ?? {})) {
+    const cb = f.clients[cid]
+    for (const [alias, b] of Object.entries(cb.sessions ?? {})) {
+      // 没有任何活会话时不清（扩展刚启动、还没连上任何会话，属于正常状态）
+      if (born) break
+      if (!alive.has(b.sessionId)) {
+        delete cb.sessions[alias]
+        changed = true
+      }
+    }
+  }
+  return changed
+}
+
 // ---- 变更通知：状态栏 / 面板据此刷新（不依赖 vscode，所以用最小的监听数组）----
 type BindingsListener = () => void
 const bindingsListeners: BindingsListener[] = []

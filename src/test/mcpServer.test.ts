@@ -51,11 +51,23 @@ test('initialize：客户端给的协议版本我们认识就照原样回', asyn
   assert.equal(r.result?.protocolVersion, '2025-03-26')
 })
 
-test('initialize：不认识的版本回我们支持的最新版（而不是回 null）', async () => {
+test('initialize：不认识的版本 → -32022（和头路径一致，不再静默降级）', async () => {
   const s = server()
-  const r = (await s.handle({ jsonrpc: '2.0', id: 'abc', method: 'initialize', params: { protocolVersion: '1999-01-01' } })) as RpcResult
-  assert.equal(r.result?.protocolVersion, LATEST_PROTOCOL_VERSION)
+  const r = (await s.handle({
+    jsonrpc: '2.0',
+    id: 'abc',
+    method: 'initialize',
+    params: { protocolVersion: '1999-01-01' }
+  })) as RpcResult
+  assert.equal(r.error?.code, -32022)
+  assert.ok((r.error?.data as any).supported.includes('2026-07-28'))
   assert.equal(r.id, 'abc', 'id 要原样回（字符串 id 也不能丢）')
+})
+
+test('initialize：不传版本（老客户端常见）仍回我们最新的 legacy 版本', async () => {
+  const s = server()
+  const r = (await s.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })) as RpcResult
+  assert.equal(r.result?.protocolVersion, LATEST_PROTOCOL_VERSION)
 })
 
 test('initialize：声明 tools 能力 + 带一段给模型看的使用说明', async () => {

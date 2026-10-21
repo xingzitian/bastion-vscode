@@ -16,16 +16,20 @@ import { getProfiles } from './profiles'
 import { getHabits, resolvePrivilege, habitsForAI } from './habits'
 import { isWaitingForPassword, resolvePasswordPrompts } from './recognize'
 import { log } from './log'
+import { isRecentlyClosedSession, rememberClosedSession } from './closedSessions'
 import { teePaths } from './execTee'
 import {
   activeJobOf,
+  allJobs,
   cancelJob,
   clampWaitMs,
+  completeByQuiet,
   createJob,
   endOffset,
   failJob,
   getJob,
   jobText,
+  quietExpired,
   sliceJob,
   waitJob,
   WAIT_BUDGET_MS
@@ -42,7 +46,7 @@ import {
   expectCursorProblem,
   cleanupBindings,
   describeBindings,
-  loadBindings,
+  loadBindingsSwept,
   normalizeClientId,
   ownerClients,
   resolveSessionRef,
@@ -186,7 +190,7 @@ export function findSession(
   const mode = opts.mode ?? 'write'
   const clientId = normalizeClientId(opts.clientId)
   const entries = sessionEntries()
-  const bindings = loadBindings()
+  const bindings = loadBindingsSwept()
   if (cleanupBindings(bindings, entries.map((x) => x.ref.id))) saveBindings(bindings)
   const client = bindingsOf(bindings, clientId)
   const r = resolveSessionRef(entries.map((x) => x.ref), selector, {
@@ -196,6 +200,15 @@ export function findSession(
     allowWriteFallback: opts.allowActiveFallback === true
   })
   if (!r.ok) {
+    // 「刚被关掉的会话」和「参数指认不到」必须分开：下一步动作完全不同（重连 vs 改参数）
+    const sel = (selector ?? '').trim()
+    if (/^s-[0-9a-z]{2,}$/i.test(sel) && isRecentlyClosedSession(sel)) {
+      const msg =
+        `会话 ${sel} **已经关闭了**（刚才还活着，现在只剩绑定记录，已被清理）。` +
+        `\n要接着干：bastion_connect 重新连一台，或 bastion_listSessions 看现在有哪些会话。`
+      log(`会话解析：${sel} 是最近关闭的会话`)
+      return { error: msg, reason: 'session_lost' }
+    }
     log(`会话解析被拒绝（${mode} / ${clientId}）：${r.message}`)
     return { error: r.message, reason: classifyRefusal(r.message) }
   }
@@ -221,7 +234,7 @@ export function autoBind(
   /** 连接时就能定别名（不用再调一次 bastion_use 改名） */
   as?: string
 ): { alias: string; existing: boolean } | { error: string } {
-  const bindings = loadBindings()
+  const bindings = loadBindingsSwept()
   const ref: SessionRef = {
     id: term.sessionId,
     name: vt.name,
@@ -277,6 +290,48 @@ function statusLine(
   return `\n\n[退出码 ${r.exitCode ?? 0}：命令成功]`
 }
 
+let jobWatcher: NodeJS.Timeout | null = null
+
+/**
+ * 作业看门狗（每秒一次）。
+ *
+ * 为什么"静默"不能单独作为完成依据：`sleep 45` 也是静默 —— 上一版把静默当完成，
+ * 就会把还在跑的命令记成 completed。这里的条件是 **静默 + 提示符已经回来了**（`shell` 状态），
+ * 才认定命令真的跑完；回到堡垒机菜单则是 `exit` 之类把 shell 退了，记 `session_exited`。
+ */
+export function ensureJobWatcher(): void {
+  if (jobWatcher) return
+  jobWatcher = setInterval(() => {
+    for (const job of allJobs()) {
+      if (job.state !== 'working' && job.state !== 'input_required') continue
+      const hit = termOfSessionId(job.sessionId)
+      if (!hit) {
+        failJob(job, 'session_lost', '会话已关闭，作业随之结束')
+        continue
+      }
+      if (job.state === 'input_required') continue
+      if (!quietExpired(job)) continue
+      const state = sessionScreenState(hit.term)
+      if (state === 'menu') {
+        failJob(job, 'session_exited', '命令让 shell 退出了（屏幕已回到堡垒机菜单）；用 bastion_listSessions 看现在还剩哪些会话')
+        continue
+      }
+      if (state === 'shell') {
+        // 提示符回来了 + 输出静止 → 命令确实跑完了（只是没见到哨兵）
+        completeByQuiet(job)
+        log(`作业 ${job.id}：静默且提示符已回，判完成（markerSeen=false）`)
+      }
+    }
+  }, 1000)
+  // 不要因为看门狗把进程吊住（测试/退出时尤其重要）
+  ;(jobWatcher as unknown as { unref?: () => void }).unref?.()
+}
+
+/** 测试用：停掉看门狗 */
+export function stopJobWatcher(): void {
+  if (jobWatcher) clearInterval(jobWatcher)
+  jobWatcher = null
+}
 export async function execRemote(
   arg?: string | {
     command?: string
@@ -364,18 +419,20 @@ export async function execRemote(
   const requested = clampWaitMs(input.waitMs)
   const overBudget = input.waitMs !== undefined && input.waitMs > WAIT_BUDGET_MS
   const blockMs = input.background ? 0 : requested
-  const jobIdPreview = ''
+  const quietMs = input.quietMs ?? 15_000
+  // 作业自己持有哨兵与静默窗口：exec 返回后它仍然能判完成（这是 P0-1 的修法）
   const job = createJob({
     sessionId: term.sessionId,
     sessionNo: term.sessionNo,
     command,
     cursorAtStart: term.screenCursor,
-    // TODO(0.3.10)：tee 封装接上之后这里才有真路径；先不返回假路径（假路径比没有更糟）
+    quietMs,
     logPath: undefined
   })
+  ensureJobWatcher()
 
   const output = await term.execDetailed(command, {
-    quietMs: input.quietMs ?? 15_000,
+    quietMs,
     maxMs: Math.max(1, blockMs),
     allowPlainSudo,
     job,
@@ -479,7 +536,9 @@ export async function waitForExecJob(input: {
       cursorMoved: r.cursorMoved,
       lastLine: r.lastLine,
       prompt: r.prompt,
-      hint: r.hint
+      hint: r.hint,
+      markerSeen: r.markerSeen,
+      reason: r.reason
     }
   }
 }
@@ -489,7 +548,8 @@ export function readExecJob(input: { jobId?: string; sinceOffset?: number; maxBy
   const id = (input.jobId ?? '').trim()
   const job = id ? getJob(id) : undefined
   if (!job) return { text: `找不到作业「${id}」（作业只在本次扩展运行期间有效）。` }
-  const maxBytes = Math.max(1024, Math.min(256 * 1024, Math.floor(input.maxBytes ?? 64 * 1024)))
+  // 下限就是 1：压测里传 50 却拿到 102 字节很反直觉（P2-2）
+  const maxBytes = Math.max(1, Math.min(256 * 1024, Math.floor(input.maxBytes ?? 64 * 1024)))
   const from = Math.max(0, Math.floor(input.sinceOffset ?? 0))
   const r = sliceJob(job, from, maxBytes)
   const head = `作业 ${job.id}｜状态 ${job.state}${job.exitCode !== undefined ? `｜退出码 ${job.exitCode}` : ''}` +
@@ -504,11 +564,15 @@ export function readExecJob(input: { jobId?: string; sinceOffset?: number; maxBy
       jobId: job.id,
       status: job.state,
       exitCode: job.exitCode,
+      markerSeen: job.markerSeen,
+      reason: job.reason,
       sinceOffset: from,
       nextOffset: r.nextOffset,
       truncated: r.truncated,
       totalBytes: endOffset(job),
-      logPath: job.logPath
+      logPath: job.logPath,
+      // 结构化客户端也要能拿到正文（P2-3）：content[0].text 之外再给一份
+      chunk: r.chunk
     }
   }
 }
@@ -807,7 +871,7 @@ function defaultDownloadDir(): string {
 
 export function listSessions(clientId?: string): string {
   const entries = sessionEntries()
-  const bindings = loadBindings()
+  const bindings = loadBindingsSwept()
   const client = normalizeClientId(clientId)
   const clientBindings = bindingsOf(bindings, client)
   if (cleanupBindings(bindings, entries.map((x) => x.ref.id))) saveBindings(bindings)

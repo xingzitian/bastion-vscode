@@ -142,7 +142,8 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
     // 有些客户端只把版本放 HTTP 头（MCP-Protocol-Version / Mcp-Protocol-Version），_meta 里不放 —— 兜底一下
     const meta = meta0.version || !headerVersion ? meta0 : { ...meta0, version: headerVersion }
     const modern = eraOf(meta) === 'modern'
-    const tasksCapable = modern && clientSupportsTasks(meta)
+    // Tasks 扩展的协商只看「客户端有没有声明」，不绑协议代际（压测 P1-4：legacy 客户端声明了也该拿到任务）
+    const tasksCapable = clientSupportsTasks(meta)
     if (modern && !isSupportedVersion(meta.version)) {
       const e = unsupportedVersionError(meta.version)
       return isNotification ? null : fail(id, e.code, e.message, e.data)
@@ -156,6 +157,12 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
     switch (msg.method) {
       case 'initialize': {
         const asked = msg.params?.protocolVersion
+        // 老客户端报了一个我们不支持的版本：别静默降级（压测 P1-3：同一条路由两种行为，
+        // 头路径已经严格拒绝，legacy 路径也必须一致）
+        if (typeof asked === 'string' && !isSupportedVersion(asked)) {
+          const e = unsupportedVersionError(asked)
+          return isNotification ? null : fail(id, e.code, e.message, e.data)
+        }
         const version =
           typeof asked === 'string' && SUPPORTED_PROTOCOL_VERSIONS.includes(asked) ? asked : LATEST_PROTOCOL_VERSION
         return ok(id, {
@@ -259,7 +266,7 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
           // 只有**声明了** io.modelcontextprotocol/tasks 的客户端才允许收到任务（规范明确要求）。
           const jobId = typeof r.structured?.jobId === 'string' ? r.structured.jobId : undefined
           const jobStatus = typeof r.structured?.status === 'string' ? r.structured.status : undefined
-          if (modern && tasksCapable && jobId && jobStatus && jobStatus !== 'completed' && jobStatus !== 'failed') {
+          if (tasksCapable && jobId && jobStatus && jobStatus !== 'completed' && jobStatus !== 'failed') {
             return ok(id, createTaskResult(jobId, jobStatus))
           }
           return ok(id, toolResult(payload, r.isError === true))

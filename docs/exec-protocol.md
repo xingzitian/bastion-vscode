@@ -27,16 +27,30 @@
             └─────────────┘
                    │  ├──── 退出码 ≠ 0 ─────────▶ failed（exitCode 非 0）
                    │  ├──── 检测到提示 ─────────▶ input_required（等人）
+                   │  ├──── 提示符已回 + 静默 ──▶ completed（markerSeen=false）
                    │  └──── cancel ─────────────▶ cancelled
-                   └──── 会话丢了 ──────────────▶ failed（reason=session_lost）
+                   ├──── 会话丢了 ──────────────▶ failed（reason=session_lost）
+                   └──── shell 退出（回菜单） ──▶ failed（reason=session_exited）
 ```
+
+### 谁负责判完成（0.3.11 后的分工，很重要）
+
+| 角色 | 职责 |
+|---|---|
+**作业** | 自己拿着哨兵与 `quietMs`：每来一块输出就扫一遍 `‹marker›:‹rc›`，命中即 `completed/failed`。**这条在 exec 已返回后仍然生效**。 |
+**exec** | 只做"最多等 `waitMs`，然后如实报告当前状态"。**不再替作业下结论**（看到哨兵才收作业）。 |
+**看门狗** | 每秒扫一次还在跑的作业：静默够久 **且提示符已回** → 兜底 `completed`（`markerSeen=false`）；屏幕回到堡垒机菜单 → `failed/session_exited`；会话没了 → `failed/session_lost`。 |
+
+> 上一版把完成判定绑在 exec 的等待窗口里：exec 一超时返回，监听器被摘掉，就再没人看标记 ——
+> 于是"命令早跑完了、状态永远 working、下一条命令被拒绝"，会话被锁死。这是压测抓到的 P0。
+> 现在"静默"**不能单独**判完成（否则 `sleep 45` 会被误判），必须配合"提示符已回"。
 
 | 状态 | 含义 | AI 该做什么 |
 |---|---|---|
 `working` | 还在跑 | **不要重发命令**，用 `bastion_wait` / `bastion_job` 跟进 |
 `input_required` | 卡在交互提示，需要人 | 把 `prompt` 转告用户，让他在终端里输入（人或 AI 都能接着来） |
 `completed` | 跑完且退出码 0 | 直接看输出 |
-`failed` | 跑完但退出码非 0，或会话丢失 | 看输出 + `exitCode` / `reason` 定位 |
+`failed` | 跑完但退出码非 0、会话丢失、或 shell 退出 | 看输出 + `exitCode` / `reason` 定位 |
 `cancelled` | 被 cancel | —— |
 
 **不可重发的硬规则**：`working` 期间重发同一条命令 = 可能重复执行（`rm`、`service restart`、

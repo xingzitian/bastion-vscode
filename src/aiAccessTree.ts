@@ -12,7 +12,7 @@
  */
 import * as vscode from 'vscode'
 import { terminals } from './state'
-import { bindingsOf, loadBindings, onBindingsChanged } from './sessionBindings'
+import { bindingsOf, loadBindingsSwept, onBindingsChanged } from './sessionBindings'
 import { mcpClientTokens, mcpMainToken } from './mcpRegister'
 import { buildAiModel, ownersSummary, scopeDetail, scopeInfoOf, type AiClientRow, type AiSessionRow } from './aiAccess'
 
@@ -39,7 +39,7 @@ function sessionRows(): Array<{ id: string; name: string }> {
 
 function currentModel() {
   const tokens = mcpClientTokens().map((c) => ({ label: c.label, scope: c.scope, token: c.token }))
-  const bindings = loadBindings()
+  const bindings = loadBindingsSwept()
   return buildAiModel({
     tokens,
     clients: bindings.clients ?? {},

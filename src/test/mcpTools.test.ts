@@ -289,3 +289,26 @@ test('分发：connect 的 as（连接时定别名）原样传给能力层', asy
   await dispatch('bastion_connect', { profile: '生产', host: '10.0.0.1', as: 'db1' })
   assert.equal(seen!.as, 'db1')
 })
+test('★ 元测试：dispatch 读的每个参数都必须在 schema 里声明（防止"代码加了、schema 忘了"）', async () => {
+  for (const def of MCP_TOOL_DEFS) {
+    const read = new Set<string>()
+    const probe = new Proxy(
+      {},
+      {
+        get(_t, key: string) {
+          read.add(key)
+          return 'probe'
+        }
+      }
+    )
+    const dispatch = createToolDispatch(fakeApi())
+    try {
+      await dispatch(def.name, probe as unknown as Record<string, unknown>)
+    } catch {
+      // 参数是假的，工具可能抛错 —— 我们要的只是"读了哪些键"
+    }
+    const props = Object.keys((def.inputSchema as { properties?: Record<string, unknown> }).properties ?? {})
+    const missing = [...read].filter((k) => !props.includes(k))
+    assert.deepEqual(missing, [], `${def.name} 读了未声明的参数：${missing.join(', ')}（schema: ${props.join(', ')}）`)
+  }
+})

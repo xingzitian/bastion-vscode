@@ -11,8 +11,10 @@ import {
   activeJobOf,
   appendJobOutput,
   cancelJob,
+  completeByQuiet,
   completeJob,
   createJob,
+  quietExpired,
   detectPrompt,
   endOffset,
   failJob,
@@ -214,4 +216,48 @@ test('jobText 只给尾部时也不炸（超大日志）', () => {
   const t = jobText(j, 1024)
   assert.ok(t.length < 2048)
   assert.equal(getJob(j.id)?.id, j.id)
+})
+
+// ── 作业自持完成（压测 P0-1 的回归）─────────────────────────────
+
+test('★ exec 返回后（不再等待）作业仍能自己看到哨兵并完成', () => {
+  resetJobs()
+  const j = createJob({
+    sessionId: 's-own',
+    sessionNo: 1,
+    command: 'make',
+    cursorAtStart: 0,
+    marker: '__BASTION_DONE_abc__',
+    quietMs: 15000
+  })
+  // 模拟：exec 已经超时返回，但输出继续到
+  appendJobOutput(j, 'building...\n')
+  assert.equal(j.state, 'working')
+  appendJobOutput(j, '__BASTION_DONE_abc__:0\n')
+  assert.equal(j.state, 'completed', '★ 看到哨兵必须自己完成（上一版永远 working，把会话锁死）')
+  assert.equal(j.exitCode, 0)
+  assert.equal(j.markerSeen, true)
+  assert.equal(activeJobOf('s-own'), undefined, '完成后必须让出会话')
+})
+
+test('标记被切在两块之间也能识别；非 0 退出码记 failed', () => {
+  resetJobs()
+  const j = createJob({ sessionId: 's-split', sessionNo: 1, command: 'x', cursorAtStart: 0, marker: '__DONE_X__' })
+  appendJobOutput(j, 'output __DONE_X')
+  assert.equal(j.state, 'working')
+  appendJobOutput(j, '__:7\n')
+  assert.equal(j.state, 'failed')
+  assert.equal(j.exitCode, 7)
+  assert.equal(j.reason, 'exit_nonzero')
+})
+
+test('★ 静默本身不算完成（sleep 45 不能被误判）；必须靠"提示符已回"由调用方兜底', () => {
+  resetJobs()
+  const j = createJob({ sessionId: 's-quiet', sessionNo: 1, command: 'sleep 45', cursorAtStart: 0, quietMs: 1000, now: 1000 })
+  assert.equal(quietExpired(j, 1500), false)
+  assert.equal(quietExpired(j, 2500), true, '静默到期 → 只是"可以兜底"，不是自动完成')
+  assert.equal(j.state, 'working', 'appendJobOutput 之外没人能替它完成')
+  completeByQuiet(j)
+  assert.equal(j.state, 'completed')
+  assert.equal(j.markerSeen, false)
 })

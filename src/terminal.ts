@@ -6,6 +6,7 @@ import { stopMfaCountdown } from './connection';
 import { log } from './log'
 import { appendJobOutput, completeJob, detectPrompt as detectInputPrompt, failJob, markInputRequired, type ExecJob } from './execJobs'
 import { buildTeeCommand } from './execTee';
+import { rememberClosedSession } from './closedSessions';
 import { ZmodemSessionController, ZmodemEventPayload, OverwriteMode } from './zmodem';
 import { NodeFsZmodemIo } from './zmodemIo';
 import { resolveDownloadDir } from './downloadDir';
@@ -709,7 +710,12 @@ export class BastionTerminal implements vscode.Pseudoterminal {
 
     // 作业模式：输出由 emitOutput 持续喂（exec 返回后也继续收），这里只负责状态收敛
     const job = opts.job;
-    if (job) this.activeJob = job;
+    if (job) {
+      // 作业自己拿着哨兵：exec 返回后它仍能扫到标记（P0-1 的修法）
+      job.marker = safe ? marker : undefined;
+      job.quietMs = quietMs;
+      this.activeJob = job;
+    };
 
     return new Promise<ExecResult>((resolve) => {
       const stream = this.stream!;
@@ -737,12 +743,15 @@ export class BastionTerminal implements vscode.Pseudoterminal {
         this.execMarkerSeen = !safe || markerSeen;
         this.lastExecExitCode = exitCode;
         if (job) {
-          if (timedOut) {
-            // 超时**不是失败**：命令还在跑，作业继续收输出，AI 用 bastion_wait / bastion_job 跟进
-            log(`作业 ${job.id}：${Math.round((Date.now() - startedAt) / 1000)}s 还没结束，转后台继续捕获`);
-          } else {
-            completeJob(job, { exitCode, markerSeen });
+          // ★ 只做"确定的"那部分：真的看到哨兵才收作业。
+          // 没看到哨兵就返回（超时 / 静默）**不替作业下结论** —— 作业自己持有 marker 与 quietMs，
+          // 由 appendJobOutput 扫标记、由看门狗（提示符已回 + 静默）兜底。
+          // 上一版在这里用"静默"直接 complete，正是 sleep 45 被误判与"永远 working"两种事故的根源。
+          if (markerSeen) {
+            completeJob(job, { exitCode, markerSeen: true });
             if (this.activeJob === job) this.activeJob = undefined;
+          } else {
+            log(`作业 ${job.id}：exec 先返回（${Math.round((Date.now() - startedAt) / 1000)}s），作业继续捕获，完成由作业自己判定`);
           }
         }
         resolve({
@@ -750,7 +759,8 @@ export class BastionTerminal implements vscode.Pseudoterminal {
           exitCode,
           markerSeen: !safe || markerSeen,
           elapsedMs: Date.now() - startedAt,
-          timedOut,
+          // 没看到哨兵 = 本次调用结束时命令**还没被判定完成**
+          timedOut: !markerSeen,
           cursorAtStart,
           cursorNow: this.screenCursor,
           logPath: teeLogPath || undefined
@@ -872,6 +882,13 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     this.closed = true;
     // 会话没了就别再当广播目标：否则底栏台数会虚高，还会留着一堆已死对象
     removeBroadcastTarget(this);
+    // 会话关闭 = 它上面还在跑的作业一律终结（不然会永远 working，把会话"锁死"）
+    if (this.activeJob) {
+      failJob(this.activeJob, 'session_lost', '会话已关闭，作业随之结束');
+      this.activeJob = undefined;
+    }
+    // 记下"刚关闭的会话"，这样 AI 再指认它时能说清是"已关闭"而不是"参数写错"
+    rememberClosedSession(this.sessionId);
     this.shellReadyResolve?.();
     stopMfaCountdown();
     if (this.mfaResolve) {

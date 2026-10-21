@@ -93,6 +93,7 @@ import { setDownloadDir, clearDownloadDir } from './downloadDir'
 import { registerSessionBindingsView, showAiBindings } from './sessionBindingsView'
 import { changeTokenScopeFlow, issueTokenFlow, manageAiTokens, revokeTokenFlow } from './mcpRegister'
 import { focusAiSession, registerAiAccess } from './aiAccessTree'
+import { setLiveSessionIds } from './sessionBindings'
 import { loadBindings, saveBindings, unbind as unbindBinding } from './sessionBindings'
 import { openConfigFile, openHabitsFile, showLog, pickOverwriteMode, openDangerRules } from './configCmd'
 import { generateMenuRule } from './menuCmd'
@@ -123,6 +124,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const overviewProvider = new OverviewProvider()
   setOverviewProvider(overviewProvider)
   // 「AI 访问」：令牌 / 权限 / 绑定 —— 和档案一样在左侧树里看和管（先建好，命令里要用它刷新）
+  // 绑定清扫要知道「现在有哪些会话还活着」：避免死会话长期占着别名（压测里 A 被僵尸会话占着）
+  setLiveSessionIds(() => [...terminals.values()].map((t) => t.sessionId))
+
   const aiAccessProvider = registerAiAccess(context)
   context.subscriptions.push({ dispose: () => disposeOverview() })
 

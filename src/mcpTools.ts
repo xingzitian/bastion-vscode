@@ -313,6 +313,27 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
           description:
             '重试去重：同一件事**重试**时带同一个 key（例如 "restart-nginx"）。服务端在 10 分钟内见过这个 key 就直接返回上次的结果、不再执行。'
             + '不确定是"没执行"还是"执行了但回包丢了"时，这正是你需要的。'
+        },
+        waitMs: {
+          type: 'number',
+          description:
+            '本次最多阻塞多久（默认 15000，服务端夹到 55000）。超过客户端单次调用预算会**自动转成作业**并返回 jobId，而不是傻等。'
+        },
+        quietMs: {
+          type: 'number',
+          description:
+            '输出静止多久算"没输出了"（默认 15000）。构建类命令阶段之间会静默几十秒 —— 别把它当成结束。'
+        },
+        mode: {
+          type: 'string',
+          enum: ['shell', 'interactive'],
+          description: 'interactive = 只发不等（top/vi/sudo -i/菜单这类占终端的命令）'
+        },
+        background: { type: 'boolean', description: 'true = 立刻返回作业句柄，不阻塞' },
+        logToFile: { type: 'boolean', description: '把日志 tee 到远端文件（人仍能在终端看到）；返回里给 logPath' },
+        force: {
+          type: 'boolean',
+          description: '会话上有命令在跑时强行插队（默认拒绝；等于把命令喂给正在跑的程序）'
         }
       },
       required: ['command'],
@@ -346,7 +367,7 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
       properties: {
         jobId: { type: 'string', description: '作业 id' },
         sinceOffset: { type: 'number', description: '从哪个字节偏移开始读（默认 0 = 从头）' },
-        maxBytes: { type: 'number', description: '这次最多读多少字节（默认 65536，上限 262144）' }
+        maxBytes: { type: 'number', description: '这次最多读多少字节（默认 65536，上限 262144，下限 1）' }
       },
       required: ['jobId'],
       additionalProperties: false

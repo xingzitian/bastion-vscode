@@ -235,3 +235,38 @@ test('★ 绑定上限 32：第 9 条不再撞墙（以前只有 A..H 8 个）',
   assert.ok('error' in over)
   assert.match((over as { error: string }).error, /32/)
 })
+test('★ 清扫：指向已不存在会话的绑定会被摘掉（死会话不能长期占别名）', async () => {
+  const { sweepDeadBindings } = await import('../sessionBindings')
+  const f = {
+    version: 1,
+    clients: {
+      default: {
+        label: '默认',
+        updatedAt: '',
+        sessions: {
+          A: { sessionId: 's-dead', name: 'old' },
+          B: { sessionId: 's-alive', name: 'new' }
+        }
+      }
+    }
+  } as unknown as Parameters<typeof sweepDeadBindings>[0]
+  const changed = sweepDeadBindings(f, ['s-alive'])
+  assert.equal(changed, true)
+  const left = Object.keys((f as any).clients.default.sessions)
+  assert.deepEqual(left, ['B'], '死会话的 A 必须被摘掉，活会话的 B 保留')
+  // 没有活会话时不清（扩展刚启动是正常状态）
+  const g = { version: 1, clients: { default: { label: 'x', updatedAt: '', sessions: { A: { sessionId: 's-1', name: 'n' } } } } } as any
+  assert.equal(sweepDeadBindings(g, []), false)
+  assert.deepEqual(Object.keys(g.clients.default.sessions), ['A'])
+})
+
+test('最近关闭的会话：能记住、能查、可复位', async () => {
+  const { rememberClosedSession, isRecentlyClosedSession, resetClosedSessions, recentClosedSessions } = await import('../closedSessions')
+  resetClosedSessions()
+  assert.equal(isRecentlyClosedSession('s-1111'), false)
+  rememberClosedSession('s-1111')
+  assert.equal(isRecentlyClosedSession('s-1111'), true)
+  assert.deepEqual(recentClosedSessions(), ['s-1111'])
+  resetClosedSessions()
+  assert.equal(isRecentlyClosedSession('s-1111'), false)
+})
