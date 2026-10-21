@@ -369,7 +369,8 @@ export async function execRemote(
     sessionNo: term.sessionNo,
     command,
     cursorAtStart: term.screenCursor,
-    logPath: input.logToFile ? '/tmp/bastion/job-<id>.log' : undefined
+    // TODO(0.3.10)：tee 封装接上之后这里才有真路径；先不返回假路径（假路径比没有更糟）
+    logPath: undefined
   })
 
   const output = await term.execDetailed(command, {
