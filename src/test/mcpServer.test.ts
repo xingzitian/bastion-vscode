@@ -35,7 +35,7 @@ interface RpcResult {
   jsonrpc: string
   id: unknown
   result?: Record<string, unknown>
-  error?: { code: number; message: string }
+  error?: { code: number; message: string; data?: unknown }
 }
 
 test('initialize：客户端给的协议版本我们认识就照原样回', async () => {
@@ -177,4 +177,87 @@ test('toolList() 与 tools/list 一致（命令「查看已注册工具」用的
   const r = (await s.handle({ jsonrpc: '2.0', id: 10, method: 'tools/list' })) as RpcResult
   assert.deepEqual(s.toolList(), r.result?.tools)
   assert.deepEqual(s.toolList()[0], toMcpTool(MCP_TOOL_DEFS[0]))
+})
+
+// ── 2026-07-28（modern）与 dual-era ────────────────────────────────
+
+const modernMeta = (caps: Record<string, unknown> = {}) => ({
+  _meta: {
+    'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+    'io.modelcontextprotocol/clientInfo': { name: 'probe', version: '1' },
+    'io.modelcontextprotocol/clientCapabilities': caps
+  }
+})
+
+test('server/discover：报出支持的版本 + Tasks 扩展 + serverInfo', async () => {
+  const r = (await server().handle({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: {} })) as RpcResult
+  const res = r.result as Record<string, any>
+  assert.equal(res.resultType, 'complete')
+  assert.ok(res.supportedVersions.includes('2026-07-28'))
+  assert.ok(res.supportedVersions.includes('2025-06-18'), 'legacy 版本仍要报出来')
+  assert.ok(res.capabilities.extensions['io.modelcontextprotocol/tasks'])
+  assert.equal(res._meta['io.modelcontextprotocol/serverInfo'].name, 'bastionshell')
+  assert.equal(typeof res.ttlMs, 'number')
+  assert.equal(res.cacheScope, 'private')
+})
+
+test('modern 的 tools/list 带 resultType/ttlMs/cacheScope；legacy 的不带', async () => {
+  const s = server()
+  // legacy：不带 _meta
+  const legacy = (await s.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' })) as RpcResult
+  assert.equal((legacy.result as any).resultType, undefined)
+  assert.equal((legacy.result as any).ttlMs, undefined)
+
+  // modern：带 _meta
+  const modern = (await s.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: modernMeta() })) as RpcResult
+  assert.equal((modern.result as any).resultType, 'complete')
+  assert.equal(typeof (modern.result as any).ttlMs, 'number')
+  assert.equal((modern.result as any).cacheScope, 'private')
+})
+
+test('★ 不支持的版本 → -32022 且带 supported 列表', async () => {
+  const r = (await server().handle({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'tools/list',
+    params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '1900-01-01' } }
+  })) as RpcResult
+  assert.equal(r.error?.code, -32022)
+  assert.ok((r.error?.data as any).supported.includes('2026-07-28'))
+  assert.equal((r.error?.data as any).requested, '1900-01-01')
+})
+
+test('modern 的 tools/call 结果带 resultType', async () => {
+  const r = (await server().handle({
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'tools/call',
+    params: { name: 'bastion_listSessions', arguments: {}, ...modernMeta() }
+  })) as RpcResult
+  assert.equal((r.result as any).resultType, 'complete')
+})
+
+test('★ 声明了 Tasks 的客户端，长任务拿到 resultType=task；没声明的客户端不被塞任务', async () => {
+  // 用一个假的 exec 返回 working + jobId
+  const withJob = api({
+    exec: async () => ({ text: '还在跑', structured: { status: 'working', jobId: 'j-9999' } })
+  })
+  const s = server({ exec: withJob.exec })
+
+  const capable = (await s.handle({
+    jsonrpc: '2.0',
+    id: 4,
+    method: 'tools/call',
+    params: { name: 'bastion_exec', arguments: { command: 'docker build .' }, ...modernMeta({ extensions: { 'io.modelcontextprotocol/tasks': {} } }) }
+  })) as RpcResult
+  assert.equal((capable.result as any).resultType, 'task')
+  assert.equal((capable.result as any).taskId, 'j-9999')
+
+  const plain = (await s.handle({
+    jsonrpc: '2.0',
+    id: 5,
+    method: 'tools/call',
+    params: { name: 'bastion_exec', arguments: { command: 'docker build .' }, ...modernMeta() }
+  })) as RpcResult
+  assert.equal((plain.result as any).resultType, 'complete', '没声明扩展的客户端必须拿到普通结果')
 })

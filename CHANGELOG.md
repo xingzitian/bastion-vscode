@@ -1,3 +1,27 @@
+## 0.3.10
+
+> MCP 协议升级：**一步到 2026-07-28**（modern），同时保留 legacy —— 老客户端照旧能用。
+
+### 新增
+
+- **`server/discover`**（2026-07-28 要求服务端必须实现）：一次返回支持的版本、能力、身份、instructions。
+- **modern 协议形状**：请求带 `_meta`（版本 / 客户端信息 / 客户端能力）时，结果带 `resultType: "complete"`；
+  `tools/list` 等列表结果带 `ttlMs` + `cacheScope: "private"`。
+- **Tasks 扩展（`io.modelcontextprotocol/tasks`）**：声明了扩展的客户端，长任务会拿到
+  `{ resultType: "task", taskId, status, ttlMs, pollIntervalMs }`；`tasks/get` / `tasks/cancel` / `tasks/update` 全部实现。
+  没声明扩展的客户端仍然用 `bastion_wait` / `bastion_job` / `bastion_cancel`（功能一样，只是自己轮询）。
+- **`MCP-Protocol-Version` 头**：支持只用头传版本的客户端；头与 `_meta` 不一致 → `-32020`。
+
+### 修复（合规性）
+
+- 现代请求遇到不支持的版本 → **HTTP 400** + `-32022`（原来回 200，不合规）；未知方法 → **404**；
+  头不一致 → **400** + `-32020`。**legacy 请求保持 200** —— 老客户端会把 400 当成"端点不存在"。
+- 协议层不再 import `vscode`：作业的游标/取消由宿主注入（这是它能在普通 Node 里被测试的前提）。
+
+### 文档
+
+- 新增 `docs/mcp-protocol.md`：两代差异对照表、我们的兼容策略、Tasks 映射、未做项（MRTR / subscriptions / 头强制校验）。
+- 新增 `scripts/probe-protocol.js`：起真端点把 11 种 wire 行为打一遍（不需要 VS Code）。
 ## 0.3.9
 
 > 执行协议（exec）改造：把「没等到结束标记」从一个布尔值改成**结构化状态机**（状态词对齐 MCP 官方 Tasks 扩展）。

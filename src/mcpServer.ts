@@ -16,6 +16,26 @@
  */
 
 import * as http from 'http'
+import {
+  ERR_INVALID_PARAMS,
+  ERR_METHOD_NOT_FOUND,
+  headerMismatchError,
+  httpStatusForError,
+  LIST_TTL_MS,
+  MODERN_VERSION,
+  SUPPORTED_PROTOCOL_VERSIONS as ALL_SUPPORTED_VERSIONS,
+  TASKS_EXTENSION,
+  clientSupportsTasks,
+  createTaskResult,
+  discoverResult,
+  eraOf,
+  isSupportedVersion,
+  readMeta,
+  taskSnapshot,
+  unsupportedVersionError,
+  withCache,
+  withResultType
+} from './mcpEra'
 import * as crypto from 'crypto'
 import * as net from 'net'
 import type { Socket } from 'net'
@@ -28,10 +48,11 @@ import {
   type McpToolDef,
   type ToolCallContext
 } from './mcpTools'
+import { getJob, jobText, viewOf, type ExecJob } from './execJobs'
 
-/** 我们实现的 MCP 协议版本；握手时按客户端请求回（不认识就回这个最新的） */
+/** 我们实现的 MCP 协议版本；握手时按客户端请求回（不认识就回这个最新的 legacy 版本） */
 export const LATEST_PROTOCOL_VERSION = '2025-06-18'
-export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05']
+export const SUPPORTED_PROTOCOL_VERSIONS = ALL_SUPPORTED_VERSIONS
 
 export interface JsonRpcRequest {
   jsonrpc?: string
@@ -48,11 +69,16 @@ export interface McpServerOptions {
   serverName?: string
   serverVersion?: string
   instructions?: string
+  /** 作业的宿主能力（游标 / 取消）—— 保持本文件不 import vscode */
+  jobs?: {
+    cursorOf?: (sessionId: string) => number | undefined
+    cancel?: (jobId: string) => Promise<void>
+  }
 }
 
 export interface McpServer {
   /** 处理一条 JSON-RPC 消息；通知返回 null（不需要应答）。ctx 里带调用者标识 */
-  handle(msg: JsonRpcRequest, ctx?: ToolCallContext): Promise<object | null>
+  handle(msg: JsonRpcRequest, ctx?: ToolCallContext, headerVersion?: string): Promise<object | null>
   /** tools/list 返回的形状，测试与「查看工具」命令共用 */
   toolList(): object[]
 }
@@ -61,8 +87,8 @@ function ok(id: JsonRpcId, result: unknown): object {
   return { jsonrpc: '2.0', id, result }
 }
 
-function fail(id: JsonRpcId, code: number, message: string): object {
-  return { jsonrpc: '2.0', id, error: { code, message } }
+function fail(id: JsonRpcId, code: number, message: string, data?: unknown): object {
+  return { jsonrpc: '2.0', id, error: data === undefined ? { code, message } : { code, message, data } }
 }
 
 /** 内部工具定义 → MCP `tools/list` 里的一条 */
@@ -86,12 +112,45 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
   const serverVersion = opts.serverVersion ?? '0.0.0'
   const instructions = opts.instructions ?? MCP_INSTRUCTIONS
 
-  async function handle(msg: JsonRpcRequest, ctx?: ToolCallContext): Promise<object | null> {
+  /** 作业所在会话的屏幕游标（cursorMoved 需要它）；由宿主注入，找不到就是 undefined */
+  function cursorOfJob(job: ExecJob): number | undefined {
+    return opts.jobs?.cursorOf?.(job.sessionId)
+  }
+
+  /** 任务完成后要回给客户端的"原始工具结果" */
+  async function resultOfJob(job: ExecJob): Promise<Record<string, unknown>> {
+    const view = viewOf(job, Date.now(), cursorOfJob(job))
+    const text =
+      `作业 ${job.id} 已结束（${view.status}，退出码 ${view.exitCode ?? '未知'}）。` +
+      `\n\n—— 输出（尾部）——\n${jobText(job, 16000)}`
+    return { content: [{ type: 'text', text }], structuredContent: { ...view } }
+  }
+
+  async function handle(msg: JsonRpcRequest, ctx?: ToolCallContext, headerVersion?: string): Promise<object | null> {
     const id: JsonRpcId = msg?.id === undefined ? null : msg.id
     const isNotification = msg?.id === undefined || msg?.id === null
 
     if (!msg || typeof msg !== 'object' || typeof msg.method !== 'string') {
       return isNotification ? null : fail(id, -32600, '无效的 JSON-RPC 请求：method 必须是字符串')
+    }
+
+    // ── 两个时代 ─────────────────────────────────────────────────────────
+    // modern（2026-07-28+）：版本/身份/能力都在每个请求的 `_meta` 里，没有 initialize 握手；
+    // legacy（2025-11-25 及更早）：initialize + 不带 `_meta` 的请求。
+    // 我们做 dual-era：不带 `_meta` 的请求按 legacy 处理（老客户端照旧能用）。
+    const meta0 = readMeta(msg.params)
+    // 有些客户端只把版本放 HTTP 头（MCP-Protocol-Version / Mcp-Protocol-Version），_meta 里不放 —— 兜底一下
+    const meta = meta0.version || !headerVersion ? meta0 : { ...meta0, version: headerVersion }
+    const modern = eraOf(meta) === 'modern'
+    const tasksCapable = modern && clientSupportsTasks(meta)
+    if (modern && !isSupportedVersion(meta.version)) {
+      const e = unsupportedVersionError(meta.version)
+      return isNotification ? null : fail(id, e.code, e.message, e.data)
+    }
+    // 头里的版本必须和 body 的 _meta 一致（规范：不一致 → 400 + -32020）
+    if (headerVersion && meta.version && headerVersion !== meta.version) {
+      const e = headerMismatchError(headerVersion, meta.version)
+      return isNotification ? null : fail(id, e.code, e.message)
     }
 
     switch (msg.method) {
@@ -117,13 +176,53 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
       case 'ping':
         return isNotification ? null : ok(id, {})
 
+      case 'server/discover': {
+        // 2026-07-28 起服务端**必须**实现它：一次拿到支持的版本 / 能力 / 身份。
+        return isNotification
+          ? null
+          : ok(id, discoverResult({ serverInfo: { name: serverName, version: serverVersion }, instructions, ttlMs: LIST_TTL_MS }))
+      }
+
+      case 'tasks/get': {
+        const taskId = typeof msg.params?.taskId === 'string' ? (msg.params.taskId as string) : ''
+        const job = taskId ? getJob(taskId) : undefined
+        if (!job) return fail(id, ERR_INVALID_PARAMS, `找不到任务「${taskId}」`)
+        const view = viewOf(job, Date.now(), cursorOfJob(job))
+        const snapshot = taskSnapshot({
+          taskId: job.id,
+          status: view.status,
+          prompt: view.prompt,
+          hint: view.hint
+        })
+        if (view.status === 'completed') snapshot.result = await resultOfJob(job)
+        if (view.status === 'failed') {
+          snapshot.error = { code: -32603, message: view.reason === 'session_lost' ? '会话已关闭' : '任务执行失败' }
+        }
+        return ok(id, snapshot)
+      }
+
+      case 'tasks/update':
+        // 客户端的输入（例如人对 elicitation 的应答）。我们的人是在终端里直接输的，
+        // 所以这里只做确认；任务状态会由终端输出自己推进。
+        return isNotification ? null : ok(id, { resultType: 'complete' })
+
+      case 'tasks/cancel': {
+        const taskId = typeof msg.params?.taskId === 'string' ? (msg.params.taskId as string) : ''
+        const job = taskId ? getJob(taskId) : undefined
+        if (!job) return fail(id, ERR_INVALID_PARAMS, `找不到任务「${taskId}」`)
+        await opts.jobs?.cancel?.(job.id)
+        return ok(id, { resultType: 'complete' })
+      }
+
       case 'tools/list':
-        return isNotification ? null : ok(id, { tools: defs.map(toMcpTool) })
+        return isNotification
+          ? null
+          : ok(id, withCache(withResultType({ tools: defs.map(toMcpTool) }, modern), modern, LIST_TTL_MS))
 
       case 'tools/call': {
         const name = typeof msg.params?.name === 'string' ? (msg.params.name as string) : ''
         const args = (msg.params?.arguments as Record<string, unknown>) ?? {}
-        if (!name) return fail(id, -32602, '无效参数：tools/call 需要 name')
+        if (!name) return fail(id, ERR_INVALID_PARAMS, '无效参数：tools/call 需要 name')
 
         // ── 权限分档（P0b）──
         // observer：只能调只读工具（list/tail/health），外加 bastion_use（绑定本身不执行任何东西）。
@@ -131,7 +230,12 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
         // 没传 scope = full（内部调用 / 测试 / VS Code 内的 Copilot 直连）。
         const def = defs.find((d) => d.name === name)
         const scope = ctx?.scope ?? 'full'
-        const refuse = (text: string): object => ok(id, { content: [{ type: 'text', text }], isError: true })
+        const toolResult = (payload: Record<string, unknown>, isError?: boolean): Record<string, unknown> => {
+          const out: Record<string, unknown> = modern ? { resultType: 'complete', ...payload } : { ...payload }
+          if (isError === true) out.isError = true
+          return out
+        }
+        const refuse = (text: string): object => ok(id, toolResult({ content: [{ type: 'text', text }] }, true))
         if (def && !def.readOnly && name !== 'bastion_use' && scope === 'observer') {
           return refuse(
             `当前令牌是 **observer（只读）**：不能调用 ${name}。` +
@@ -148,15 +252,22 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
         try {
           const r = await dispatch(name, args, ctx)
           const payload: Record<string, unknown> = { content: [{ type: 'text', text: r.text }] }
-          // 2025-06-18 起工具可以带机器可读结果（structuredContent）：AI 不用再从文本里猜状态
+          // structuredContent：AI 不用再从文本里猜状态
           if (r.structured) payload.structuredContent = r.structured
-          if (r.isError === true) payload.isError = true
-          return ok(id, payload)
+
+          // ── Tasks 扩展：长任务改成"先给句柄，客户端轮询" ──
+          // 只有**声明了** io.modelcontextprotocol/tasks 的客户端才允许收到任务（规范明确要求）。
+          const jobId = typeof r.structured?.jobId === 'string' ? r.structured.jobId : undefined
+          const jobStatus = typeof r.structured?.status === 'string' ? r.structured.status : undefined
+          if (modern && tasksCapable && jobId && jobStatus && jobStatus !== 'completed' && jobStatus !== 'failed') {
+            return ok(id, createTaskResult(jobId, jobStatus))
+          }
+          return ok(id, toolResult(payload, r.isError === true))
         } catch (e) {
-          if (e instanceof UnknownToolError) return fail(id, -32602, e.message)
+          if (e instanceof UnknownToolError) return fail(id, ERR_INVALID_PARAMS, e.message)
           // 工具内部抛错不当成传输错误：回一条 isError 的结果，模型能读到原因
           const text = `工具执行失败：${e instanceof Error ? e.message : String(e)}`
-          return ok(id, { content: [{ type: 'text', text }], isError: true })
+          return ok(id, toolResult({ content: [{ type: 'text', text }] }, true))
         }
       }
 
@@ -340,14 +451,20 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
           const rawClient = req.headers['x-bastionshell-client']
           const headerClient = typeof rawClient === 'string' ? rawClient : undefined
           const clientId = caller.clientId === 'default' ? headerClient ?? caller.clientId : caller.clientId
-          const reply = await server.handle(parsed as JsonRpcRequest, { clientId, scope: caller.scope })
+          const headerVersion = String(req.headers['mcp-protocol-version'] ?? '').trim() || undefined
+          const reply = await server.handle(parsed as JsonRpcRequest, { clientId, scope: caller.scope }, headerVersion)
           if (reply === null) {
             // 通知：按规范用 202 且不带 body
             res.writeHead(202, { 'Cache-Control': 'no-store' })
             res.end()
             return
           }
-          send(200, reply)
+          // 现代请求的错误要落到对应的 HTTP 状态码（版本不支持/头不一致 → 400，未知方法 → 404）。
+          // 老请求保持 200：它们会把 400 当成"端点不存在"而去探测旧传输。
+          const errCode = (reply as { error?: { code?: number } }).error?.code
+          const isModernRequest =
+            !!headerVersion || !!readMeta((parsed as JsonRpcRequest).params).version
+          send(httpStatusForError(errCode, isModernRequest), reply)
         } catch (e) {
           log(`MCP 处理请求失败：${e instanceof Error ? e.message : String(e)}`)
           send(500, fail(null, -32603, '服务端内部错误'))

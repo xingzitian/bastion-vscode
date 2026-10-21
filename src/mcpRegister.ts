@@ -23,7 +23,8 @@ import { log } from './log'
 import { sessionApi } from './aiSessionApi'
 import { MCP_TOOL_DEFS } from './mcpTools'
 import { newMcpToken, startMcpHttpServer, toMcpTool, type McpHttpHandle } from './mcpServer'
-import { setMcpEndpointInfo } from './state'
+import { setMcpEndpointInfo, terminals } from './state'
+import { cancelExecJob } from './aiBridge'
 import { normalizeClientId } from './sessionBindings'
 import { normalizeAiScope, SCOPE_INFO } from './aiAccess'
 import type { McpClientToken, McpScope } from './mcpServer'
@@ -154,6 +155,16 @@ export async function ensureMcpServer(): Promise<McpHttpHandle | undefined> {
         port: state.port,
         serverName: 'bastionshell',
         serverVersion,
+        // 作业的宿主能力由这边注入（协议层不 import vscode）：Tasks 的 tasks/cancel 与 cursorMoved 要用
+        jobs: {
+          cursorOf: (sessionId) => {
+            for (const [, term] of terminals) if (term.sessionId === sessionId) return term.screenCursor
+            return undefined
+          },
+          cancel: async (jobId) => {
+            await cancelExecJob({ jobId })
+          }
+        },
         log: (m) => log(m)
       })
       handle = h

@@ -49,6 +49,9 @@ Cursor 或者任何支持 HTTP MCP 的客户端，都能直接操作你**已经�
 > 端点信息（URL / token）在 `~/.bastionshell/mcp.json`；token 是长期有效的，重载窗口不会变。
 > 只有**本机**能连（只监听 127.0.0.1）。关掉：设置 `bastion.mcpEnabled`。
 > 详细说明与排查见下文「MCP」一节。
+>
+> **协议版本**：已支持 **2026-07-28**（modern：`server/discover`、每请求 `_meta`、`resultType`、缓存字段、
+> Tasks 扩展），同时保留 legacy（`initialize`）—— 老客户端不受影响。详见 [`docs/mcp-protocol.md`](docs/mcp-protocol.md)。
 
 ## 🖥 一个 AI 同时管多条会话（会话绑定）
 
