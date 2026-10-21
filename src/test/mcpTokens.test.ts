@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { mcpClientTokens, removeClientToken, writeClientToken } from '../mcpRegister'
+import { loadOrCreateState, mcpClientTokens, removeClientToken, writeClientToken, writeState } from '../mcpRegister'
 import { readJsonFile } from '../config'
 
 function withTempShared(fn: (dir: string) => void): void {
@@ -68,5 +68,17 @@ test('标签会归一化：带空格/大写的标签也能吊销（用同样的�
     writeClientToken('My AI', 'observer') // 内部会归一化成 my_AI
     assert.equal(mcpClientTokens().length, 1)
     assert.equal(removeClientToken('my_ai'), true, '归一化后应该对得上')
+  })
+})
+
+test('★ 回归：写回状态时不能把已签发的令牌丢掉（真机上"签发后看不见"就是这条）', () => {
+  withTempShared(() => {
+    writeClientToken('claude', 'observer')
+    assert.equal(mcpClientTokens().length, 1, '签发之后应该能看到')
+    // 模拟 ensureMcpServer 启动成功后那次写回：只带 token/port/actualPort/url，**不带 clients**
+    const st = loadOrCreateState()
+    writeState({ token: st.token, port: st.port })
+    assert.equal(mcpClientTokens().length, 1, '写完状态之后令牌必须还在')
+    assert.equal(mcpClientTokens()[0].label, 'claude')
   })
 })

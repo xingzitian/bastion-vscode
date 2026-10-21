@@ -105,3 +105,35 @@ test('没有绑定时 hasBindings = false', () => {
   assert.equal(m.hasBindings, false)
   assert.equal(m.sessions[0].owners.length, 0)
 })
+
+test('★ 只带了请求头的客户端（没签发令牌）也必须出现，并且标明"实际是全权"', () => {
+  const m = buildAiModel({
+    tokens: [],
+    clients: { dsh: { label: 'dsh', sessions: { A: { sessionId: 's-1', name: '#5 wangjiashu01@10.169.5.86' } } } },
+    sessions: [{ id: 's-1', name: '#5 wangjiashu01@10.169.5.86' }]
+  })
+  const dsh = m.clients.find((c) => c.clientId === 'dsh')
+  assert.ok(dsh, '绑定文件里出现的客户端必须在列表里（否则用户以为"绑定了但没显示"）')
+  assert.equal(dsh!.headerOnly, true)
+  assert.equal(dsh!.scopeLabel, '未签发令牌')
+  assert.match(dsh!.plain, /全权/, '必须写明：没签发令牌 = 用的是主令牌 = 实际全权')
+  assert.equal(dsh!.bindings.length, 1)
+  assert.match(ownersSummary(m.sessions[0]), /dsh/)
+})
+
+test('★ 给同一个 clientId 签发令牌后：只剩一行，且权限档以令牌为准（绑定跟过来）', () => {
+  const bindings = { dsh: { label: 'dsh', sessions: { A: { sessionId: 's-1', name: '#5 h' } } } }
+  const before = buildAiModel({ tokens: [], clients: bindings, sessions: [{ id: 's-1', name: '#5 h' }] })
+  const after = buildAiModel({
+    tokens: [{ label: 'dsh', scope: 'observer', token: 'tok-abcdefgh' }],
+    clients: bindings,
+    sessions: [{ id: 's-1', name: '#5 h' }]
+  })
+  assert.equal(before.clients.filter((c) => c.clientId === 'dsh').length, 1)
+  assert.equal(after.clients.filter((c) => c.clientId === 'dsh').length, 1, '不能同时出现两行')
+  const dsh = after.clients.find((c) => c.clientId === 'dsh')!
+  assert.equal(dsh.headerOnly, false)
+  assert.equal(dsh.scopeLabel, '只读')
+  assert.equal(dsh.bindings.length, 1, '已有的绑定要跟过来')
+  assert.equal(after.sessions[0].owners[0].scope, 'observer')
+})

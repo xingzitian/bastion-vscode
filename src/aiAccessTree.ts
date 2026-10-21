@@ -14,7 +14,7 @@ import * as vscode from 'vscode'
 import { terminals } from './state'
 import { bindingsOf, loadBindings, onBindingsChanged } from './sessionBindings'
 import { mcpClientTokens, mcpMainToken } from './mcpRegister'
-import { buildAiModel, ownersSummary, scopeDetail, SCOPE_INFO, type AiClientRow, type AiSessionRow } from './aiAccess'
+import { buildAiModel, ownersSummary, scopeDetail, scopeInfoOf, type AiClientRow, type AiSessionRow } from './aiAccess'
 
 const CLIENT_CTX = 'aiClient'
 const BINDING_CTX = 'aiBinding'
@@ -83,12 +83,13 @@ export class AiAccessProvider implements vscode.TreeDataProvider<AiItem> {
             scopeDetail(c.scope).replace(/\n/g, '  \n'),
             '',
             c.tokenMasked ? `令牌：\`${c.tokenMasked}\`` : '',
-            c.isMain ? '（主令牌不给单独签发：它就是 VS Code 自己用的那把）' : ''
+            c.isMain ? '（主令牌不给单独签发：它就是 VS Code 自己用的那把）' : '',
+            c.headerOnly ? '\n**右键 → 签发同名令牌**，就能把它从"全权"降到你选的档（它已有的绑定会跟过来）' : ''
           ].join('\n')
         )
         item.iconPath = new vscode.ThemeIcon(c.isMain ? 'shield' : 'key')
-        // 主令牌不能吊销；单独签发的给个右键菜单
-        item.contextValue = c.isMain ? 'aiClientMain' : CLIENT_CTX
+        // 主令牌不能吊销；没签发令牌的客户端给"升级"入口；签发的给管理菜单
+        item.contextValue = c.isMain ? 'aiClientMain' : c.headerOnly ? 'aiClientHeader' : CLIENT_CTX
         return item
       })
     }
@@ -126,7 +127,7 @@ export class AiAccessProvider implements vscode.TreeDataProvider<AiItem> {
         item.iconPath = new vscode.ThemeIcon(s.owners.length ? 'plug' : 'terminal')
         item.tooltip = new vscode.MarkdownString(
           `**${s.name}**\n\n会话 id：\`${s.id}\`\n\n${
-            s.owners.length ? s.owners.map((o) => `- ${o.alias}：${o.label}（${SCOPE_INFO[o.scope].label}）`).join('\n') : '没有 AI 绑着它'
+            s.owners.length ? s.owners.map((o) => `- ${o.alias}：${o.label}（${scopeInfoOf(o.scope).label}）`).join('\n') : '没有 AI 绑着它'
           }`
         )
         item.command = { command: 'bastion.focusAiSession', title: '聚焦这条会话', arguments: [s.id] }

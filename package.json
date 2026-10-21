@@ -98,6 +98,7 @@
 "onCommand:bastion.forgetPassword",
 "onCommand:bastion.manageAiTokens",
                 "onView:bastion.aiAccess",
+                "onCommand:bastion.issueTokenForClient",
                 "onCommand:bastion.issueAiToken",
                 "onCommand:bastion.revokeAiToken",
                 "onCommand:bastion.changeAiTokenScope",
@@ -938,6 +939,11 @@
         "title": "BastionShell: 管理外部 AI 令牌（只读 / 可写分档）",
         "icon": "$(key)"
             },
+                                                {
+        "command": "bastion.issueTokenForClient",
+        "title": "BastionShell: 给这个 AI 客户端签发同名令牌（限制它的权限）",
+        "icon": "$(lock)"
+                        },
                         {
         "command": "bastion.issueAiToken",
         "title": "BastionShell: 签发 AI 令牌（只读 / 可写 / 全权）",
@@ -1172,6 +1178,11 @@
         }
       ],
       "view/item/context": [
+      {
+        "command": "bastion.issueTokenForClient",
+        "when": "view == bastion.aiAccess && viewItem == aiClientHeader",
+        "group": "2_管理@0"
+      },
       {
         "command": "bastion.unbindAiSession",
         "when": "view == bastion.aiAccess && viewItem == aiBinding",

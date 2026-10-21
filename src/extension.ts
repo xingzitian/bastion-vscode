@@ -230,6 +230,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('bastion.showAiBindings', () => showAiBindings()),
     vscode.commands.registerCommand('bastion.manageAiTokens', () => manageAiTokens()),
     vscode.commands.registerCommand('bastion.issueAiToken', () => issueTokenFlow().then(() => aiAccessProvider.refresh())),
+    vscode.commands.registerCommand('bastion.issueTokenForClient', (label?: string) =>
+      issueTokenFlow(typeof label === 'string' ? label : undefined).then(() => aiAccessProvider.refresh())
+    ),
     vscode.commands.registerCommand('bastion.revokeAiToken', (label?: string) => revokeTokenFlow(typeof label === 'string' ? label : undefined).then(() => aiAccessProvider.refresh())),
     vscode.commands.registerCommand('bastion.changeAiTokenScope', (label?: string) =>
       label ? changeTokenScopeFlow(label).then(() => aiAccessProvider.refresh()) : undefined

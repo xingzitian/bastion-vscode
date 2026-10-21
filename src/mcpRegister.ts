@@ -88,9 +88,17 @@ function readState(): McpState | undefined {
   })
 }
 
-function writeState(state: McpState): void {
+/** 写回状态（导出仅为测试：这里必须保留文件里已有的字段） */
+
+export function writeState(state: McpState): void {
   try {
-    writeJsonFile(MCP_STATE_FILE, state, MCP_STATE_HEADER)
+    // ⚠️ 必须**合并**文件里已有的字段，不能"只写自己知道的那几个"：
+    //    端点启动成功后写回状态时曾经把 clients（签发的令牌）整个丢掉 ——
+    //    用户签发令牌后一重启端点就"看不见了"（2026-10-21 真机反馈）。
+    const prev = readState()
+    const merged: McpState = { ...(prev ?? { token: '', port: 0 }), ...state }
+    if (!merged.clients) merged.clients = prev?.clients
+    writeJsonFile(MCP_STATE_FILE, merged, MCP_STATE_HEADER)
     // 这文件里有 token：类 Unix 上是 0600，Windows 上 chmod 基本无意义但无害
     try {
       fs.chmodSync(configFilePath(MCP_STATE_FILE), 0o600)
@@ -162,6 +170,7 @@ export async function ensureMcpServer(): Promise<McpHttpHandle | undefined> {
         port: state.port,
         actualPort: h.port,
         url: h.url,
+        clients: state.clients, // ← 签发的令牌必须带上（否则一次写回就"消失"了）
         updatedAt: new Date().toISOString()
       })
       // ⚠️ 端口回退过就必须让 VS Code **重新问一次**：它手里缓存的是上一次的 URL，
@@ -303,7 +312,7 @@ export async function revokeClientToken(label: string): Promise<boolean> {
 }
 
 /** 签发流程：权限档用**人话**讲清能做什么 / 不能做什么（树和命令面板都调它） */
-export async function issueTokenFlow(): Promise<void> {
+export async function issueTokenFlow(prefillLabel?: string): Promise<void> {
   if (!mcpEnabled()) {
     void vscode.window.showWarningMessage('MCP 端点是关的（bastion.mcpEnabled），签了令牌也连不上。')
     return
@@ -319,7 +328,10 @@ export async function issueTokenFlow(): Promise<void> {
   )
   if (!scope) return
   const label = await vscode.window.showInputBox({
-    prompt: '给它起个标签（会出现在左侧「AI 访问」和 listSessions 的 owners 里）',
+    prompt:
+      '给它起个标签（会出现在左侧「AI 访问」和 listSessions 的 owners 里）' +
+      (prefillLabel ? '。要限制' + prefillLabel + ' 就填它本身：同名令牌会接管那个客户端已有的绑定' : ''),
+    value: prefillLabel ?? '',
     placeHolder: 'claude / trae / 排障-AI',
     ignoreFocusOut: true
   })

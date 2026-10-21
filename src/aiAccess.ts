@@ -41,20 +41,44 @@ export const SCOPE_INFO: Record<AiScope, ScopeInfo> = {
   }
 }
 
+/**
+ * 「没签发令牌、只靠请求头识别」的客户端。
+ *
+ * 这类客户端（例如带了 `X-BastionShell-Client: dsh` 的）拿的是**主令牌**，
+ * 所以它的实际权限是**全权** —— 页面上必须这么写，不能让它显示成"没有权限"，
+ * 否则用户会以为"我限制过它了"。
+ */
+export const HEADER_ONLY_INFO: ScopeInfo = {
+  label: '未签发令牌',
+  plain: '靠请求头识别，用的是主令牌 → 实际权限是全权',
+  can: ['执行命令', '上传/下载文件', '连新机器', '写个人习惯'],
+  cannot: []
+}
+
+/** 与 sessionBindings.normalizeClientId 同一套规则（这里不 import vscode，保持纯函数） */
+export function normalizeAiClientId(raw: string): string {
+  const v = (raw ?? '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '_').slice(0, 32)
+  return v || 'default'
+}
+/** 取某一档的说明（'header' = 没签发令牌、靠请求头识别） */
+export function scopeInfoOf(scope: AiScope | 'header'): ScopeInfo {
+  return scope === 'header' ? HEADER_ONLY_INFO : SCOPE_INFO[scope]
+}
+
 export function normalizeAiScope(raw: unknown): AiScope {
   return raw === 'observer' || raw === 'operator' || raw === 'full' ? raw : 'observer'
 }
 
 /** 一行总结：给树/总览/签发框共用 */
-export function scopeOneLiner(scope: AiScope): string {
-  const s = SCOPE_INFO[scope]
+export function scopeOneLiner(scope: AiScope | 'header'): string {
+  const s = scopeInfoOf(scope)
   const no = s.cannot.length ? `；不能：${s.cannot.join('、')}` : ''
   return `${s.label}（${s.plain}）—— 能：${s.can.join('、')}${no}`
 }
 
 /** 两行详情：树里的 tooltip 用 */
-export function scopeDetail(scope: AiScope): string {
-  const s = SCOPE_INFO[scope]
+export function scopeDetail(scope: AiScope | 'header'): string {
+  const s = scopeInfoOf(scope)
   return `权限：${s.label}（${s.plain}）\n能：${s.can.join('、')}\n不能：${s.cannot.length ? s.cannot.join('、') : '（没有限制）'}`
 }
 
@@ -90,12 +114,16 @@ export interface AiClientRow {
   /** 主令牌固定是 default */
   clientId: string
   label: string
-  scope: AiScope
+  scope: AiScope | 'header'
   scopeLabel: string
   plain: string
+  can: string[]
+  cannot: string[]
   /** 令牌只显示尾部几位；签发时就提示"只显示一次" */
   tokenMasked: string
   isMain: boolean
+  /** 没有独立令牌，靠请求头识别（权限实际是全权） */
+  headerOnly: boolean
   bindings: RawBinding[]
 }
 
@@ -103,7 +131,7 @@ export interface AiSessionOwnerRow {
   clientId: string
   label: string
   alias: string
-  scope: AiScope
+  scope: AiScope | 'header'
 }
 
 export interface AiSessionRow extends RawSession {
@@ -140,51 +168,73 @@ export function buildAiModel(input: {
   const bySession = new Map<string, AiSessionRow>()
   for (const s of input.sessions) bySession.set(s.id, { ...s, owners: [] })
 
-  const clients: AiClientRow[] = []
-  // 主令牌
+  const addOwners = (clientId: string, label: string, alias: string, sessionId: string, scope: AiScope | 'header'): void => {
+    bySession.get(sessionId)?.owners.push({ clientId, label, alias, scope })
+  }
+
+  const rows: AiClientRow[] = []
+
+  // 主令牌永远显示
   const mainBindings = Object.entries(input.clients.default?.sessions ?? {})
     .map(([alias, b]) => ({ alias, sessionId: b.sessionId, name: b.name }))
     .sort((a, b) => a.alias.localeCompare(b.alias))
-  clients.push({
+  rows.push({
     clientId: 'default',
     label: '主令牌（VS Code 自己 + 未标识的客户端）',
     scope: 'full',
     scopeLabel: SCOPE_INFO.full.label,
     plain: SCOPE_INFO.full.plain,
+    can: SCOPE_INFO.full.can,
+    cannot: SCOPE_INFO.full.cannot,
     tokenMasked: mask(input.mainToken ?? ''),
     isMain: true,
+    headerOnly: false,
     bindings: mainBindings
   })
-  for (const b of mainBindings) {
-    bySession.get(b.sessionId)?.owners.push({ clientId: 'default', label: '主令牌', alias: b.alias, scope: 'full' })
+  for (const b of mainBindings) addOwners('default', '主令牌', b.alias, b.sessionId, 'full')
+
+  // 已签发令牌（按归一化 clientId 索引）
+  const tokenById = new Map<string, RawToken>()
+  for (const tok of input.tokens) {
+    const id = normalizeAiClientId(tok.label)
+    if (!tokenById.has(id)) tokenById.set(id, tok)
   }
 
-  for (const t of input.tokens) {
-    const scope = normalizeAiScope(t.scope)
-    const cid = t.label
-    const bindings = Object.entries(input.clients[cid]?.sessions ?? {})
+  // 出现的客户端 = 已签发令牌 ∪ 绑定文件里出现的 clientId（后者可能只靠请求头识别）
+  const ids: string[] = []
+  for (const id of tokenById.keys()) ids.push(id)
+  for (const id of Object.keys(input.clients)) {
+    if (id !== 'default' && !ids.includes(id)) ids.push(id)
+  }
+
+  for (const id of ids) {
+    const tok = tokenById.get(id)
+    const bindings = Object.entries(input.clients[id]?.sessions ?? {})
       .map(([alias, b]) => ({ alias, sessionId: b.sessionId, name: b.name }))
       .sort((a, b) => a.alias.localeCompare(b.alias))
-    clients.push({
-      clientId: cid,
-      label: t.label,
+    const scope: AiScope | 'header' = tok ? normalizeAiScope(tok.scope) : 'header'
+    const info = scope === 'header' ? HEADER_ONLY_INFO : SCOPE_INFO[scope]
+    rows.push({
+      clientId: id,
+      label: tok ? tok.label : id,
       scope,
-      scopeLabel: SCOPE_INFO[scope].label,
-      plain: SCOPE_INFO[scope].plain,
-      tokenMasked: mask(t.token),
+      scopeLabel: info.label,
+      plain: info.plain,
+      can: info.can,
+      cannot: info.cannot,
+      tokenMasked: tok ? mask(tok.token) : '',
       isMain: false,
+      headerOnly: scope === 'header',
       bindings
     })
-    for (const b of bindings) {
-      bySession.get(b.sessionId)?.owners.push({ clientId: cid, label: t.label, alias: b.alias, scope })
-    }
+    for (const b of bindings) addOwners(id, tok ? tok.label : id, b.alias, b.sessionId, scope)
   }
 
   return {
-    clients,
+    clients: rows,
     sessions: input.sessions.map((s) => bySession.get(s.id)!).filter(Boolean),
     hasCustom: input.tokens.length > 0,
-    hasBindings: clients.some((c) => c.bindings.length > 0)
+    hasBindings: rows.some((c) => c.bindings.length > 0)
   }
 }
 
