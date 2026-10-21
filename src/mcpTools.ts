@@ -82,7 +82,7 @@ export interface McpSessionApi {
     mode?: 'shell' | 'interactive'
     /** 立刻返回作业句柄，不阻塞 */
     background?: boolean
-    /** 预留：把日志 tee 到远端文件（下一版接上；现在走扩展内存里的滚动日志） */
+    /** 把日志 tee 到远端文件（人仍能在终端看到；扩展重启后还能 cat - 用返回里的 logPath） */
     logToFile?: boolean
     /** 会话上有命令在跑时强行插队（默认拒绝） */
     force?: boolean

@@ -16,6 +16,7 @@ import { getProfiles } from './profiles'
 import { getHabits, resolvePrivilege, habitsForAI } from './habits'
 import { isWaitingForPassword, resolvePasswordPrompts } from './recognize'
 import { log } from './log'
+import { teePaths } from './execTee'
 import {
   activeJobOf,
   cancelJob,
@@ -378,7 +379,8 @@ export async function execRemote(
     maxMs: Math.max(1, blockMs),
     allowPlainSudo,
     job,
-    logToFile: input.logToFile === true
+    logToFile: input.logToFile === true,
+    logPath: job.logPath
   })
 
   const status: string =

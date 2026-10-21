@@ -4,7 +4,8 @@ import type { ConnectionProfile } from './profiles';
 import { SharedConnection } from './connection';
 import { stopMfaCountdown } from './connection';
 import { log } from './log'
-import { appendJobOutput, completeJob, detectPrompt as detectInputPrompt, failJob, markInputRequired, type ExecJob } from './execJobs';
+import { appendJobOutput, completeJob, detectPrompt as detectInputPrompt, failJob, markInputRequired, type ExecJob } from './execJobs'
+import { buildTeeCommand } from './execTee';
 import { ZmodemSessionController, ZmodemEventPayload, OverwriteMode } from './zmodem';
 import { NodeFsZmodemIo } from './zmodemIo';
 import { resolveDownloadDir } from './downloadDir';
@@ -81,6 +82,8 @@ export interface ExecResult {
   timedOut: boolean
   cursorAtStart: number
   cursorNow: number
+  /** tee 的远端日志（没开就是 undefined） */
+  logPath?: string
 }
 export class BastionTerminal implements vscode.Pseudoterminal {
   private writeEmitter = new vscode.EventEmitter<string>();
@@ -687,7 +690,20 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     // 失败、脚本里 `false` 这类，光看输出是看不出来的）。
     const marker = `__BASTION_DONE_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}__`;
     const safe = isMarkerSafe(command, opts.allowPlainSudo === true);
-    const cmd = safe ? `${command.replace(/\r?\n+$/, '')}; ec=$?; echo ${marker}:$ec` : command;
+    // 长命令可选 tee 一份到远端：人照常在终端里看到输出（不是 nohup 那种把终端抢走），
+    // 我们额外拿到完整日志 + 可靠的退出码（从 .rc 文件读，见 execTee.ts）。
+    const teeLogPath = opts.logToFile && opts.logPath ? opts.logPath : '';
+    const cmd = teeLogPath
+      ? buildTeeCommand({
+          command,
+          logPath: teeLogPath,
+          rcPath: `${teeLogPath}.rc`,
+          dir: teeLogPath.slice(0, teeLogPath.lastIndexOf('/')) || '/tmp',
+          marker: safe ? marker : undefined
+        })
+      : safe
+        ? `${command.replace(/\r?\n+$/, '')}; ec=$?; echo ${marker}:$ec`
+        : command;
     this.execMarkerSeen = true;
     this.lastExecExitCode = undefined;
 
@@ -736,7 +752,8 @@ export class BastionTerminal implements vscode.Pseudoterminal {
           elapsedMs: Date.now() - startedAt,
           timedOut,
           cursorAtStart,
-          cursorNow: this.screenCursor
+          cursorNow: this.screenCursor,
+          logPath: teeLogPath || undefined
         });
       };
       const onData = (d: Buffer): void => {
