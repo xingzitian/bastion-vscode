@@ -1,3 +1,31 @@
+## 0.3.9
+
+> 执行协议（exec）改造：把「没等到结束标记」从一个布尔值改成**结构化状态机**（状态词对齐 MCP 官方 Tasks 扩展）。
+
+### 新增
+
+- `bastion_exec` 返回结构化状态：`completed` / `working` / `input_required`（+ `failed` / `cancelled`），
+  并带 `exitCode`、`elapsedMs`、`cursor`、`cursorMoved`、`lastLine`、`markerSeen`、`jobId`。
+- 三个新工具：
+  - `bastion_wait({jobId, pattern, waitMs})`：等作业结束、或等某个正则出现（服务端阻塞，≤55s 一轮）——**一整个 sleep 的替代品**；
+  - `bastion_job({jobId, sinceOffset, maxBytes})`：按字节偏移**增量读完整日志**（滚屏也不丢）；
+  - `bastion_cancel({jobId})`：发 Ctrl-C 收场（误起的 sleep / tail -f 不用再等人按 Ctrl-C）。
+- `bastion_exec` 新参数：`waitMs`（默认 15s，夹到 55s）、`quietMs`（默认 **15s**，旧值 3s）、
+  `mode:"interactive"`（只发不等）、`background`、`logToFile`（tee 到远端，人仍可见）、`force`。
+- 会话上已有命令在跑时，`exec` **默认拒绝插队**并直接告诉你用 wait / job / cancel 跟进。
+- 工具结果带 `structuredContent`（MCP 2025-06-18）：客户端可以机器读状态，不用从文本里猜。
+
+### 修复
+
+- **「没等到结束标记」的真正根因**：完成判定原来是「输出静止 **3 秒**」——`docker build` 这种
+  阶段之间静默几十秒的命令，第 3 秒就被判「结束」，命令其实还在跑。现在默认 15s，
+  且**超时不再算失败**（返回 `working` + `jobId`，作业继续捕获）。
+- 契约文档：`docs/exec-protocol.md`（状态机、tee 而不是 nohup 的理由、客户端 60s 预算约束）。
+
+### 说明
+
+- 桌面版仍是旧的「哨兵 + 静默」逻辑，下一步对齐。
+- 多文件 / 目录推送这次**没做**（rsync 链路还没测通）。
 ## 0.3.8
 
 ### 新增

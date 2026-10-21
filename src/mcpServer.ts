@@ -148,6 +148,8 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
         try {
           const r = await dispatch(name, args, ctx)
           const payload: Record<string, unknown> = { content: [{ type: 'text', text: r.text }] }
+          // 2025-06-18 起工具可以带机器可读结果（structuredContent）：AI 不用再从文本里猜状态
+          if (r.structured) payload.structuredContent = r.structured
           if (r.isError === true) payload.isError = true
           return ok(id, payload)
         } catch (e) {

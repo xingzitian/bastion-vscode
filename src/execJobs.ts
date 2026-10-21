@@ -1,0 +1,330 @@
+/**
+ * 执行作业（exec job）—— 状态机 + 滚动日志 + 偏移切片 + 模式等待。
+ *
+ * 契约见 `docs/exec-protocol.md`；状态词直接对齐 MCP 官方 Tasks 扩展：
+ * `working / input_required / completed / failed / cancelled`。
+ *
+ * 这个模块**不 import vscode**：状态机是纯逻辑，单测能直接打桩。
+ * 之所以要"作业"这一层，是因为旧协议只有"等结束标记 + 有没有看到"这一个布尔，
+ * 三种完全不同的情况（还在跑 / 卡在提示 / 早跑完了标记被吃）返回同一句话，
+ * AI 只能靠猜 —— 猜错的代价是重复执行命令。
+ */
+
+export type ExecStatus = 'working' | 'input_required' | 'completed' | 'failed' | 'cancelled'
+
+/** 作业日志的滚动上限（超出丢最老的字节；绝对偏移不受影响） */
+export const JOB_BUFFER_MAX = 8 * 1024 * 1024
+
+/** 单轮 wait 的上限：低于 MCP 客户端的单次调用预算（本机 DSH 默认 60s） */
+export const WAIT_BUDGET_MS = 55_000
+
+export interface ExecJob {
+  id: string
+  sessionId: string
+  sessionNo: number
+  command: string
+  startedAt: number
+  state: ExecStatus
+  exitCode?: number
+  /** 滚动捕获（UTF-8 字节） */
+  buffer: Buffer
+  /** 已经被丢掉的最老字节数（绝对偏移 = dropped + buffer 内下标） */
+  dropped: number
+  lastLine: string
+  /** 是否真的看到了哨兵（false = 靠"输出静止"判完成，可能还差一点） */
+  markerSeen: boolean
+  cursorAtStart: number
+  /** 交互提示原文（input_required 时） */
+  prompt?: string
+  hint?: string
+  /** 远端 tee 的日志路径（有则给 AI 事后 cat） */
+  logPath?: string
+  /** failed 的原因：session_lost / exit_nonzero / force_superseded */
+  reason?: string
+  /** 等待者（waitJob 注册；状态或输出变化时唤醒） */
+  waiters: Set<() => void>
+}
+
+export interface JobView {
+  jobId: string
+  status: ExecStatus
+  exitCode?: number
+  elapsedMs: number
+  cursor: number
+  cursorMoved: boolean
+  lastLine: string
+  markerSeen: boolean
+  logPath?: string
+  prompt?: string
+  hint?: string
+  reason?: string
+}
+
+const jobs = new Map<string, ExecJob>()
+/** 每条会话"当前正在跑"的作业（同一时刻只允许一个，避免命令互相插队） */
+const activeBySession = new Map<string, string>()
+let seq = 0
+
+/** waitMs 的默认值与预算夹紧（纯函数，便于测试；避免用例真的等 55 秒） */
+
+export function clampWaitMs(ms?: number, def = 15_000): number {
+  const v = ms === undefined ? def : ms
+  if (!Number.isFinite(v)) return def
+  return Math.max(0, Math.min(Math.floor(v), WAIT_BUDGET_MS))
+}
+
+export function newJobId(): string {
+  seq += 1
+  return `j-${seq.toString(16).padStart(4, '0')}`
+}
+
+export function createJob(input: {
+  sessionId: string
+  sessionNo: number
+  command: string
+  cursorAtStart: number
+  logPath?: string
+  now?: number
+}): ExecJob {
+  const job: ExecJob = {
+    id: newJobId(),
+    sessionId: input.sessionId,
+    sessionNo: input.sessionNo,
+    command: input.command,
+    startedAt: input.now ?? Date.now(),
+    state: 'working',
+    buffer: Buffer.alloc(0),
+    dropped: 0,
+    lastLine: '',
+    markerSeen: false,
+    cursorAtStart: input.cursorAtStart,
+    logPath: input.logPath,
+    waiters: new Set()
+  }
+  jobs.set(job.id, job)
+  activeBySession.set(job.sessionId, job.id)
+  return job
+}
+
+export function getJob(id: string): ExecJob | undefined {
+  return jobs.get(id)
+}
+
+/** 某条会话上还在跑的作业（没有就 undefined） */
+export function activeJobOf(sessionId: string): ExecJob | undefined {
+  const id = activeBySession.get(sessionId)
+  return id ? jobs.get(id) : undefined
+}
+
+export function allJobs(): ExecJob[] {
+  return [...jobs.values()]
+}
+
+function wake(job: ExecJob): void {
+  for (const fn of [...job.waiters]) fn()
+}
+
+function clearActive(job: ExecJob): void {
+  if (activeBySession.get(job.sessionId) === job.id) activeBySession.delete(job.sessionId)
+}
+
+/** 追加一块输出（终端数据流每来一块就调它） */
+export function appendJobOutput(job: ExecJob, chunk: Buffer | string): void {
+  const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk
+  if (buf.length === 0) return
+  job.buffer = Buffer.concat([job.buffer, buf])
+  if (job.buffer.length > JOB_BUFFER_MAX) {
+    const drop = job.buffer.length - JOB_BUFFER_MAX
+    job.buffer = job.buffer.subarray(drop)
+    job.dropped += drop
+  }
+  const tail = job.buffer.subarray(Math.max(0, job.buffer.length - 4096)).toString('utf8')
+  const lines = tail.split(/\r?\n/).filter((l) => l.trim() !== '')
+  if (lines.length > 0) job.lastLine = lines[lines.length - 1].slice(0, 300)
+  wake(job)
+}
+
+/** 结束（正常/非 0） */
+export function completeJob(job: ExecJob, input: { exitCode?: number; markerSeen?: boolean }): void {
+  if (job.state !== 'working' && job.state !== 'input_required') return
+  job.exitCode = input.exitCode
+  job.markerSeen = input.markerSeen === true
+  const ok = input.exitCode === undefined ? true : input.exitCode === 0
+  job.state = ok ? 'completed' : 'failed'
+  if (!ok) job.reason = 'exit_nonzero'
+  clearActive(job)
+  wake(job)
+}
+
+/** 卡在交互提示上（等人） */
+export function markInputRequired(job: ExecJob, prompt: string, hint: string): void {
+  if (job.state !== 'working') return
+  job.state = 'input_required'
+  job.prompt = prompt
+  job.hint = hint
+  wake(job)
+}
+
+/** 人能输入之后，命令继续跑 → 回到 working */
+export function resumeJob(job: ExecJob): void {
+  if (job.state !== 'input_required') return
+  job.state = 'working'
+  job.prompt = undefined
+  job.hint = undefined
+  wake(job)
+}
+
+/** 取消（协作式） */
+export function cancelJob(job: ExecJob): void {
+  if (job.state === 'completed' || job.state === 'failed' || job.state === 'cancelled') return
+  job.state = 'cancelled'
+  job.reason = 'cancelled'
+  clearActive(job)
+  wake(job)
+}
+
+/** 会话丢了（会话被关掉/断线）—— 必须和"参数指认不到"区分开 */
+export function failJob(job: ExecJob, reason: 'session_lost' | 'force_superseded', note?: string): void {
+  if (job.state === 'completed' || job.state === 'failed' || job.state === 'cancelled') return
+  job.state = 'failed'
+  job.reason = reason
+  if (note) job.lastLine = note
+  clearActive(job)
+  wake(job)
+}
+
+/** 绝对结束偏移（下一次 sinceOffset 用这个） */
+export function endOffset(job: ExecJob): number {
+  return job.dropped + job.buffer.length
+}
+
+/** 按绝对偏移切片（可能按字节截断；返回 nextOffset 不丢数据） */
+export function sliceJob(
+  job: ExecJob,
+  sinceOffset: number,
+  maxBytes = 64 * 1024
+): { chunk: string; nextOffset: number; truncated: boolean } {
+  const absStart = Math.max(0, Math.floor(sinceOffset))
+  const start = Math.max(0, absStart - job.dropped)
+  if (start >= job.buffer.length) return { chunk: '', nextOffset: endOffset(job), truncated: false }
+  const end = Math.min(job.buffer.length, start + Math.max(1, maxBytes))
+  return {
+    chunk: job.buffer.subarray(start, end).toString('utf8'),
+    nextOffset: job.dropped + end,
+    truncated: job.dropped + end < endOffset(job)
+  }
+}
+
+/** 整个作业的文本（导出/复盘用；太大时只给尾部） */
+export function jobText(job: ExecJob, maxBytes = 16 * 1024): string {
+  if (job.buffer.length <= maxBytes) return job.buffer.toString('utf8')
+  return `…（前面省略 ${(job.buffer.length - maxBytes).toLocaleString()} 字节）\n` +
+    job.buffer.subarray(job.buffer.length - maxBytes).toString('utf8')
+}
+
+export function viewOf(job: ExecJob, now = Date.now(), cursorNow?: number): JobView {
+  const cursor = cursorNow ?? job.cursorAtStart
+  return {
+    jobId: job.id,
+    status: job.state,
+    exitCode: job.exitCode,
+    elapsedMs: now - job.startedAt,
+    cursor,
+    // 还在跑但屏幕游标没动 = 真没动静（可能是命令卡住/等输入），这是很便宜的活性判据
+    cursorMoved: cursorNow === undefined ? false : cursorNow > job.cursorAtStart,
+    lastLine: job.lastLine,
+    markerSeen: job.markerSeen,
+    logPath: job.logPath,
+    prompt: job.prompt,
+    hint: job.hint,
+    reason: job.reason
+  }
+}
+
+/** 交互提示的识别（它是"input_required"，不是"还在跑"） */
+const PROMPTS: Array<{ re: RegExp; hint: string }> = [
+  { re: /\[sudo\]\s*password\s*for\s+\S+\s*:/i, hint: 'sudo 在等密码 —— 让用户在终端里输入，或改用免密 sudo' },
+  { re: /(^|\n)\s*(password|passwd|密码)\s*(for\s+\S+)?\s*[:：]\s*$/im, hint: '在等密码 —— 让用户在终端里输入（不要把密码交给 AI）' },
+  { re: /(verification code|动态码|验证码|otp)\s*[:：]/i, hint: '在等动态码 —— 让用户在终端里输入' },
+  { re: /(\(yes\/no\)|\[y\/n\]|\[Y\/n\]|\(y\/n\))\s*[?]?\s*$/im, hint: '在等确认（y/n）—— 让用户决定' },
+  { re: /(enter passphrase|passphrase for key)/i, hint: '在等口令（passphrase）—— 让用户输入' },
+  { re: /(请选择|请选择目标机|请选择账号|输入编号|资产\s*ID|菜单)/, hint: '停在堡垒机菜单/选择项上 —— 让用户在终端里走完这一步' },
+  { re: /(press any key|任意键继续)/i, hint: '在等按键 —— 让用户在终端里按一下' }
+]
+
+export function detectPrompt(text: string): { prompt: string; hint: string } | undefined {
+  const tail = text.slice(-2000)
+  for (const p of PROMPTS) {
+    const m = p.re.exec(tail)
+    if (m) {
+      const line = m[0].trim().slice(0, 200)
+      return { prompt: line, hint: p.hint }
+    }
+  }
+  return undefined
+}
+
+/**
+ * 等作业：状态变终态 / pattern 命中 / 超时，任一条件即返回。
+ *
+ * 这是"不要用 sleep 硬等"的正解 —— 等待发生在服务端，不消耗 AI 的轮次。
+ * `pattern` 是正则，默认只匹配**本次调用以来新增**的输出（sinceOffset 之后）。
+ */
+export function waitJob(
+  job: ExecJob,
+  opts: { pattern?: string; waitMs?: number; sinceOffset?: number } = {}
+): Promise<JobView & { matched: boolean; matchedLine?: string }> {
+  const waitMs = clampWaitMs(opts.waitMs, 20_000)
+  const re = opts.pattern ? safeRegex(opts.pattern) : undefined
+  const from = opts.sinceOffset ?? endOffset(job)
+
+  const snapshot = (): JobView & { matched: boolean; matchedLine?: string } => {
+    const v = viewOf(job)
+    if (!re) return { ...v, matched: false }
+    const { chunk } = sliceJob(job, Math.min(from, endOffset(job)), 512 * 1024)
+    const m = re.exec(chunk)
+    return { ...v, matched: !!m, matchedLine: m ? m[0].slice(0, 300) : undefined }
+  }
+
+  const terminal = (): boolean =>
+    job.state === 'completed' || job.state === 'failed' || job.state === 'cancelled'
+
+  const matched = (): boolean => {
+    if (!re) return false
+    const { chunk } = sliceJob(job, Math.min(from, endOffset(job)), 512 * 1024)
+    return re.test(chunk)
+  }
+
+  if (terminal() || matched()) return Promise.resolve(snapshot())
+
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (): void => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      job.waiters.delete(check)
+      resolve(snapshot())
+    }
+    const check = (): void => {
+      if (terminal() || matched()) finish()
+    }
+    const timer = setTimeout(finish, waitMs)
+    job.waiters.add(check)
+  })
+}
+
+function safeRegex(p: string): RegExp | undefined {
+  try {
+    return new RegExp(p)
+  } catch {
+    return undefined
+  }
+}
+
+/** 测试用：清空注册表 */
+export function resetJobs(): void {
+  jobs.clear()
+  activeBySession.clear()
+  seq = 0
+}

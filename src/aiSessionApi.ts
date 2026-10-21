@@ -9,6 +9,9 @@
 import {
   connectToTarget,
   execRemote,
+  waitForExecJob,
+  readExecJob,
+  cancelExecJob,
 
   listProfilesForAI,
   listSessions,
@@ -34,6 +37,7 @@ import { getDangerRules } from './dangerConfig'
 import { appendHabit, habitsForAI, isPrivilegeMode, setPrivilege } from './habits'
 import { log } from './log'
 import { cachedNote, createExecMemo } from './execIdempotency'
+import type { ExecResponse } from './aiBridge'
 import { getMcpEndpointInfo } from './state'
 import { MCP_TOOL_DEFS } from './mcpTools'
 import type { McpSessionApi } from './mcpTools'
@@ -58,33 +62,54 @@ export async function execChecked(input: {
   expectCursor?: number
   /** P2-b：同一件事重试时带同一个 key，服务端不会重复执行 */
   idempotencyKey?: string
-}): Promise<string> {
+  /** 本次最多阻塞多久（默认 15s，夹到 55s；超过转作业） */
+  waitMs?: number
+  /** 输出静止多久算没输出（默认 15s） */
+  quietMs?: number
+  /** shell（默认）| interactive（只发不等） */
+  mode?: 'shell' | 'interactive'
+  /** 立刻返回作业句柄 */
+  background?: boolean
+  /** 日志 tee 到远端（人仍可见） */
+  logToFile?: boolean
+  /** 会话上有命令在跑时强行插队（默认拒绝） */
+  force?: boolean
+}): Promise<ExecResponse> {
   const command = input.command ?? ''
   const hits = findDangerous(command, getDangerRules())
   if (hits.length > 0) {
     log(`拦截高危命令（AI 执行路径）：${describeDanger(hits)}`)
-    return (
-      '⚠️ 该命令包含高危操作，已被 BastionShell 拦截，不会执行。\n命中原因：\n' +
-      describeDanger(hits) +
-      '\n\n请让用户自己判断。如果确实要执行，请让用户在堡垒机终端里手动敲，或在部署任务/快捷命令里走人工确认流程。'
-    )
+    return {
+      text:
+        '⚠️ 该命令包含高危操作，已被 BastionShell 拦截，不会执行。\n命中原因：\n' +
+        describeDanger(hits) +
+        '\n\n请让用户自己判断。如果确实要执行，请让用户在堡垒机终端里手动敲，或在部署任务/快捷命令里走人工确认流程。',
+      structured: { status: 'failed', reason: 'dangerous' }
+    }
   }
-  const run = (): Promise<string> =>
+  const run = (): Promise<ExecResponse> =>
     execRemote({
       command,
       session: input.session,
       terminal: input.terminal,
       clientId: input.clientId,
       allowActiveFallback: input.allowActiveFallback,
-      expectCursor: input.expectCursor
+      expectCursor: input.expectCursor,
+      waitMs: input.waitMs,
+      quietMs: input.quietMs,
+      mode: input.mode,
+      background: input.background,
+      logToFile: input.logToFile,
+      force: input.force
     })
 
   // P2-b：幂等键。没带 key 就普通执行（服务端无法保证不重复执行，工具说明里写明了）。
   const key = (input.idempotencyKey ?? '').trim()
   if (!key) return run()
   const scope = `${normalizeClientId(input.clientId)}|${(input.session ?? input.terminal ?? '').trim()}|${key}`
-  const r = await execMemo.run(scope, run)
-  return r.cached ? r.text + cachedNote(key, r.joined) : r.text
+  // memo 只缓存文本（结构化结果不缓存：缓存命中本来就是"重复调用"）
+  const r = await execMemo.run(scope, async () => (await run()).text)
+  return { text: r.cached ? r.text + cachedNote(key, r.joined) : r.text }
 }
 
 /** 个人习惯：读 / 记一条 / 改提权方式（LM 工具与 MCP 工具共用） */
@@ -223,5 +248,8 @@ export const sessionApi: McpSessionApi = {
   tail: async (input) => tailScreen(input),
   push: async (input) => pushFile(input),
   pull: async (input) => pullFile(input),
+  wait: async (input) => waitForExecJob(input),
+  job: async (input) => readExecJob(input),
+  cancel: async (input) => cancelExecJob(input),
   health: async (input) => healthReport(input?.clientId)
 }

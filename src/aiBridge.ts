@@ -16,6 +16,19 @@ import { getProfiles } from './profiles'
 import { getHabits, resolvePrivilege, habitsForAI } from './habits'
 import { isWaitingForPassword, resolvePasswordPrompts } from './recognize'
 import { log } from './log'
+import {
+  activeJobOf,
+  cancelJob,
+  clampWaitMs,
+  createJob,
+  endOffset,
+  failJob,
+  getJob,
+  jobText,
+  sliceJob,
+  waitJob,
+  WAIT_BUDGET_MS
+} from './execJobs'
 import { ctx, terminals, lastBastionTerminal, getMcpEndpointInfo, nextSessionId } from './state'
 import { defaultDownloadDir as defaultDownloadDirShared } from './downloadDir'
 import { ensureConnection, openTerminal, openSessionToHost, type AssetPicked } from './sessions'
@@ -112,6 +125,32 @@ function activeOrRecentRef(entries: SessionEntry[]): SessionRef | undefined {
   return undefined
 }
 
+/** 拒绝原因：机器可读码 —— 「会话丢了」和「参数指认不到」必须分开 */
+export type RefusalReason =
+  | 'not_found'
+  | 'ambiguous'
+  | 'must_specify'
+  | 'no_binding'
+  | 'no_sessions'
+  | 'session_lost'
+  | 'refused'
+
+/**
+ * 把冻结的拒绝文案归类成机器可读码。
+ *
+ * 文案集中在 `sessionBindings.resolveSessionRef`（**改文案要同步改这里**），
+ * 所以这不算魔法字符串 —— 但它是唯一一处"按文本分类"的地方，故意收在这。
+ */
+function classifyRefusal(msg: string): RefusalReason {
+  if (msg.includes('还没有绑定任何会话')) return 'no_binding'
+  if (/绑定了 \d+ 条会话/.test(msg)) return 'must_specify'
+  if (msg.includes('已经不在了')) return 'session_lost'
+  if (msg.includes('匹配到')) return 'ambiguous'
+  if (msg.includes('找不到会话')) return 'not_found'
+  if (msg.includes('现在没有任何会话') || msg.includes('一条会话都没有')) return 'no_sessions'
+  return 'refused'
+}
+
 export interface FoundSession {
   term: BastionTerminal
   vt: vscode.Terminal
@@ -142,7 +181,7 @@ export function findSession(
     /** P2-a：写操作的乐观并发校验（来自上一次 tail/listSessions 的 cursor） */
     expectCursor?: number
   } = {}
-): FoundSession | { error: string } {
+): FoundSession | { error: string; reason?: RefusalReason } {
   const mode = opts.mode ?? 'write'
   const clientId = normalizeClientId(opts.clientId)
   const entries = sessionEntries()
@@ -157,15 +196,15 @@ export function findSession(
   })
   if (!r.ok) {
     log(`会话解析被拒绝（${mode} / ${clientId}）：${r.message}`)
-    return { error: r.message }
+    return { error: r.message, reason: classifyRefusal(r.message) }
   }
   const hit = entries.find((x) => x.ref.id === r.ref.id)
-  if (!hit) return { error: `会话 ${r.ref.id} 已经不在了，先 bastion_listSessions 重新选一条。` }
+  if (!hit) return { error: `会话 ${r.ref.id} 已经不在了，先 bastion_listSessions 重新选一条。`, reason: classifyRefusal(`会话 ${r.ref.id} 已经不在了，先 bastion_listSessions 重新选一条。`) }
   // P2-a：乐观并发校验（只在写操作传了 expectCursor 时才生效）
   const cursorProblem = expectCursorProblem(opts.expectCursor, hit.ref.cursor)
   if (cursorProblem) {
     log(`拒绝执行（cursor 不符）：${cursorProblem}`)
-    return { error: cursorProblem }
+    return { error: cursorProblem, reason: classifyRefusal(cursorProblem) }
   }
   return { term: hit.term, vt: hit.vt, name: hit.vt.name, id: r.ref.id, via: r.via, cursor: hit.ref.cursor }
 }
@@ -195,6 +234,48 @@ export function autoBind(
   return r
 }
 
+export type { ExecResponse } from './execResult'
+import type { ExecResponse } from './execResult'
+
+/** 找会话 id 对应的终端（作业相关工具按 jobId 回溯会话用） */
+function termOfSessionId(sessionId: string): { term: BastionTerminal; name: string } | undefined {
+  for (const [vt, term] of terminals) {
+    if (term.sessionId === sessionId) return { term, name: vt.name }
+  }
+  return undefined
+}
+
+function statusLine(
+  status: string,
+  jobId: string,
+  r: { elapsedMs: number; cursor: number; cursorMoved: boolean; lastLine: string; exitCode?: number; prompt?: string; hint?: string; markerSeen: boolean; logPath?: string }
+): string {
+  const secs = Math.round(r.elapsedMs / 1000)
+  if (status === 'input_required') {
+    return (
+      `\n\n[⏸ 需要人工输入：${r.prompt ?? '（检测到提示）'}] ${r.hint ?? '让用户在终端里处理，做完你在同一条会话上继续'}` +
+      `\n（作业 ${jobId}；用户输入后命令会自己往下走，用 bastion_wait 接着等）`
+    )
+  }
+  if (status === 'working') {
+    return (
+      `\n\n[⏳ 还在跑：作业 ${jobId}，已 ${secs}s，cursor=${r.cursor}（${r.cursorMoved ? '屏幕有新输出' : '屏幕没再动过'}）` +
+      `，最后一行：${r.lastLine || '（空）'}]` +
+      `\n**不要重发这条命令**（会重复执行）。继续用 bastion_wait({jobId:"${jobId}"}) 等，` +
+      `或 bastion_job({jobId:"${jobId}"}) 读增量日志；要停掉它用 bastion_cancel。`
+    )
+  }
+  if (status === 'cancelled') return `\n\n[⛔ 已取消：作业 ${jobId}]`
+  if (status === 'failed' || (r.exitCode !== undefined && r.exitCode !== 0)) {
+    return `\n\n[退出码 ${r.exitCode ?? '未知'}：命令以非 0 退出，通常表示失败 —— 结合输出判断原因]`
+  }
+  if (!r.markerSeen) {
+    return `\n\n[退出码未知：没拿到结束标记（输出静止 ${Math.max(1, Math.round(r.elapsedMs / 1000))}s 就返回了）。` +
+      `上面的输出可能不完整 —— 用 bastion_tail 看屏幕现状，或 bastion_job 读完整日志]`
+  }
+  return `\n\n[退出码 ${r.exitCode ?? 0}：命令成功]`
+}
+
 export async function execRemote(
   arg?: string | {
     command?: string
@@ -204,15 +285,27 @@ export async function execRemote(
     allowActiveFallback?: boolean
     /** P2-a：带着"我上次读到的 cursor"来，会话被改动过就拒绝执行 */
     expectCursor?: number
+    /** 本次最多阻塞多久（默认 15s，夹到 55s；超过会转成作业而不是阻塞） */
+    waitMs?: number
+    /** 输出静止多久算"没输出了"（默认 15s；老值是 3s，长构建会被误判） */
+    quietMs?: number
+    /** shell（默认）| interactive（只发不等，用于 top/vi/菜单） */
+    mode?: 'shell' | 'interactive'
+    /** 立刻返回作业句柄，不阻塞 */
+    background?: boolean
+    /** 把日志 tee 到远端（人仍能在终端看到；事后可用 cat 读） */
+    logToFile?: boolean
+    /** 会话上有命令在跑时，强行插队（默认拒绝 —— 插队等于把命令喂给正在跑的程序） */
+    force?: boolean
   }
-): Promise<string> {
+): Promise<ExecResponse> {
   const input = typeof arg === 'string' ? { command: arg } : (arg ?? {})
   let command = input.command ?? ''
   if (!command) command = readCommandFile()
   if (!command.trim()) {
     const msg = '没有命令：请传 command 参数，或把命令写入 .vscode/bastion-command.txt'
     vscode.window.showWarningMessage(msg)
-    return msg
+    return { text: msg }
   }
 
   const found = findSession(input.session ?? input.terminal, {
@@ -224,35 +317,222 @@ export async function execRemote(
   if ('error' in found) {
     log(`bastion_exec 未执行：${found.error}`)
     writeOutputFile(found.error)
-    return found.error
+    return { text: found.error, structured: { status: 'failed', reason: found.reason ?? 'refused' } }
   }
   const term = found.term
 
   // 会话停在菜单上时**先别发命令**：菜单会把命令当成自己的输入吃掉（甚至误触某个选项）。
-  // 正确做法是让人在终端里走完那一步，AI 再接着用 —— 会话是共用的，不需要重新认证。
   const guard = menuGuard(found.name, term)
   if (guard) {
     writeOutputFile(guard)
-    return guard
+    return { text: guard, structured: { status: 'failed', reason: 'menu_stuck' } }
   }
+
+  // 会话上还有命令在跑 → 拒绝（那是"把命令喂给正在运行的程序"的经典事故）
+  const running = activeJobOf(term.sessionId)
+  if (running && !input.force) {
+    const msg =
+      `拒绝执行：会话 ${found.id} 上还有一条命令在跑（作业 ${running.id}，已 ${Math.round((Date.now() - running.startedAt) / 1000)}s）。` +
+      `\n**不要重发命令**（会重复执行，或插到正在运行的程序里）。请这样跟进：` +
+      `\n- bastion_wait({jobId:"${running.id}"}) 等它结束 / 等某个输出出现` +
+      `\n- bastion_job({jobId:"${running.id}"}) 读增量日志` +
+      `\n- bastion_cancel({jobId:"${running.id}"}) 停掉它` +
+      `\n确实要插队（比如它已经卡死）：传 force:true —— 但那会把命令喂给正在跑的程序，通常不是你想要的。`
+    log(`bastion_exec 被拒：会话 ${found.id} 上已有作业 ${running.id} 在跑`)
+    writeOutputFile(msg)
+    return { text: msg, structured: { status: 'failed', reason: 'busy', jobId: running.id } }
+  }
+  if (running) failJob(running, 'force_superseded', '被新命令强行插队')
 
   // 提权习惯决定两件事：要不要给 sudo 命令加哨兵标记（免密才敢加），以及弹密码提示时怎么提示 AI
   const profileName = term.profile?.name
   const privilege = resolvePrivilege(getHabits(), profileName)
-  const output = await term.exec(command, { allowPlainSudo: privilege === 'sudo' })
+  const allowPlainSudo = privilege === 'sudo'
 
-  let finalOutput = output + exitCodeNote(term)
-  if (isSudoPasswordPrompt(command, output)) {
-    finalOutput += '\n\n[⚠️ sudo 密码交互] 命令正在等待密码输入。请让用户到堡垒机终端里手动输入密码完成认证（终端已聚焦）；用户确认认证完成后再继续执行后续特权命令。'
+  // interactive：只发不等（top / vi / sudo -i / 菜单这类）
+  if (input.mode === 'interactive') {
+    await term.write(command.replace(/\r\n/g, '\n') + '\r')
+    const msg =
+      `已发出（interactive 模式：只发不等）：${command}\n` +
+      `这类命令会占着终端，拿不到可靠输出。用 bastion_tail 看屏幕现状；人工接手也走同一条会话。`
+    writeOutputFile(msg)
+    return { text: msg, structured: { status: 'working', mode: 'interactive', cursor: term.screenCursor } }
+  }
+
+  // 阻塞预算：默认 15s；background 或超过客户端预算 → 立刻转作业
+  const requested = clampWaitMs(input.waitMs)
+  const overBudget = input.waitMs !== undefined && input.waitMs > WAIT_BUDGET_MS
+  const blockMs = input.background ? 0 : requested
+  const jobIdPreview = ''
+  const job = createJob({
+    sessionId: term.sessionId,
+    sessionNo: term.sessionNo,
+    command,
+    cursorAtStart: term.screenCursor,
+    logPath: input.logToFile ? '/tmp/bastion/job-<id>.log' : undefined
+  })
+
+  const output = await term.execDetailed(command, {
+    quietMs: input.quietMs ?? 15_000,
+    maxMs: Math.max(1, blockMs),
+    allowPlainSudo,
+    job,
+    logToFile: input.logToFile === true
+  })
+
+  const status: string =
+    job.state === 'input_required'
+      ? 'input_required'
+      : job.state === 'working'
+        ? 'working'
+        : job.state
+
+  const view = {
+    elapsedMs: output.elapsedMs,
+    cursor: output.cursorNow,
+    cursorMoved: output.cursorNow > output.cursorAtStart,
+    lastLine: job.lastLine,
+    exitCode: job.exitCode ?? output.exitCode,
+    prompt: job.prompt,
+    hint: job.hint,
+    markerSeen: output.markerSeen,
+    logPath: job.logPath
+  }
+
+  let finalOutput = output.text + statusLine(status, job.id, view)
+  const overNote = overBudget
+    ? `\n[说明] 你要等 ${Math.round((input.waitMs ?? 0) / 1000)}s，超过了单次工具调用的预算，已转成作业：` +
+      `用 bastion_wait({jobId:"${job.id}", waitMs:55000}) 分轮等，别用 sleep。`
+    : ''
+  if (isSudoPasswordPrompt(command, output.text)) {
+    finalOutput += '\n\n[⚠️ sudo 密码交互] 命令正在等待密码输入。请让用户到堡垒机终端里手动输入密码完成认证（终端已聚焦）；用户确认认证完成后你再继续。'
     if (privilege === 'sudo') {
       finalOutput += `\n[习惯与实际不符] 习惯文件里「${profileName ?? '全局'}」记的是 sudo（免密），但实际弹了密码提示。等用户输完密码完成认证后，请用 bastion_habits 把该档案的 privilege 改成 sudo-i，并用 remember 记下这台机器真实的提权做法。`
     } else if (privilege === 'ask') {
       finalOutput += `\n[还没记录习惯]「${profileName ?? '全局'}」没有提权习惯记录。等用户这次认证完，请用 bastion_habits 的 setPrivilege / remember 把结论记下来，以后就不用再问了。`
     }
   }
+  finalOutput += overNote
   writeOutputFile(finalOutput)
-  return finalOutput
+  return {
+    text: finalOutput,
+    structured: {
+      status,
+      jobId: job.id,
+      exitCode: view.exitCode,
+      elapsedMs: output.elapsedMs,
+      cursor: view.cursor,
+      cursorMoved: view.cursorMoved,
+      lastLine: view.lastLine,
+      markerSeen: view.markerSeen,
+      prompt: view.prompt,
+      hint: view.hint,
+      logPath: view.logPath,
+      timedOut: output.timedOut,
+      session: found.id
+    }
+  }
 }
+
+/** bastion_wait：等作业结束 / 等某个输出出现（服务端阻塞，不消耗 AI 轮次） */
+export async function waitForExecJob(input: {
+  jobId?: string
+  pattern?: string
+  waitMs?: number
+  sinceOffset?: number
+}): Promise<ExecResponse> {
+  const id = (input.jobId ?? '').trim()
+  const job = id ? getJob(id) : undefined
+  if (!job) {
+    return { text: `找不到作业「${id}」。作业只在本次扩展运行期间有效；用 bastion_listSessions 看会话，或直接重跑命令。` }
+  }
+  const r = await waitJob(job, { pattern: input.pattern, waitMs: input.waitMs, sinceOffset: input.sinceOffset })
+  const secs = Math.round(r.elapsedMs / 1000)
+  const matchedNote = input.pattern
+    ? r.matched
+      ? `\n✅ 匹配到「${input.pattern}」：${r.matchedLine ?? ''}`
+      : `\n（还没匹配到「${input.pattern}」）`
+    : ''
+  const head =
+    r.status === 'working'
+      ? `作业 ${job.id} 还在跑（已 ${secs}s，最后一行：${r.lastLine || '（空）'}）`
+      : r.status === 'input_required'
+        ? `作业 ${job.id} 在等人工输入：${r.prompt ?? ''}（${r.hint ?? ''}）`
+        : r.status === 'completed'
+          ? `作业 ${job.id} 已完成（退出码 ${r.exitCode ?? 0}，用时 ${secs}s）`
+          : `作业 ${job.id} 结束：${r.status}${r.exitCode !== undefined ? `，退出码 ${r.exitCode}` : ''}${r.reason ? `，原因 ${r.reason}` : ''}`
+  const text = `${head}${matchedNote}\n\n—— 输出（尾部）——\n${jobText(job, 4000)}`
+  writeOutputFile(text)
+  return {
+    text,
+    structured: {
+      jobId: job.id,
+      status: r.status,
+      exitCode: r.exitCode,
+      elapsedMs: r.elapsedMs,
+      matched: r.matched,
+      matchedLine: r.matchedLine,
+      cursor: r.cursor,
+      cursorMoved: r.cursorMoved,
+      lastLine: r.lastLine,
+      prompt: r.prompt,
+      hint: r.hint
+    }
+  }
+}
+
+/** bastion_job：按字节偏移增量读日志（滚屏也不丢） */
+export function readExecJob(input: { jobId?: string; sinceOffset?: number; maxBytes?: number }): ExecResponse {
+  const id = (input.jobId ?? '').trim()
+  const job = id ? getJob(id) : undefined
+  if (!job) return { text: `找不到作业「${id}」（作业只在本次扩展运行期间有效）。` }
+  const maxBytes = Math.max(1024, Math.min(256 * 1024, Math.floor(input.maxBytes ?? 64 * 1024)))
+  const from = Math.max(0, Math.floor(input.sinceOffset ?? 0))
+  const r = sliceJob(job, from, maxBytes)
+  const head = `作业 ${job.id}｜状态 ${job.state}${job.exitCode !== undefined ? `｜退出码 ${job.exitCode}` : ''}` +
+    `｜共 ${endOffset(job).toLocaleString()} 字节｜本次 [${from}, ${r.nextOffset})${r.truncated ? '（还有更多）' : ''}` +
+    `${job.logPath ? `｜远端副本 ${job.logPath}` : ''}`
+  const text = `${head}\n\n${r.chunk || '（这一段没有内容）'}` +
+    (r.truncated ? `\n\n[还有更多：下次传 sinceOffset=${r.nextOffset}]` : '')
+  writeOutputFile(text)
+  return {
+    text,
+    structured: {
+      jobId: job.id,
+      status: job.state,
+      exitCode: job.exitCode,
+      sinceOffset: from,
+      nextOffset: r.nextOffset,
+      truncated: r.truncated,
+      totalBytes: endOffset(job),
+      logPath: job.logPath
+    }
+  }
+}
+
+/** bastion_cancel：往那条会话发 Ctrl-C（协作式），并把作业标记为取消 */
+export async function cancelExecJob(input: { jobId?: string }): Promise<ExecResponse> {
+  const id = (input.jobId ?? '').trim()
+  const job = id ? getJob(id) : undefined
+  if (!job) return { text: `找不到作业「${id}」（作业只在本次扩展运行期间有效）。` }
+  const hit = termOfSessionId(job.sessionId)
+  if (!hit) {
+    failJob(job, 'session_lost', '会话已关闭，作业随之结束')
+    return { text: `作业 ${job.id} 所在的会话已经关闭了（已标记为失败：session_lost）。`, structured: { jobId: job.id, status: 'failed', reason: 'session_lost' } }
+  }
+  if (job.state === 'completed' || job.state === 'failed' || job.state === 'cancelled') {
+    return { text: `作业 ${job.id} 已经结束（${job.state}），不需要取消。`, structured: { jobId: job.id, status: job.state } }
+  }
+  await hit.term.write('\x03')
+  cancelJob(job)
+  hit.term.activeJob = undefined
+  const text =
+    `已向会话 ${job.sessionId} 发送 Ctrl-C（作业 ${job.id} 标记为 cancelled）。` +
+    `\n如果命令是"自己的子进程忽略 SIGINT"那种，可能停不下来 —— 用 bastion_tail 看一眼屏幕确认。`
+  writeOutputFile(text)
+  return { text, structured: { jobId: job.id, status: 'cancelled' } }
+}
+
 
 /** 拼给 AI 的习惯附注：连接/列档案时一并返回，省得 AI 每次都问同样的问题 */
 export function habitNote(profileName?: string): string {

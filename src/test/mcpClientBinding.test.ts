@@ -20,7 +20,19 @@ function recordingApi() {
     listProfiles: async () => '档案',
     exec: async (i) => {
       calls.push({ tool: 'exec', input: i as Record<string, unknown>, clientId: i.clientId })
-      return `执行：${i.command}`
+      return { text: `执行：${i.command}`, structured: { status: 'completed', exitCode: 0 } }
+    },
+    wait: async (i) => {
+      calls.push({ tool: 'wait', input: i as Record<string, unknown> })
+      return { text: `等作业 ${i.jobId}` }
+    },
+    job: async (i) => {
+      calls.push({ tool: 'job', input: i as Record<string, unknown> })
+      return { text: `作业 ${i.jobId} 日志` }
+    },
+    cancel: async (i) => {
+      calls.push({ tool: 'cancel', input: i as Record<string, unknown> })
+      return { text: `取消 ${i.jobId}` }
     },
     connect: async (i) => {
       calls.push({ tool: 'connect', input: i as Record<string, unknown>, clientId: i.clientId })

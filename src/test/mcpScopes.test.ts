@@ -28,8 +28,11 @@ function recordingApi(calls: { tool: string; clientId?: string; scope?: string }
     listProfiles: async () => '档案',
     exec: async (i) => {
       calls.push({ tool: 'exec', clientId: i.clientId })
-      return `执行：${i.command}`
+      return { text: `执行：${i.command}`, structured: { status: 'completed' } }
     },
+    wait: async () => ({ text: '等作业' }),
+    job: async () => ({ text: '作业日志' }),
+    cancel: async () => ({ text: '已取消' }),
     connect: async (i) => {
       calls.push({ tool: 'connect', clientId: i.clientId })
       return `已连接 ${i.host}`

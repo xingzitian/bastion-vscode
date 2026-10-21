@@ -18,7 +18,10 @@ function fakeApi(over: Partial<McpSessionApi> = {}): McpSessionApi {
     listSessions: async () => '当前堡垒机会话（2 个）：\n- deploy@10.0.0.1\n- deploy@10.0.0.2',
     listProfiles: async () => '可用的连接档案（1 个）：\n- 生产（deploy@10.0.0.10:22，堡垒机，提权习惯=sudo）',
     use: async (i) => `已绑定 `,
-    exec: async () => 'hello from remote',
+    exec: async () => ({ text: 'hello from remote', structured: { status: 'completed', exitCode: 0 } }),
+    wait: async (i) => ({ text: '等作业 ' + (i.jobId ?? '') }),
+    job: async (i) => ({ text: '作业日志 ' + (i.jobId ?? '') }),
+    cancel: async (i) => ({ text: '已取消 ' + (i.jobId ?? '') }),
     connect: async (i) => `已连接到目标 ${i.host}`,
     habits: async () => '当前个人习惯（全局）：\n- 提权方式：ask',
     health: async () => '端点自检：正常',
@@ -37,11 +40,15 @@ test('MCP 工具包含全部语言模型工具，名字不许分叉（MCP 可以
   }
   // MCP 侧多出来的只有端点自检这类「只在 MCP 侧才有意义」的工具
   const extra = mcpNames.filter((n) => !lmNames.includes(n))
-  assert.deepEqual(extra, ['bastion_health', 'bastion_use'], '多出来的工具必须是刻意加的，不能是随手写的')
+  assert.deepEqual(
+    extra,
+    ['bastion_cancel', 'bastion_health', 'bastion_job', 'bastion_use', 'bastion_wait'],
+    '多出来的工具必须是刻意加的，不能是随手写的（wait/job/cancel 是执行协议 P0 的一组）'
+  )
 })
 
 test('工具定义齐全：名字唯一、有说明、有 inputSchema、只读标记正确', () => {
-  assert.equal(MCP_TOOL_DEFS.length, 10)
+  assert.equal(MCP_TOOL_DEFS.length, 13, 'P0a 之后加了 wait/job/cancel')
 
   const names = MCP_TOOL_DEFS.map((t) => t.name)
   assert.equal(new Set(names).size, names.length, '工具名不能重复')
@@ -55,7 +62,7 @@ test('工具定义齐全：名字唯一、有说明、有 inputSchema、只读�
   }
 
   const readOnly = MCP_TOOL_DEFS.filter((t) => t.readOnly).map((t) => t.name)
-  assert.deepEqual(readOnly, ['bastion_listSessions', 'bastion_health', 'bastion_tail', 'bastion_listProfiles'])
+  assert.deepEqual(readOnly, ['bastion_listSessions', 'bastion_health', 'bastion_tail', 'bastion_listProfiles', 'bastion_wait', 'bastion_job'])
 })
 
 test('有副作用的工具没被标成只读（标错＝客户端不再弹确认）', () => {
@@ -99,7 +106,7 @@ test('分发：高危命令的拒绝是**正常文本**，不是 isError（和�
   // 而不是抛错 —— 语言模型工具那条路也是这么返回的。两条路必须一致：
   // 标成 isError 会让客户端把它显示成「工具坏了」，模型可能转而去试别的写法。
   const dispatch = createToolDispatch(
-    fakeApi({ exec: async () => '⚠️ 该命令包含高危操作，已被 BastionShell 拦截，不会执行。' })
+    fakeApi({ exec: async () => ({ text: '⚠️ 该命令包含高危操作，已被 BastionShell 拦截，不会执行。' }) })
   )
   const r = await dispatch('bastion_exec', { command: 'rm -rf /' })
   assert.equal(r.isError, undefined)
@@ -119,7 +126,7 @@ test('分发：exec 把 command 和 terminal 原样传给 api', async () => {
     fakeApi({
       exec: async (i) => {
         seen = i
-        return 'ok'
+        return { text: 'ok' }
       }
     })
   )
@@ -130,7 +137,13 @@ test('分发：exec 把 command 和 terminal 原样传给 api', async () => {
     session: undefined,
     clientId: undefined,
     expectCursor: undefined,
-    idempotencyKey: undefined
+    idempotencyKey: undefined,
+    waitMs: undefined,
+    quietMs: undefined,
+    mode: undefined,
+    background: false,
+    logToFile: false,
+    force: false
   })
 })
 

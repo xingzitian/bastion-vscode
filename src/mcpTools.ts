@@ -14,6 +14,8 @@
  * 用户心智都只有一套名字。
  */
 
+import type { ExecResponse } from './execResult'
+
 /** 一个 MCP 工具的元数据（`tools/list` 直接返回它） */
 export interface McpToolDef {
   name: string
@@ -31,6 +33,8 @@ export interface McpToolDef {
 
 export interface McpToolResult {
   text: string
+  /** 机器可读结果（MCP 侧会转成 structuredContent）；只读文本的客户端忽略它即可 */
+  structured?: Record<string, unknown>
   isError?: boolean
 }
 
@@ -70,7 +74,19 @@ export interface McpSessionApi {
     expectCursor?: number
     /** P2-b：重试去重（同一件事重试时带同一个 key，服务端不会重复执行） */
     idempotencyKey?: string
-  }): Promise<string>
+    /** 本次最多阻塞多久（默认 15s，夹到 55s；更长的自动转作业） */
+    waitMs?: number
+    /** 输出静止多久算"没输出了"（默认 15s；旧值 3s 会把长构建误判成结束） */
+    quietMs?: number
+    /** shell（默认）| interactive（只发不等，用于 top/vi/菜单） */
+    mode?: 'shell' | 'interactive'
+    /** 立刻返回作业句柄，不阻塞 */
+    background?: boolean
+    /** 把日志 tee 到远端文件（人仍能在终端看到） */
+    logToFile?: boolean
+    /** 会话上有命令在跑时强行插队（默认拒绝） */
+    force?: boolean
+  }): Promise<ExecResponse>
   connect(input: {
     profile?: string
     host?: string
@@ -103,6 +119,12 @@ export interface McpSessionApi {
     clientId?: string
     expectCursor?: number
   }): Promise<string>
+  /** 等作业：状态变终态 / pattern 命中 / 超时（服务端阻塞，不用 AI 自己 sleep） */
+  wait(input: { jobId?: string; pattern?: string; waitMs?: number; sinceOffset?: number }): Promise<ExecResponse>
+  /** 按字节偏移增量读作业日志（滚屏也不丢） */
+  job(input: { jobId?: string; sinceOffset?: number; maxBytes?: number }): Promise<ExecResponse>
+  /** 取消作业（往那条会话发 Ctrl-C） */
+  cancel(input: { jobId?: string }): Promise<ExecResponse>
   /** 端点自检：AI 遇到「工具调用出错」时用它分清端点坏了还是这次偶发 */
   health(input?: ToolCallContext): Promise<string>
 }
@@ -137,7 +159,32 @@ const EXEC_DESC =
   '什么都没绑定时这条工具会**拒绝执行**并告诉你该怎么做 —— 这是为了防止命令落到别的 AI/用户的会话上；\n' +
   '- **重试同一件事时带同一个 idempotencyKey**（例如 restart-nginx）：失败可能只是回包丢了、命令其实已经执行过，' +
   '带 key 重试会直接返回上次结果、不会重复执行（rm / service restart / kill -9 这类尤其重要）；不带 key 服务端无法保证；\n' +
-  '- 可选 expectCursor（上次 tail/listSessions 返回的 cursor）：会话在你读取后被别人动过就**拒绝执行**，让你先 tail 确认。'
+  '- 可选 expectCursor（上次 tail/listSessions 返回的 cursor）：会话在你读取后被别人动过就**拒绝执行**，让你先 tail 确认。\n' +
+  '- **长命令看返回的 status**：`completed`（跑完，带 exitCode）/ `working`（还在跑，带 jobId）/ `input_required`（卡在密码、动态码、y/n、菜单上，需要人）。\n' +
+  '  返回 `working` 时**绝对不要重发这条命令**（会重复执行）—— 用 bastion_wait 等它、bastion_job 读增量日志、bastion_cancel 停掉它。\n' +
+  '- waitMs 默认 15s、服务端夹到 55s（MCP 客户端单次调用有自己的超时，等太久客户端先超时反而更难诊断）；\n' +
+  '  要等更久就分段调 bastion_wait，**不要用 sleep 硬等**（无进度、不可取消、白等）。\n' +
+  '- quietMs 默认 15s：输出静止多久算"没输出了"。构建类命令阶段之间会静默几十秒，别把它当成结束。\n' +
+  '- background:true = 立刻拿 jobId 不阻塞；mode:"interactive" = 只发不等（top/vi/sudo -i/菜单这类）。'
+
+const WAIT_DESC =
+  '等一个作业（bastion_exec 返回 working 时给的 jobId）。这是"不要用 sleep 硬等"的正解：' +
+  '**等待发生在服务端**，不消耗你的轮次。\n' +
+  '- 满足任一条件就返回：作业结束（completed/failed/cancelled）、pattern 命中、超时（仍在跑，返回 working）。\n' +
+  '- pattern 是正则，默认只在"本次调用以来的新增输出"里找；典型用法：等构建出现"阶段 5/9 完成"，或等提示符出现。\n' +
+  '- 一轮最多 55 秒（客户端单次调用预算内）。没等到就再调一次，**不要重发原来的命令**。\n' +
+  '- 返回里带 status / exitCode / lastLine / cursor / matched，以及输出尾部。'
+
+const JOB_DESC =
+  '按字节偏移**增量读**某个作业的完整日志（终端滚屏也不会丢）。\n' +
+  '- sinceOffset 从上一页的 nextOffset 接着读，直到 truncated=false。\n' +
+  '- 输出很大时用它分页，不要用 bastion_tail（那只给屏幕末尾几十行）。\n' +
+  '- 作业日志在扩展内存里滚动保存（上限 8MB）；如果开了 logToFile，远端还有一份文件副本（logPath），' +
+  '扩展重启后可以自己 exec `tail -c` 读。'
+
+const CANCEL_DESC =
+  '取消一个还在跑的作业：往那条会话发 Ctrl-C，并把作业标记为 cancelled（协作式，不保证立刻停）。\n' +
+  '误起的 sleep / tail -f / 卡住的构建用它收场 —— 没有它就只能等人来按 Ctrl-C。'
 
 const CONNECT_DESC =
   '通过堡垒机菜单连接到一台目标机器（会复用已认证的连接，不重新输密码/动态码）。' +
@@ -273,6 +320,53 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
     }
   },
   {
+    name: 'bastion_wait',
+    title: '等作业（完成 / 等某个输出出现）',
+    description: WAIT_DESC,
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: '作业 id（bastion_exec 返回里的 jobId，形如 j-0001）' },
+        pattern: { type: 'string', description: '要等的正则片段（例如 "阶段 5/9 完成"）；不填就是纯等结束' },
+        waitMs: { type: 'number', description: '最多等多久（默认 20000，服务端夹到 55000）' },
+        sinceOffset: { type: 'number', description: '从哪个字节偏移之后开始找 pattern（默认从现在开始）' }
+      },
+      required: ['jobId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'bastion_job',
+    title: '读作业日志（增量）',
+    description: JOB_DESC,
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: '作业 id' },
+        sinceOffset: { type: 'number', description: '从哪个字节偏移开始读（默认 0 = 从头）' },
+        maxBytes: { type: 'number', description: '这次最多读多少字节（默认 65536，上限 262144）' }
+      },
+      required: ['jobId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'bastion_cancel',
+    title: '取消作业',
+    description: CANCEL_DESC,
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: '作业 id' }
+      },
+      required: ['jobId'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'bastion_connect',
     title: '连接目标机器',
     description: CONNECT_DESC,
@@ -375,6 +469,26 @@ export function createToolDispatch(
         return { text: await api.health({ clientId }) }
       case 'bastion_listProfiles':
         return { text: await api.listProfiles() }
+      case 'bastion_wait': {
+        const jobId = typeof a.jobId === 'string' ? a.jobId : ''
+        const pattern = typeof a.pattern === 'string' ? a.pattern : undefined
+        const waitMs = typeof a.waitMs === 'number' ? a.waitMs : undefined
+        const sinceOffset = typeof a.sinceOffset === 'number' ? a.sinceOffset : undefined
+        const r = await api.wait({ jobId, pattern, waitMs, sinceOffset })
+        return { text: r.text, structured: r.structured }
+      }
+      case 'bastion_job': {
+        const jobId = typeof a.jobId === 'string' ? a.jobId : ''
+        const sinceOffset = typeof a.sinceOffset === 'number' ? a.sinceOffset : undefined
+        const maxBytes = typeof a.maxBytes === 'number' ? a.maxBytes : undefined
+        const r = await api.job({ jobId, sinceOffset, maxBytes })
+        return { text: r.text, structured: r.structured }
+      }
+      case 'bastion_cancel': {
+        const jobId = typeof a.jobId === 'string' ? a.jobId : ''
+        const r = await api.cancel({ jobId })
+        return { text: r.text, structured: r.structured }
+      }
       case 'bastion_tail': {
         const session = typeof a.session === 'string' ? a.session : undefined
         const terminal = typeof a.terminal === 'string' ? a.terminal : undefined
@@ -412,16 +526,21 @@ export function createToolDispatch(
         if (!command.trim()) return { text: '错误：bastion_exec 需要 command 参数（要执行的命令）', isError: true }
         const session = typeof a.session === 'string' ? a.session : undefined
         const terminal = typeof a.terminal === 'string' ? a.terminal : undefined
-        return {
-          text: await api.exec({
-            command,
-            session,
-            terminal,
-            clientId,
-            expectCursor: typeof a.expectCursor === 'number' ? a.expectCursor : undefined,
-            idempotencyKey: typeof a.idempotencyKey === 'string' ? a.idempotencyKey : undefined
-          })
-        }
+        const r = await api.exec({
+          command,
+          session,
+          terminal,
+          clientId,
+          expectCursor: typeof a.expectCursor === 'number' ? a.expectCursor : undefined,
+          idempotencyKey: typeof a.idempotencyKey === 'string' ? a.idempotencyKey : undefined,
+          waitMs: typeof a.waitMs === 'number' ? a.waitMs : undefined,
+          quietMs: typeof a.quietMs === 'number' ? a.quietMs : undefined,
+          mode: a.mode === 'interactive' ? 'interactive' : undefined,
+          background: a.background === true,
+          logToFile: a.logToFile === true,
+          force: a.force === true
+        })
+        return { text: r.text, structured: r.structured }
       }
       case 'bastion_connect': {
         const profile = typeof a.profile === 'string' ? a.profile : ''
@@ -491,7 +610,14 @@ export const MCP_INSTRUCTIONS =
 '传 session（会话 id 或别名 A/B），或者先 bastion_use 绑定一次。没绑定（或绑定多于一条）时会**拒绝执行**，' +
 '不会用"当前活动窗口"兜底（那可能是别的 AI 或用户正在用的会话）。要同时操作两台机器：各 bastion_connect 一次' +
 '（会自动绑定成 A、B），之后每次 exec 传 session:"A" / "B"。绑定存在服务端，你的上下文被压缩后照样有效。\n' +
-'**执行前先看清 cursor，重试要带幂等键**：' +
+  '**执行长命令（构建/部署/安装）：别用 sleep 硬等**：\n' +
+  '- `bastion_exec` 返回里看 `status`：`completed`（跑完，带 exitCode）/ `working`（还在跑）/ `input_required`（卡在密码/动态码/y-n/菜单上，需要人）。\n' +
+  '- 返回 `working` 时**绝对不要重发同一条命令**（会重复执行，`rm`/`restart` 尤其危险）：用 `bastion_wait({jobId})` 等，' +
+  '或 `bastion_job({jobId, sinceOffset})` 增量读完整日志，要停掉用 `bastion_cancel({jobId})`。\n' +
+  '- `waitMs` 默认 15s（服务端夹到 55s，因为 MCP 客户端单次调用有自己的超时）；要等更久就**分段**调 `bastion_wait`。\n' +
+  '- `quietMs` 默认 15s：构建的阶段之间会静默几十秒 —— 不要因为「暂时没输出」就以为命令结束了。\n' +
+  '- 交互式命令（top/vi/sudo -i/菜单）用 `mode:"interactive"`（只发不等），然后让人接手。\n' +
+  '**执行前先看清 cursor，重试要带幂等键**：' +
 'tail / listSessions 会返回每个会话的 cursor（屏幕每有输出就 +1）。准备执行写操作时把刚才读到的 cursor 作为 expectCursor 带上 —— ' +
 '这期间用户在那个终端里敲了东西、或另一个 AI 动了它，服务端会**拒绝执行**并让你先 tail。' +
 '**重试同一件事时带同一个 idempotencyKey**：失败可能只是回包丢了（命令其实已经跑过），带 key 重试不会重复执行。\n' +

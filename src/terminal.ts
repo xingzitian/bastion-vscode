@@ -3,7 +3,8 @@ import { ClientChannel } from 'ssh2';
 import type { ConnectionProfile } from './profiles';
 import { SharedConnection } from './connection';
 import { stopMfaCountdown } from './connection';
-import { log } from './log';
+import { log } from './log'
+import { appendJobOutput, completeJob, detectPrompt as detectInputPrompt, failJob, markInputRequired, type ExecJob } from './execJobs';
 import { ZmodemSessionController, ZmodemEventPayload, OverwriteMode } from './zmodem';
 import { NodeFsZmodemIo } from './zmodemIo';
 import { resolveDownloadDir } from './downloadDir';
@@ -52,6 +53,35 @@ export interface ScreenMark {
  * - shell stdout → onDidWrite（终端输出）
  */
 
+/** exec 单次捕获的文本上限（避免超大输出撑爆内存；作业日志另有 8MB 滚动缓冲） */
+const MAX_CAPTURE = 2 * 1024 * 1024;
+/** execDetailed 的选项 */
+export interface ExecOpts {
+  /** 输出静止多久算"没输出了"（默认 3000；AI 那条路显式传 15000） */
+  quietMs?: number
+  /** 兜底上限（默认 30 分钟） */
+  maxMs?: number
+  /** 习惯文件记录 sudo 免密时置 true，让 `sudo <命令>` 也能用哨兵 */
+  allowPlainSudo?: boolean
+  /** 绑定的作业（输出会持续喂给它，exec 返回后也继续） */
+  job?: ExecJob
+  /** 长命令把日志 tee 到远端文件（人仍能在终端看到） */
+  logToFile?: boolean
+  /** tee 的远端路径（会给 AI 事后 cat） */
+  logPath?: string
+}
+
+/** execDetailed 的结果：三种结局分开表达 */
+export interface ExecResult {
+  text: string
+  exitCode?: number
+  markerSeen: boolean
+  elapsedMs: number
+  /** true = 到 maxMs 还在跑（命令没失败，作业继续捕获） */
+  timedOut: boolean
+  cursorAtStart: number
+  cursorNow: number
+}
 export class BastionTerminal implements vscode.Pseudoterminal {
   private writeEmitter = new vscode.EventEmitter<string>();
   private closeEmitter = new vscode.EventEmitter<number>();
@@ -526,10 +556,24 @@ export class BastionTerminal implements vscode.Pseudoterminal {
    */
   screenCursor = 0;
 
+  /**
+   * 当前正在捕获的作业（exec 返回后仍然挂着）。
+   *
+   * 为什么挂在输出汇上而不是 exec 的监听器上：exec 超时返回后，命令还在跑，
+   * 但我们不能再往会话里写东西（会插到别人的命令里）。作业必须继续接收输出，
+   * 于是把「喂作业」放在唯一输出出口 —— 与 exec 的等待逻辑解耦。
+   */
+  activeJob: ExecJob | undefined;
+
   /** 输出统一出口：既写进 VS Code 终端，也记进滚动缓冲 */
   private emitOutput(d: Buffer | string): void {
     const s = typeof d === 'string' ? d : d.toString('utf8');
     this.screenCursor++;
+    if (this.activeJob && (this.activeJob.state === 'working' || this.activeJob.state === 'input_required')) {
+      appendJobOutput(this.activeJob, s);
+      const pr = detectInputPrompt(s);
+      if (pr && this.activeJob.state === 'working') markInputRequired(this.activeJob, pr.prompt, pr.hint);
+    }
     this.writeEmitter.fire(s);
     this.tailBuf += s;
     if (this.tailBuf.length > BastionTerminal.TAIL_MAX) {
@@ -608,15 +652,35 @@ export class BastionTerminal implements vscode.Pseudoterminal {
    * （否则一旦弹密码提示就会卡住，只能靠静止判定）。
    * 输出封顶 2MB，避免超大输出撑爆内存。
    */
-  async exec(command: string, opts: { quietMs?: number; maxMs?: number; allowPlainSudo?: boolean } = {}): Promise<string> {
+  async exec(command: string, opts: ExecOpts = {}): Promise<string> {
+    return (await this.execDetailed(command, opts)).text;
+  }
+
+  /**
+   * 执行命令并返回**结构化结果**（`exec()` 只取其中的文本，保持老调用点不变）。
+   *
+   * 三种结局分开表达，不再让 AI 从一句话里猜：
+   * - 看到哨兵 → `markerSeen: true`（真完成，带退出码）；
+   * - 输出静止到 quietMs → 完成但 `markerSeen: false`（可能还差一点，会写进备注）；
+   * - 到 maxMs 还在跑 → `timedOut: true`（**作业继续**，不是失败）。
+   */
+  async execDetailed(command: string, opts: ExecOpts = {}): Promise<ExecResult> {
     await this.shellReady;
+    const cursorAtStart = this.screenCursor;
     if (this.closed || !this.stream) {
-      return '';
+      return {
+        text: '',
+        markerSeen: false,
+        elapsedMs: 0,
+        timedOut: false,
+        cursorAtStart,
+        cursorNow: this.screenCursor
+      };
     }
+    // 默认静默窗口：老调用点（部署注入等）保持 3s；AI 那条路会显式传 15s
     const quietMs = opts.quietMs ?? 3000;
     const maxMs = opts.maxMs ?? 30 * 60 * 1000;
-    const MAX_CAPTURE = 2 * 1024 * 1024;
-    this.vt?.show(); // 聚焦终端，让人看到 AI 在做什么
+    const startedAt = Date.now();
 
     // 哨兵标记：命令结束后单独打印一行，见到即判定完成，能扛住「中间长时间静默」的命令（如 sleep 10 && echo）
     // 尾巴上**带上退出码**：没有它，AI 只能靠读输出猜命令成没成（`systemctl restart`
@@ -627,7 +691,11 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     this.execMarkerSeen = true;
     this.lastExecExitCode = undefined;
 
-    return new Promise<string>((resolve) => {
+    // 作业模式：输出由 emitOutput 持续喂（exec 返回后也继续收），这里只负责状态收敛
+    const job = opts.job;
+    if (job) this.activeJob = job;
+
+    return new Promise<ExecResult>((resolve) => {
       const stream = this.stream!;
       let buf = '';
       let quietTimer: NodeJS.Timeout | null = null;
@@ -644,14 +712,32 @@ export class BastionTerminal implements vscode.Pseudoterminal {
         stream.removeListener('data', onData);
         stream.removeListener('close', onClose);
       };
-      const finish = (): void => {
+      const finish = (timedOut: boolean): void => {
         if (settled) return;
         settled = true;
         cleanup();
         // 没等到哨兵 = 命令很可能压根没被执行（终端还被别的程序占着）。
         // 不信的代价很大：报告里看起来像「跑了但没输出」，会让人一直去查自己的脚本。
         this.execMarkerSeen = !safe || markerSeen;
-        resolve(safe ? stripMarker(buf, marker) : buf);
+        this.lastExecExitCode = exitCode;
+        if (job) {
+          if (timedOut) {
+            // 超时**不是失败**：命令还在跑，作业继续收输出，AI 用 bastion_wait / bastion_job 跟进
+            log(`作业 ${job.id}：${Math.round((Date.now() - startedAt) / 1000)}s 还没结束，转后台继续捕获`);
+          } else {
+            completeJob(job, { exitCode, markerSeen });
+            if (this.activeJob === job) this.activeJob = undefined;
+          }
+        }
+        resolve({
+          text: safe ? stripMarker(buf, marker) : buf,
+          exitCode,
+          markerSeen: !safe || markerSeen,
+          elapsedMs: Date.now() - startedAt,
+          timedOut,
+          cursorAtStart,
+          cursorNow: this.screenCursor
+        });
       };
       const onData = (d: Buffer): void => {
         if (buf.length < MAX_CAPTURE) {
@@ -663,24 +749,29 @@ export class BastionTerminal implements vscode.Pseudoterminal {
           if (found.seen) {
             markerSeen = true;
             exitCode = found.rc;
-            finish();
+            finish(false);
             return;
           }
         }
         // 有新输出 → 重置「静止」计时
         if (quietTimer) clearTimeout(quietTimer);
-        quietTimer = setTimeout(finish, quietMs);
+        quietTimer = setTimeout(() => finish(false), quietMs);
       };
-      const onClose = (): void => finish();
+      const onClose = (): void => {
+        if (job) failJob(job, 'session_lost');
+        if (this.activeJob === job) this.activeJob = undefined;
+        finish(false);
+      };
 
       stream.on('data', onData);
       stream.on('close', onClose);
       stream.write(cmd.replace(/\r\n/g, '\n') + '\r');
 
       // 兜底最大超时
-      maxTimer = setTimeout(finish, maxMs);
+      maxTimer = setTimeout(() => finish(true), maxMs);
     });
   }
+
 
   private onZmodemEvent(p: ZmodemEventPayload): void {
     // 程序化下载（bastion_pull）在等这一次传输的结果：先把它叫醒，再做常规追踪

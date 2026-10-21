@@ -356,7 +356,7 @@ export function activate(context: vscode.ExtensionContext): void {
         // allowActiveFallback：Copilot 直连没有"客户端身份"，而且人就坐在 VS Code 前面 ——
         // 保留"没绑定就用活动终端"的旧行为；MCP 的外部 AI 一律严格（见 docs/session-identity.md）。
         const output = await sessionApi.exec({ ...input, allowActiveFallback: true })
-        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(output)])
+        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(output.text)])
       }
     }),
     vscode.lm.registerTool('bastion_connect', {
