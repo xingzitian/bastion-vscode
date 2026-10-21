@@ -25,7 +25,8 @@ import {
   UnknownToolError,
   createToolDispatch,
   type McpSessionApi,
-  type McpToolDef
+  type McpToolDef,
+  type ToolCallContext
 } from './mcpTools'
 
 /** 我们实现的 MCP 协议版本；握手时按客户端请求回（不认识就回这个最新的） */
@@ -50,8 +51,8 @@ export interface McpServerOptions {
 }
 
 export interface McpServer {
-  /** 处理一条 JSON-RPC 消息；通知返回 null（不需要应答） */
-  handle(msg: JsonRpcRequest): Promise<object | null>
+  /** 处理一条 JSON-RPC 消息；通知返回 null（不需要应答）。ctx 里带调用者标识 */
+  handle(msg: JsonRpcRequest, ctx?: ToolCallContext): Promise<object | null>
   /** tools/list 返回的形状，测试与「查看工具」命令共用 */
   toolList(): object[]
 }
@@ -85,7 +86,7 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
   const serverVersion = opts.serverVersion ?? '0.0.0'
   const instructions = opts.instructions ?? MCP_INSTRUCTIONS
 
-  async function handle(msg: JsonRpcRequest): Promise<object | null> {
+  async function handle(msg: JsonRpcRequest, ctx?: ToolCallContext): Promise<object | null> {
     const id: JsonRpcId = msg?.id === undefined ? null : msg.id
     const isNotification = msg?.id === undefined || msg?.id === null
 
@@ -123,8 +124,29 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
         const name = typeof msg.params?.name === 'string' ? (msg.params.name as string) : ''
         const args = (msg.params?.arguments as Record<string, unknown>) ?? {}
         if (!name) return fail(id, -32602, '无效参数：tools/call 需要 name')
+
+        // ── 权限分档（P0b）──
+        // observer：只能调只读工具（list/tail/health），外加 bastion_use（绑定本身不执行任何东西）。
+        // operator：可以写（exec/push/pull/habits），但不能 connect。
+        // 没传 scope = full（内部调用 / 测试 / VS Code 内的 Copilot 直连）。
+        const def = defs.find((d) => d.name === name)
+        const scope = ctx?.scope ?? 'full'
+        const refuse = (text: string): object => ok(id, { content: [{ type: 'text', text }], isError: true })
+        if (def && !def.readOnly && name !== 'bastion_use' && scope === 'observer') {
+          return refuse(
+            `当前令牌是 **observer（只读）**：不能调用 ${name}。` +
+              '需要写入就让用户用「BastionShell: 管理外部 AI 令牌」给这个客户端换一个 operator 或 full 的令牌。'
+          )
+        }
+        if (name === 'bastion_connect' && scope !== 'full') {
+          return refuse(
+            `连接新目标机需要 **full** 权限（当前 ${scope}）—— connect 会在堡垒机上开新会话，所以单独提一档。` +
+              '让用户用「BastionShell: 管理外部 AI 令牌」升级，或让他自己在终端里连。'
+          )
+        }
+
         try {
-          const r = await dispatch(name, args)
+          const r = await dispatch(name, args, ctx)
           const payload: Record<string, unknown> = { content: [{ type: 'text', text: r.text }] }
           if (r.isError === true) payload.isError = true
           return ok(id, payload)
@@ -147,8 +169,25 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
 
 // ─────────────────────────── HTTP 传输 ───────────────────────────
 
-export interface McpHttpOptions extends McpServerOptions {
+export type McpScope = 'observer' | 'operator' | 'full'
+
+/** 客户端标签归一化：只留安全字符，空/超长退回 default（值与 sessionBindings 保持一致） */
+function sanitizeClientId(raw?: string): string {
+  const v = (raw ?? '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '_').slice(0, 32)
+  return v || 'default'
+}
+
+export interface McpClientToken {
   token: string
+  label: string
+  scope: McpScope
+}
+
+export interface McpHttpOptions extends McpServerOptions {
+  /** 主令牌（= default 客户端，full 权限） */
+  token: string
+  /** 额外为不同 AI 客户端签发的令牌（P0b：真隔离 + 权限分档） */
+  clients?: McpClientToken[]
   /** 监听端口，0 = 让系统随便给一个 */
   port?: number
   host?: string
@@ -198,6 +237,7 @@ function portInUse(host: string, port: number): Promise<boolean> {
 export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpHandle> {
   const server = createMcpServer(opts)
   const token = opts.token
+  const clients = opts.clients ?? []
   const path = '/mcp'
   const sockets = new Set<Socket>()
   const log = opts.log ?? ((): void => {})
@@ -236,10 +276,22 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
 
     const auth = req.headers['authorization']
     const given = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : ''
-    if (!given || !tokenEquals(given, token)) {
-      send(401, { error: 'unauthorized', hint: '需要 Authorization: Bearer <token>（token 见 ~/.bastionshell/mcp.json）' }, {
-        'WWW-Authenticate': 'Bearer'
-      })
+    // 令牌 → 调用者身份 + 权限档。主令牌是 default/full；其余是给不同 AI 客户端签发的。
+    let caller: { clientId: string; scope: McpScope } | undefined
+    if (given && tokenEquals(given, token)) caller = { clientId: 'default', scope: 'full' }
+    else if (given) {
+      const hit = clients.find((c) => tokenEquals(given, c.token))
+      if (hit) caller = { clientId: sanitizeClientId(hit.label), scope: hit.scope }
+    }
+    if (!caller) {
+      send(
+        401,
+        {
+          error: 'unauthorized',
+          hint: '需要 Authorization: Bearer <token>（令牌见 ~/.bastionshell/mcp.json；为每个 AI 单独签发令牌请用命令 BastionShell: 管理外部 AI 令牌）'
+        },
+        { 'WWW-Authenticate': 'Bearer' }
+      )
       return
     }
 
@@ -279,7 +331,14 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
           return
         }
         try {
-          const reply = await server.handle(parsed as JsonRpcRequest)
+          // 调用者标识：客户端可以在配置里加请求头 `X-BastionShell-Client`。
+          // 它**不是鉴权**（能被伪造），只是让"某个 AI 绑定在哪条会话上"能隔离开；
+          // 真隔离请给每个客户端发独立 token（P0b）。
+          // 令牌已经决定了身份（P0b）；请求头只在「匿名/主令牌」时用来区分用途（P0a 的兼容路径）
+          const rawClient = req.headers['x-bastionshell-client']
+          const headerClient = typeof rawClient === 'string' ? rawClient : undefined
+          const clientId = caller.clientId === 'default' ? headerClient ?? caller.clientId : caller.clientId
+          const reply = await server.handle(parsed as JsonRpcRequest, { clientId, scope: caller.scope })
           if (reply === null) {
             // 通知：按规范用 202 且不带 body
             res.writeHead(202, { 'Cache-Control': 'no-store' })

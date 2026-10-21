@@ -2,7 +2,7 @@
   "name": "bastion-vscode",
   "displayName": "BastionShell SSH",
   "description": "SSH 堡垒机终端：一次 MFA + 连接复用，多开会话/批量部署/rz/sz 文件传输/端口转发/快捷命令，并提供 bastion.exec 让 VS Code 里的 AI 插件在服务器上执行命令",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "publisher": "xingzitian",
   "author": "杏子甜",
   "license": "MIT",
@@ -95,7 +95,10 @@
     "onCommand:bastion.toggleBroadcast",
     "onCommand:bastion.toggleBroadcastMode",
     "onCommand:bastion.rsyncSyncToSession",
-    "onCommand:bastion.showMcpInfo",
+"onCommand:bastion.forgetPassword",
+"onCommand:bastion.manageAiTokens",
+                "onCommand:bastion.showAiBindings",
+                "onCommand:bastion.showMcpInfo",
     "onCommand:bastion.pickOverwriteMode",
     "onCommand:bastion.stopAllForwards",
     "onCommand:bastion.showForwards",
@@ -911,6 +914,21 @@
         "title": "BastionShell: 广播模式（原样同步 / 整行发送）",
         "icon": "$(arrow-swap)"
       },
+            {
+        "command": "bastion.forgetPassword",
+        "title": "BastionShell: 清除档案保存的凭据（密码 / 私钥口令）",
+        "icon": "$(key)"
+      },
+                        {
+        "command": "bastion.manageAiTokens",
+        "title": "BastionShell: 管理外部 AI 令牌（只读 / 可写分档）",
+        "icon": "$(key)"
+            },
+            {
+        "command": "bastion.showAiBindings",
+        "title": "BastionShell: 查看 AI 会话绑定（谁在用哪条会话）",
+        "icon": "$(hubot)"
+      },
       {
         "command": "bastion.showMcpInfo",
         "title": "BastionShell: 让外部 AI 连上（MCP 端点 / 一键复制配置）",
@@ -1001,6 +1019,11 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "bastion.showAiBindings",
+          "when": "view == bastion.profiles",
+          "group": "navigation@9"
+        },
         {
           "command": "bastion.addProfile",
           "when": "view == bastion.profiles",
@@ -1105,6 +1128,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "bastion.forgetPassword",
+          "when": "view == bastion.profiles && viewItem == profile",
+          "group": "2_密码@1"
+        },
         {
           "command": "bastion.connectProfile",
           "when": "view == bastion.profiles && viewItem == profile",

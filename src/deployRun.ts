@@ -3,6 +3,7 @@
  */
 
 import * as vscode from 'vscode'
+import { resolveProfile } from './profiles'
 import * as fs from 'fs'
 import * as path from 'path'
 import { parse as parseJsonc, modify, applyEdits, ParseError } from 'jsonc-parser'
@@ -366,7 +367,7 @@ export async function runDeployTaskCore(
   task: DeployTask,
   opts: { label?: string; openReport?: boolean; onlyHosts?: string[] } = {}
 ): Promise<DeployRun> {
-  const profile = getProfiles(ctx).find((p) => p.name === task.profileId)
+  const profile = resolveProfile(getProfiles(ctx), task.profileId)
   if (!profile) {
     vscode.window.showErrorMessage(`找不到连接档案「${task.profileId}」`)
     return { task, results: [], ms: 0 }
@@ -751,7 +752,7 @@ export async function batchRunDeployTasks(): Promise<void> {
   }
   const picks = await vscode.window.showQuickPick(
     tasks.map((t) => {
-      const p = getProfiles(ctx).find((x) => x.name === t.profileId)
+      const p = resolveProfile(getProfiles(ctx), t.profileId)
       const where = p?.mode === 'direct' ? '直连 · 1 台' : `${t.hosts.length} 台`
       return { label: t.name || '（未命名）', description: `${t.profileId || '（未填档案）'} · ${where}`, task: t }
     }),

@@ -6,6 +6,7 @@
  */
 
 import * as vscode from 'vscode'
+import { resolveProfile } from './profiles'
 import type { ForwardRuleItem } from './forward'
 import { getForwardRules, saveForwardRules, newForwardRuleId, startForward, stopForward, listActiveForwards, stopAllForwards, type ForwardRule } from './forward'
 import { getProfiles } from './profiles'
@@ -85,7 +86,7 @@ export async function addForwardRule(): Promise<void> {
 export async function startForwardRule(item?: ForwardRuleItem): Promise<void> {
   const rule = item?.rule
   if (!rule) return
-  const profile = getProfiles(ctx).find((p) => p.name === rule.profileId)
+  const profile = resolveProfile(getProfiles(ctx), rule.profileId)
   if (!profile) {
     vscode.window.showErrorMessage(`找不到堡垒机档案「${rule.profileId}」`)
     return

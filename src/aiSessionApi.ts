@@ -9,18 +9,31 @@
 import {
   connectToTarget,
   execRemote,
+
   listProfilesForAI,
   listSessions,
   pullFile,
   pushFile,
+  sessionEntries,
   sessionHealthLines,
   sessionStateLabel,
   tailScreen
 } from './aiBridge'
+import {
+  bindSession,
+  bindingsOf,
+  describeBindings,
+  loadBindings,
+  normalizeClientId,
+  resolveSessionRef,
+  saveBindings,
+  unbind
+} from './sessionBindings'
 import { describeDanger, findDangerous } from './danger'
 import { getDangerRules } from './dangerConfig'
 import { appendHabit, habitsForAI, isPrivilegeMode, setPrivilege } from './habits'
 import { log } from './log'
+import { cachedNote, createExecMemo } from './execIdempotency'
 import { getMcpEndpointInfo } from './state'
 import { MCP_TOOL_DEFS } from './mcpTools'
 import type { McpSessionApi } from './mcpTools'
@@ -31,7 +44,21 @@ import type { McpSessionApi } from './mcpTools'
  * 注意这里对 AI 是**直接拒绝**（不因客户端的「总是允许」放行）：换成人自己敲
  * 才有确认流程 —— AI 幻觉出来的 `rm -rf /` 不值得给它一次机会。
  */
-export async function execChecked(input: { command?: string; terminal?: string }): Promise<string> {
+/** P2-b 的幂等表：进程内、10 分钟 TTL（重试窗口远小于这个） */
+const execMemo = createExecMemo()
+
+export async function execChecked(input: {
+  command?: string
+  session?: string
+  terminal?: string
+  clientId?: string
+  /** 仅 LM 直连（Copilot）用：没有绑定时允许回退到活动终端 */
+  allowActiveFallback?: boolean
+  /** P2-a：乐观并发校验（上次读到的 cursor） */
+  expectCursor?: number
+  /** P2-b：同一件事重试时带同一个 key，服务端不会重复执行 */
+  idempotencyKey?: string
+}): Promise<string> {
   const command = input.command ?? ''
   const hits = findDangerous(command, getDangerRules())
   if (hits.length > 0) {
@@ -42,7 +69,22 @@ export async function execChecked(input: { command?: string; terminal?: string }
       '\n\n请让用户自己判断。如果确实要执行，请让用户在堡垒机终端里手动敲，或在部署任务/快捷命令里走人工确认流程。'
     )
   }
-  return execRemote({ command, terminal: input.terminal })
+  const run = (): Promise<string> =>
+    execRemote({
+      command,
+      session: input.session,
+      terminal: input.terminal,
+      clientId: input.clientId,
+      allowActiveFallback: input.allowActiveFallback,
+      expectCursor: input.expectCursor
+    })
+
+  // P2-b：幂等键。没带 key 就普通执行（服务端无法保证不重复执行，工具说明里写明了）。
+  const key = (input.idempotencyKey ?? '').trim()
+  if (!key) return run()
+  const scope = `${normalizeClientId(input.clientId)}|${(input.session ?? input.terminal ?? '').trim()}|${key}`
+  const r = await execMemo.run(scope, run)
+  return r.cached ? r.text + cachedNote(key, r.joined) : r.text
 }
 
 /** 个人习惯：读 / 记一条 / 改提权方式（LM 工具与 MCP 工具共用） */
@@ -90,7 +132,7 @@ export async function habitsTool(input: {
  * （真实案例：listSessions 报错后它就转而让用户手工敲命令）。
  * 有了这个工具，AI 的自救路径是：**先重试一次 → 再调 bastion_health → 还不行就明确告诉用户「重启 MCP 服务器」**。
  */
-export function healthReport(): string {
+export function healthReport(clientId?: string): string {
   const ep = getMcpEndpointInfo()
   const lines: string[] = ['BastionShell MCP 端点自检']
   if (!ep) {
@@ -123,6 +165,7 @@ export function healthReport(): string {
       )
     }
   }
+  lines.push('', describeBindings(loadBindings(), clientId ?? 'default'))
   lines.push(
     '',
     '端点文件：`~/.bastionshell/mcp.json`（token 固定，端口以设置 `bastion.mcpPort` 为准）。',
@@ -131,9 +174,48 @@ export function healthReport(): string {
   return lines.join('\n')
 }
 
+/**
+ * `bastion_use`：把**调用它的客户端**绑定到某条会话（别名 A/B…）。
+ *
+ * 这就是「让 AI 记住自己在哪条会话上」的落地方式：绑定存在服务端，
+ * 模型自己的上下文被压缩/重开也不影响 —— 它问一次 listSessions 就能拿回自己的绑定。
+ */
+export async function useSession(input: {
+  session?: string
+  as?: string
+  unbind?: boolean
+  clientId?: string
+}): Promise<string> {
+  const clientId = normalizeClientId(input.clientId)
+  const sel = (input.session ?? '').trim()
+  if (!sel) return '错误：bastion_use 需要 session 参数（会话 id 如 s-7f3a，或终端名的一部分）'
+  const entries = sessionEntries()
+  const f = loadBindings()
+  const cb = bindingsOf(f, clientId)
+
+  if (input.unbind) {
+    const alias = Object.keys(cb.sessions).find((a) => a.toLowerCase() === sel.toLowerCase())
+    const removed = unbind(f, clientId, alias ? { alias } : { sessionId: sel })
+    if (!removed) return `没有找到要解绑的 ${sel}。${describeBindings(f, clientId)}`
+    saveBindings(f)
+    return `已解绑 ${sel}。${describeBindings(f, clientId)}`
+  }
+
+  const resolved = resolveSessionRef(entries.map((x) => x.ref), sel, { mode: 'write', client: cb })
+  if (!resolved.ok) return resolved.message
+  const res = bindSession(f, clientId, resolved.ref, input.as)
+  if ('error' in res) return res.error
+  saveBindings(f)
+  const head = res.existing
+    ? `${resolved.ref.id} 已经绑定为 ${res.alias} 了（没有重复添加）。`
+    : `已绑定 ${res.alias} = ${resolved.ref.id}（${resolved.ref.name}，${sessionStateLabel(resolved.ref.state as never)}）。`
+  return `${head}\n${describeBindings(f, clientId)}\n\n之后 bastion_exec 可以传 session: "${res.alias}" 或 "${resolved.ref.id}"；只绑了一条时不传也行。`
+}
+
 /** 给 MCP 服务用的会话能力实现 */
 export const sessionApi: McpSessionApi = {
-  listSessions: async () => listSessions(),
+  listSessions: async (input) => listSessions(input?.clientId),
+  use: useSession,
   listProfiles: async () => listProfilesForAI(),
   exec: execChecked,
   connect: (input) => connectToTarget(input),
@@ -141,5 +223,5 @@ export const sessionApi: McpSessionApi = {
   tail: async (input) => tailScreen(input),
   push: async (input) => pushFile(input),
   pull: async (input) => pullFile(input),
-  health: async () => healthReport()
+  health: async (input) => healthReport(input?.clientId)
 }

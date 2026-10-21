@@ -24,6 +24,8 @@ import { sessionApi } from './aiSessionApi'
 import { MCP_TOOL_DEFS } from './mcpTools'
 import { newMcpToken, startMcpHttpServer, toMcpTool, type McpHttpHandle } from './mcpServer'
 import { setMcpEndpointInfo } from './state'
+import { normalizeClientId } from './sessionBindings'
+import type { McpClientToken, McpScope } from './mcpServer'
 
 /** 必须和 package.json 里 `contributes.mcpServerDefinitionProviders[0].id` 一致 */
 export const MCP_PROVIDER_ID = 'bastion'
@@ -32,8 +34,10 @@ export const MCP_STATE_FILE = 'mcp.json'
 export const MCP_DEFAULT_PORT = 39311
 
 interface McpState {
-  /** 访问令牌（持久，重启不变） */
+  /** 主访问令牌（持久，重启不变）= default 客户端，full 权限 */
   token: string
+  /** P0b：为不同 AI 客户端单独签发的令牌（真隔离 + 权限分档） */
+  clients?: McpClientToken[]
   /** **配置里要求的**端口（设置 bastion.mcpPort；也是下次启动要绑的端口） */
   port: number
   /** 这次实际绑上的端口（端口被占回退时会和上面不同）；纯诊断 + 给人看 */
@@ -108,10 +112,18 @@ export function loadOrCreateState(): McpState {
   const wantPort = cfg<number>('mcpPort', MCP_DEFAULT_PORT)
   const existing = readState()
   const token = existing?.token && existing.token.length >= 16 ? existing.token : newMcpToken()
+  // ⚠️ clients（P0b 签发的令牌）必须**原样带回来**：这里以前只返回 {token, port}，
+  // 结果一读写就把客户端令牌丢了（签了等于没签）。改端口重写文件时也要保留它们。
+  const clients = existing?.clients ?? []
   if (!existing || existing.token !== token || existing.port !== wantPort) {
-    writeState({ token, port: wantPort, updatedAt: new Date().toISOString() })
+    writeState({
+      token,
+      port: wantPort,
+      clients: clients.length > 0 ? clients : undefined,
+      updatedAt: new Date().toISOString()
+    })
   }
-  return { token, port: wantPort }
+  return { token, port: wantPort, clients: clients.length > 0 ? clients : undefined }
 }
 
 /**
@@ -129,6 +141,7 @@ export async function ensureMcpServer(): Promise<McpHttpHandle | undefined> {
       const h = await startMcpHttpServer({
         api: sessionApi,
         token: state.token,
+        clients: state.clients ?? [],
         port: state.port,
         serverName: 'bastionshell',
         serverVersion,
@@ -209,6 +222,128 @@ async function copy(text: string, what: string): Promise<void> {
 }
 
 /** 命令：查看 / 复制 MCP 端点信息 */
+// ───────────────── P0b：每个 AI 一把令牌（真隔离 + 权限分档）─────────────────
+
+/** 已签发的客户端令牌（不含主令牌） */
+export function mcpClientTokens(): McpClientToken[] {
+  return loadOrCreateState().clients ?? []
+}
+
+async function restartAfterTokenChange(): Promise<void> {
+  await stopMcp()
+  await ensureMcpServer()
+  changeEmitter?.fire()
+}
+
+/** 只写状态、不重启端点（测试用；生产走 issueClientToken） */
+export function writeClientToken(label: string, scope: McpScope): McpClientToken | { error: string } {
+  const clean = label.trim().slice(0, 32)
+  if (!clean) return { error: '标签不能为空（例如 claude / trae / 排障-AI）' }
+  const state = loadOrCreateState()
+  const clients = state.clients ?? []
+  if (clients.some((c) => normalizeClientId(c.label) === normalizeClientId(clean))) {
+    return { error: `已经有标签「${clean}」的令牌了 —— 先吊销再签发` }
+  }
+  const created: McpClientToken = { token: newMcpToken(), label: clean, scope }
+  writeState({ ...state, clients: [...clients, created], updatedAt: new Date().toISOString() })
+  log(`已为客户端 ${clean} 签发令牌（权限 ${scope}）`)
+  return created
+}
+
+/** 签发令牌并让端点立刻生效（重启一次） */
+export async function issueClientToken(label: string, scope: McpScope): Promise<McpClientToken | { error: string }> {
+  const created = writeClientToken(label, scope)
+  if (!('error' in created)) await restartAfterTokenChange()
+  return created
+}
+
+/** 只改状态、不重启端点（测试用） */
+export function removeClientToken(label: string): boolean {
+  const state = loadOrCreateState()
+  const clients = state.clients ?? []
+  const next = clients.filter((c) => normalizeClientId(c.label) !== normalizeClientId(label))
+  if (next.length === clients.length) return false
+  writeState({ ...state, clients: next, updatedAt: new Date().toISOString() })
+  log(`已吊销客户端 ${label} 的令牌`)
+  return true
+}
+
+export async function revokeClientToken(label: string): Promise<boolean> {
+  const removed = removeClientToken(label)
+  if (removed) await restartAfterTokenChange()
+  return removed
+}
+
+/** 命令：管理外部 AI 的令牌（签发 / 查看 / 吊销） */
+export async function manageAiTokens(): Promise<void> {
+  if (!mcpEnabled()) {
+    const pick = await vscode.window.showWarningMessage(
+      'MCP 端点是关的（bastion.mcpEnabled），签了令牌也连不上。',
+      '打开设置并启用'
+    )
+    if (pick) {
+      await vscode.workspace.getConfiguration('bastion').update('mcpEnabled', true, vscode.ConfigurationTarget.Global)
+      changeEmitter?.fire()
+    }
+    return
+  }
+  const clients = mcpClientTokens()
+  const items: (vscode.QuickPickItem & { act: 'issue' | 'revoke'; label?: string })[] = [
+    {
+      label: '$(add) 签发新令牌（给一个 AI 客户端）',
+      description: 'observer 只读 / operator 可写 / full 还能连新机器',
+      act: 'issue'
+    }
+  ]
+  for (const c of clients) {
+    items.push({
+      label: `$(key) ${c.label}`,
+      description: `${c.scope} · ${c.token.slice(0, 6)}…`,
+      act: 'revoke',
+      label2: c.label
+    } as never)
+  }
+  if (clients.length === 0) {
+    items.push({ label: '（还没有单独签发的令牌，所有人都用主令牌 default）', description: '', act: 'revoke' })
+  }
+  const picked = await vscode.window.showQuickPick(items, { placeHolder: '外部 AI 令牌：签发 / 吊销' })
+  if (!picked) return
+  if (picked.act === 'issue') {
+    const scope = await vscode.window.showQuickPick(
+      [
+        { label: 'observer（只读）', description: '只能 list / tail / health —— 给"只许看"的第二个 AI' },
+        { label: 'operator（可写）', description: '可以 exec / push / pull，但不能连新机器' },
+        { label: 'full（全权）', description: '和主令牌一样，谨慎签发' }
+      ],
+      { placeHolder: '这个客户端能做什么？' }
+    )
+    if (!scope) return
+    const label = await vscode.window.showInputBox({
+      prompt: '给它起个标签（会出现在 listSessions 的 owners 里）',
+      placeHolder: 'claude / trae / 排障-AI',
+      ignoreFocusOut: true
+    })
+    if (!label) return
+    const s = scope.label.startsWith('observer') ? 'observer' : scope.label.startsWith('operator') ? 'operator' : 'full'
+    const created = await issueClientToken(label, s)
+    if ('error' in created) {
+      void vscode.window.showWarningMessage(created.error)
+      return
+    }
+    const copy = await vscode.window.showInformationMessage(
+      `已签发：${created.label}（权限 ${created.scope}）\n令牌：${created.token}\n\n⚠️ 这串令牌只显示这一次，请现在粘到那个 AI 客户端的配置里。`,
+      '复制令牌'
+    )
+    if (copy) await vscode.env.clipboard.writeText(created.token)
+    return
+  }
+  if (!picked.label) return
+  const ok = await vscode.window.showWarningMessage(`吊销「${picked.label}」的令牌？它那个 AI 会立刻连不上。`, '吊销', '取消')
+  if (ok !== '吊销') return
+  const done = await revokeClientToken(picked.label)
+  void vscode.window.showInformationMessage(done ? `已吊销 ${picked.label}` : `没找到 ${picked.label}`)
+}
+
 export async function showMcpInfo(): Promise<void> {
   if (!mcpEnabled()) {
     const pick = await vscode.window.showWarningMessage(

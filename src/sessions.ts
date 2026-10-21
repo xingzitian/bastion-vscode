@@ -9,7 +9,15 @@ import * as vscode from 'vscode'
 import { BastionTerminal, stripAnsi, shQuote, type ScreenMark } from './terminal'
 import { ConnectionManager, SharedConnection } from './connection'
 import type { ConnectionProfile } from './profiles'
-import { getProfiles, saveProfiles, getPassword, savePassword, deletePassword } from './profiles'
+import {
+  getProfiles,
+  saveProfiles,
+  getPassword,
+  savePassword,
+  getPassphrase,
+  savePassphrase,
+  deletePassword
+} from './profiles'
 import type { BastionTreeItem } from './profilesTree'
 import { stopForwardsOfConn } from './forward'
 import {
@@ -19,7 +27,7 @@ import {
   type AssetCandidate, type MenuHints, type MenuHintKey, type MenuStep
 } from './menu'
 import { log } from './log'
-import { sleep, nextSessionNo, setLastBastionTerminal, setLastBastionProfile, setLastUnrecognizedScreen } from './state'
+import { sleep, nextSessionId, nextSessionNo, setLastBastionTerminal, setLastBastionProfile, setLastUnrecognizedScreen } from './state'
 import {
   ctx,
   terminals,
@@ -65,8 +73,24 @@ export async function ensureConnection(profile: ConnectionProfile): Promise<Shar
       }
     }
   } else if (profile.authMethod === 'key') {
-    passphrase =
-      (await vscode.window.showInputBox({ prompt: '私钥口令（无则回车）', password: true, ignoreFocusOut: true })) ?? ''
+    // 口令也要记住：以前每次都问、而且不给保存选项 —— AI 走档案连接时会被这个弹窗卡住。
+    // 区分「没存过」(undefined) 与「存过但是空口令」('')：后者说明这把私钥本来就不需要口令。
+    const savedPass = await getPassphrase(ctx, profile.name)
+    if (savedPass !== undefined) {
+      passphrase = savedPass
+    } else {
+      const p = await vscode.window.showInputBox({
+        prompt: '私钥口令（无则直接回车）',
+        password: true,
+        ignoreFocusOut: true
+      })
+      if (p === undefined) return undefined
+      passphrase = p
+      const saveIt = await vscode.window.showQuickPick(['不保存', '保存到本机（加密）'], {
+        placeHolder: '是否保存私钥口令？（保存后不再问）'
+      })
+      if (saveIt === '保存到本机（加密）') await savePassphrase(ctx, profile.name, passphrase)
+    }
   }
 
   log(`新建连接（${profile.name}）`)
@@ -110,6 +134,7 @@ export async function reconnect(): Promise<void> {
 export function openTerminal(conn: SharedConnection, profile: ConnectionProfile, title: string): { term: BastionTerminal; vt: vscode.Terminal } {
   const term = new BastionTerminal(conn, profile)
   term.sessionNo = nextSessionNo()
+  term.sessionId = nextSessionId()
   // 会话号前缀便于人区分、也便于 AI 用 bastion_exec 的 terminal 参数精确指定
   // （AI 那边是按 includes 匹配的，加了前缀仍能匹配 user@host）
   const numbered = vscode.workspace.getConfiguration('bastion').get<boolean>('sessionNumber', true)

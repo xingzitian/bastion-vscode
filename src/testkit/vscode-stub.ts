@@ -116,6 +116,20 @@ export function setOpenDialogResult(result: Array<{ fsPath: string }> | undefine
 }
 export const warningMessages: string[] = []
 
+/** showWarningMessage 的预设返回值（先进先出；空了返回 undefined = 用户关掉/没点按钮） */
+const warningResponses: unknown[] = []
+
+export function queueWarningResponse(value: unknown): void {
+  warningResponses.push(value)
+}
+
+/** showInputBox 的预设返回值（先进先出；空了返回 undefined = 用户取消） */
+const inputBoxResponses: unknown[] = []
+
+export function setInputBoxResult(value: unknown): void {
+  inputBoxResponses.push(value)
+}
+
 /** 配置变化监听器（`workspace.onDidChangeConfiguration` 注册进来的） */
 const configChangeListeners: Array<(e: { affectsConfiguration(section: string): boolean }) => void> = []
 
@@ -232,10 +246,10 @@ const fakeVscode = {
     },
     showWarningMessage: async (msg: string) => {
       warningMessages.push(String(msg))
-      return undefined
+      return warningResponses.shift()
     },
     showErrorMessage: async () => undefined,
-    showInputBox: async () => undefined,
+    showInputBox: async () => inputBoxResponses.shift(),
     showQuickPick: async (items: unknown[], options: unknown) => {
       quickPickCalls.push({ items, options })
       const r = quickPickResponses.shift()

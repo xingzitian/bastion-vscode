@@ -82,8 +82,8 @@ export class SharedConnection {
   }
 
   /** 本次握手用的凭据（重试时沿用密码，只重新问动态码） */
-  private readonly password: string;
-  private readonly passphrase: string;
+  private password: string;
+  private passphrase: string;
 
   /** 等这条连接认证完成（重试期间会指向新的 promise，所以用方法而不是直接暴露字段） */
   waitReady(): Promise<void> {
@@ -117,6 +117,21 @@ export class SharedConnection {
    * 旧 client 先摘监听再关：否则它 close 时会走「连接已断开 → 弹重连？」那条路，
    * 而重试正在自动进行，再弹一个提示只会更懵。
    */
+  /**
+   * 换密码重试（钥匙串里那个旧密码在服务器上被改过时用，见 profiles.offerPasswordReset）。
+   *
+   * 只更新字段 —— 紧接着调 retryAuth() 就会用新密码重新握手；
+   * 对象身份不变，连接池/终端引用/转发都不受影响。
+   */
+  updatePassword(password: string): void {
+    this.password = password;
+  }
+
+  /** 换私钥口令重试（与 updatePassword 同理） */
+  updatePassphrase(passphrase: string): void {
+    this.passphrase = passphrase;
+  }
+
   retryAuth(): Promise<void> {
     this.teardownClient();
     this.mfaAsked = false;

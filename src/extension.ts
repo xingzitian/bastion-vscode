@@ -23,7 +23,7 @@ import {
   TRANSFER_FILE,
   TRANSFER_HEADER
 } from './transfer'
-import { getProfiles, PROFILES_FILE, PROFILES_HEADER } from './profiles'
+import { deletePassphrase, deletePassword, getProfiles, initProfiles, PROFILES_FILE, PROFILES_HEADER } from './profiles'
 import { listDeployTasks, migrateLegacyDeployTasks, migrateTaskFiles, exportDeployTasks } from './deploy'
 import { HABITS_FILE } from './habits'
 import { configDir } from './config'
@@ -90,6 +90,8 @@ import {
   copyTransferPath
 } from './transferCmd'
 import { setDownloadDir, clearDownloadDir } from './downloadDir'
+import { registerSessionBindingsView, showAiBindings } from './sessionBindingsView'
+import { manageAiTokens } from './mcpRegister'
 import { openConfigFile, openHabitsFile, showLog, pickOverwriteMode, openDangerRules } from './configCmd'
 import { generateMenuRule } from './menuCmd'
 import { toggleBroadcast, toggleBroadcastMode } from './broadcastCmd'
@@ -202,6 +204,24 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand('bastion.pickOverwriteMode', pickOverwriteMode),
     // 查看/复制 MCP 端点信息（URL、token、给其它 AI 客户端的配置片段）
+    vscode.commands.registerCommand('bastion.forgetPassword', async (node?: { profile?: { name: string } }) => {
+      // 密码在服务器上改过、或者不想再用存的那份时用（认证失败那条路也会引导到这里）
+      let name = node?.profile?.name
+      if (!name) {
+        const picked = await vscode.window.showQuickPick(
+          getProfiles(context).map((p) => ({ label: p.name, description: `${p.username}@${p.host}`, name: p.name })),
+          { placeHolder: '清除哪个档案保存的密码？（下次连接会提示重新输入）' }
+        )
+        if (!picked) return
+        name = picked.name
+      }
+      await deletePassword(context, name)
+  await deletePassphrase(context, name) // 私钥口令也一起清掉：用户说
+      log(`已清除保存的密码（${name}）`)
+      void vscode.window.showInformationMessage(`已清除 ${name} 保存的凭据（密码 / 私钥口令）—— 下次连接会提示重新输入。`)
+    }),
+    vscode.commands.registerCommand('bastion.showAiBindings', () => showAiBindings()),
+    vscode.commands.registerCommand('bastion.manageAiTokens', () => manageAiTokens()),
     vscode.commands.registerCommand('bastion.showMcpInfo', () => showMcpInfo()),
     vscode.commands.registerCommand('bastion.showForwards', showForwards),
     vscode.commands.registerCommand('bastion.showLog', showLog),
@@ -297,7 +317,9 @@ export function activate(context: vscode.ExtensionContext): void {
       invoke: async (options) => {
         const input = options.input as { command?: string; terminal?: string }
         // 高危命令的拦截在 sessionApi 里做（和 MCP 工具同一条路径）
-        const output = await sessionApi.exec(input)
+        // allowActiveFallback：Copilot 直连没有"客户端身份"，而且人就坐在 VS Code 前面 ——
+        // 保留"没绑定就用活动终端"的旧行为；MCP 的外部 AI 一律严格（见 docs/session-identity.md）。
+        const output = await sessionApi.exec({ ...input, allowActiveFallback: true })
         return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(output)])
       }
     }),
@@ -405,6 +427,7 @@ export function activate(context: vscode.ExtensionContext): void {
   )
 
   // MCP：把同一批会话工具通过 MCP 暴露出去（VS Code 里的 Copilot 等支持 MCP 的助手可用）
+  registerSessionBindingsView(context) // 状态栏/面板：AI 与会话的绑定关系    initProfiles(context) // 钥匙串读写（offerPasswordReset / 清除密码命令要用）
   registerMcp(context)
 }
 

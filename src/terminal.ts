@@ -12,7 +12,8 @@ import { fmtBytes as formatBytes } from './status';
 import { pushPath, type TransferSession } from './transferPath';
 // 单向依赖：menu.ts 不 import terminal.ts，所以这里可以放心用它的提示符识别
 import { resolveMenuHints, detectPrompt } from './menu';
-import { describeConnectError, MAX_AUTH_ATTEMPTS, shouldOfferRetry } from './authError';
+import { describeConnectError, isAuthFailure, MAX_AUTH_ATTEMPTS, shouldOfferRetry } from './authError';
+import { hasSavedPassphrase, hasSavedPassword, offerPassphraseReset, offerPasswordReset } from './profiles';
 import {
   broadcastPayload,
   broadcastReceivers,
@@ -76,6 +77,8 @@ export class BastionTerminal implements vscode.Pseudoterminal {
 
   /** 会话号（#1、#2…），由 extension.ts 在创建时分配，仅用于显示和区分 */
   sessionNo = 0;
+  /** 不可变会话 id（AI 绑定用它精确指认；重连 = 新会话 = 新 id） */
+  sessionId = '';
 
   /** 本次上传里被跳过的文件（远端拒绝了传输），供部署报告如实呈现 */
   private recentSkips: string[] = [];
@@ -514,9 +517,19 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     return tailText(this.tailBuf, maxLines);
   }
 
+  /**
+   * 屏幕游标（P2-a）：**每来一块输出就 +1**。
+   *
+   * 读写语义：tail/listSessions 把它返回给 AI；写操作可以带 expectCursor 做乐观并发校验 ——
+   * 如果会话在这期间被别人动过（用户在那个终端里敲了东西、或另一个 AI 执行了命令），
+   * 游标就对不上，我们**拒绝执行**并让它先 tail 看一眼，而不是盲执行到别人的光标位置上。
+   */
+  screenCursor = 0;
+
   /** 输出统一出口：既写进 VS Code 终端，也记进滚动缓冲 */
   private emitOutput(d: Buffer | string): void {
     const s = typeof d === 'string' ? d : d.toString('utf8');
+    this.screenCursor++;
     this.writeEmitter.fire(s);
     this.tailBuf += s;
     if (this.tailBuf.length > BastionTerminal.TAIL_MAX) {
@@ -853,6 +866,31 @@ export class BastionTerminal implements vscode.Pseudoterminal {
           target: `${this.profile.username}@${this.profile.host}`
         });
         log(`连接失败（${this.profile.name}）: ${info.message}`);
+
+        // ⚠️ 认证失败，而且用的是**钥匙串里存的旧密码** → 必须给用户一条出路。
+        // 以前这里直接落到下面的"自动重试"：拿**同一个旧密码**再试几次然后放弃；
+        // 用户密码在服务器上改过的话就彻底连不上，还没有任何入口去改（2026-09-16 报的逻辑错误）。
+        // 注意：**手输**的密码失败不追问 —— 那会变成弹窗死循环。
+        const keyAuth = this.profile.authMethod === 'key';
+        const hasSaved = keyAuth ? await hasSavedPassphrase(this.profile) : await hasSavedPassword(this.profile);
+        if (isAuthFailure(e) && hasSaved) {
+          const reset = keyAuth ? await offerPassphraseReset(this.profile) : await offerPasswordReset(this.profile);
+          if (reset.action === 'retry') {
+            if (keyAuth) this.conn.updatePassphrase(reset.password);
+            else this.conn.updatePassword(reset.password);
+            this.emitOutput(
+              `\r\n\x1b[33m[已保存的` + (keyAuth ? '私钥口令' : '密码') + `无效 —— 已改用你刚输入的新值重试（同时存到本机钥匙串）]\x1b[0m\r\n`
+            );
+            log(`改用新` + (keyAuth ? '口令' : '密码') + `重试（` + this.profile.name + `）`);
+            // 继续往下走：下面的自动重试会调 retryAuth()，那里用的就是刚更新的密码
+          } else if (reset.action === 'cleared') {
+            this.handleFatal('已清除本机保存的密码 —— 重新连接时会提示你输入新密码。');
+            return;
+          } else {
+            this.handleFatal(info.message);
+            return;
+          }
+        }
 
         const canRetry = shouldOfferRetry(info, attempt);
         if (!canRetry) {

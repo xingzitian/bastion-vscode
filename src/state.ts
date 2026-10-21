@@ -117,6 +117,27 @@ export function nextSessionNo(): number {
   return ++sessionSeq
 }
 
+/**
+ * 分配**不可变会话 id**（`s-7f3a`）。AI / 绑定用它精确指认会话。
+ *
+ * 为什么不用会话号：#N 只是给人看的短号，而且「绑定」要能区分"这是同一条还是又新开了一条"。
+ * 重连/重开 = 新会话 = 新 id —— 这是对的，它确实是一条新会话。
+ */
+const issuedSessionIds = new Set<string>()
+export function nextSessionId(): string {
+  for (let i = 0; i < 1000; i++) {
+    const id = `s-${Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0')}`
+    if (!issuedSessionIds.has(id)) {
+      issuedSessionIds.add(id)
+      return id
+    }
+  }
+  // 理论上到不了这里（6 万多个组合）；退化成时间戳后缀也比撞号好
+  const id = `s-${Date.now().toString(16).slice(-4)}`
+  issuedSessionIds.add(id)
+  return id
+}
+
 // ---- 「最近一次没认出来的屏幕原文」----
 // 菜单识别失败时由 sessions.ts 存下来，供命令「从屏幕原文生成菜单规则」使用：
 // 用户不用去日志里翻，直接选一句提示就能生成规则。

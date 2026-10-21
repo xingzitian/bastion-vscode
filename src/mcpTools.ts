@@ -46,26 +46,78 @@ export class UnknownToolError extends Error {
  * 会话能力接口。真实实现见 `aiSessionApi.ts`（包着 aiBridge + 高危规则 + 个人习惯），
  * 测试里注入假实现。
  */
+export interface ToolCallContext {
+  /** 调用者标识：令牌对应的客户端（P0b），没有令牌身份时取请求头 X-BastionShell-Client，再没有就是 default */
+  clientId?: string
+  /**
+   * 权限档（P0b）：observer 只能调只读工具；operator 可写但不能 connect；full 全都能做。
+   * 不传 = full（内部调用 / 测试 / VS Code 内的 Copilot 直连）。
+   */
+  scope?: 'observer' | 'operator' | 'full'
+}
+
 export interface McpSessionApi {
-  listSessions(): Promise<string>
+  listSessions(input?: ToolCallContext): Promise<string>
   listProfiles(): Promise<string>
-  exec(input: { command?: string; terminal?: string }): Promise<string>
-  connect(input: { profile?: string; host?: string; userChoice?: string; assetId?: string }): Promise<string>
+  exec(input: {
+    command?: string
+    session?: string
+    terminal?: string
+    clientId?: string
+    /** 仅 LM 直连用：没有绑定时允许回退到活动终端 */
+    allowActiveFallback?: boolean
+    /** P2-a：乐观并发校验 */
+    expectCursor?: number
+    /** P2-b：重试去重（同一件事重试时带同一个 key，服务端不会重复执行） */
+    idempotencyKey?: string
+  }): Promise<string>
+  connect(input: {
+    profile?: string
+    host?: string
+    userChoice?: string
+    assetId?: string
+    clientId?: string
+  }): Promise<string>
+  /** 把调用者绑定到某条会话（别名 A/B…）：让"我在哪条会话上"由服务端记住 */
+  use(input: { session?: string; as?: string; unbind?: boolean; clientId?: string }): Promise<string>
   habits(input: { action?: string; profile?: string; habit?: string; privilege?: string }): Promise<string>
   /** 某条会话屏幕上最后几行（排障 + 人工接手后确认走到哪一步） */
-  tail(input: { terminal?: string; lines?: number }): Promise<string>
+  tail(input: { session?: string; terminal?: string; lines?: number; clientId?: string }): Promise<string>
   /** 传文件到远端（rz） */
-  push(input: { localPath?: string; remoteDir?: string; terminal?: string }): Promise<string>
+  push(input: {
+    localPath?: string
+    remoteDir?: string
+    session?: string
+    terminal?: string
+    clientId?: string
+    expectCursor?: number
+  }): Promise<string>
   /** 从远端拉文件回来（sz） */
-  pull(input: { remotePath?: string; localDir?: string; terminal?: string }): Promise<string>
+  pull(input: {
+    remotePath?: string
+    localDir?: string
+    session?: string
+    terminal?: string
+    clientId?: string
+    expectCursor?: number
+  }): Promise<string>
   /** 端点自检：AI 遇到「工具调用出错」时用它分清端点坏了还是这次偶发 */
-  health(): Promise<string>
+  health(input?: ToolCallContext): Promise<string>
 }
 
 const SESSIONS_DESC =
-  '列出当前所有 BastionShell 堡垒机会话，并标出每条会话现在能不能直接执行命令' +
-  '（✅ 在 shell 里 / ⚠️ 还停在堡垒机菜单上）。' +
-  '要在这台机器上执行命令前先看一眼：多会话时要用终端名指定目标，避免把命令发到错的机器上。'
+  '列出当前所有 BastionShell 堡垒机会话（每条带**不可变会话 id** `s-xxxx`、完整终端名、状态（✅ 在 shell 里 / ⚠️ 还停在堡垒机菜单上），' +
+  '以及它被哪些 AI 客户端绑定）并返回**你自己**的绑定。' +
+  '操作前先看一眼：执行命令时要传 session（id 或别名 A/B），或者先 bastion_use 绑定 —— ' +
+  '没绑定时写入类工具会被拒绝（不会用"当前活动窗口"兜底，那可能是别的 AI 的会话）。'
+
+const USE_DESC =
+  '把**你自己**（这个 MCP 客户端）绑定到某条会话，之后就能用别名（A/B/…）或直接不传值来指认它。\n' +
+  '- 绑定存在**服务端**（~/.bastionshell/mcp-bindings.json），不是靠模型记忆：' +
+  '你的上下文被压缩/重开之后，bastion_listSessions 里仍会显示 `你的(A)`；\n' +
+  '- 要**同时操作两台机器**：各 bastion_connect 一次（会自动绑定成 A、B），之后 exec 传 session:"A"/"B"；\n' +
+  '- 绑定多于一条时，exec/push/pull **必须**指定 session —— 服务端不会替你猜；\n' +
+  '- 别名只对你自己有效（别人的 A 不是你的 A）；unbind=true 解绑。'
 
 const EXEC_DESC =
   '在一个**已经认证好**的 BastionShell 会话上执行 shell 命令，并返回命令输出。' +
@@ -78,7 +130,12 @@ const EXEC_DESC =
   '- 提权方式按这个档案的「个人习惯」自动决定（免密 sudo 会直接 `sudo <命令>`，需要交互的会提示你让用户来输密码）；' +
   '只是**第一次**观察到某种提权做法时先别写进习惯（用户明确说了、或同一做法遇到 2~3 次再记；记录与实际不符则立刻更正）；\n' +
   '- 命中高危命令规则（删根、格式化、写块设备等）的命令会被**直接拒绝**，不要试图换写法绕过，而是把结论告诉用户；\n' +
-  '- 交互式命令（`sudo -i`、`su`、`top`、`vi`）拿不到可靠的结束标记，输出会不完整，尽量不要用。'
+  '- 交互式命令（`sudo -i`、`su`、`top`、`vi`）拿不到可靠的结束标记，输出会不完整，尽量不要用；\n' +
+  '- **必须让服务端知道你要哪条会话**：传 session（id 或别名 A/B），或先 bastion_use 绑定。' +
+  '什么都没绑定时这条工具会**拒绝执行**并告诉你该怎么做 —— 这是为了防止命令落到别的 AI/用户的会话上；\n' +
+  '- **重试同一件事时带同一个 idempotencyKey**（例如 restart-nginx）：失败可能只是回包丢了、命令其实已经执行过，' +
+  '带 key 重试会直接返回上次结果、不会重复执行（rm / service restart / kill -9 这类尤其重要）；不带 key 服务端无法保证；\n' +
+  '- 可选 expectCursor（上次 tail/listSessions 返回的 cursor）：会话在你读取后被别人动过就**拒绝执行**，让你先 tail 确认。'
 
 const CONNECT_DESC =
   '通过堡垒机菜单连接到一台目标机器（会复用已认证的连接，不重新输密码/动态码）。' +
@@ -130,6 +187,22 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
+    name: 'bastion_use',
+    title: '绑定会话（记住我在哪条会话上）',
+    description: USE_DESC,
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session: { type: 'string', description: '会话 id（如 s-7f3a）或终端名的一部分（必须唯一命中）' },
+        as: { type: 'string', description: '别名（默认自动取 A/B/…），之后可以写 session:"A"' },
+        unbind: { type: 'boolean', description: 'true = 解绑这个别名/会话' }
+      },
+      required: ['session'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'bastion_health',
     title: '端点自检',
     description:
@@ -150,7 +223,8 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        terminal: { type: 'string', description: '会话终端名（如 deploy@10.0.0.10）；不填则用当前活动/最近会话' },
+        session: { type: 'string', description: '会话 id（s-xxxx）或别名（A/B）；不填则：有唯一绑定用它，否则（读操作）回退到活动/最近会话并说明' },
+        terminal: { type: 'string', description: '旧参数，等价于 session' },
         lines: { type: 'number', description: '要读多少行（默认 40，最多 200）' }
       },
       additionalProperties: false
@@ -172,9 +246,24 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
       type: 'object',
       properties: {
         command: { type: 'string', description: '要在远端执行的 shell 命令（单条命令；需要多条时用 && 或在部署任务里做）' },
-        terminal: {
+        session: {
           type: 'string',
-          description: '目标会话的终端名（如 deploy@10.0.0.10）。不填则用当前活动/最近使用的会话。多会话时先调 bastion_listSessions'
+          description:
+            '目标会话：会话 id（s-xxxx）或你绑定过的别名（A/B）。不填时只会用你自己的唯一绑定；' +
+            '没有绑定或绑定多于一条会被拒绝（不会猜）'
+        },
+        terminal: { type: 'string', description: '旧参数，等价于 session（按终端名精确匹配；片段必须唯一）' },
+        expectCursor: {
+          type: 'number',
+          description:
+            '乐观并发校验：把上一次 tail/listSessions 返回的 cursor 带上来。会话在你读取之后被改动过'
+            + '（用户在那个终端里敲了东西、或另一个客户端执行了命令）就会**拒绝执行**并让你先 tail 确认。'
+        },
+        idempotencyKey: {
+          type: 'string',
+          description:
+            '重试去重：同一件事**重试**时带同一个 key（例如 "restart-nginx"）。服务端在 10 分钟内见过这个 key 就直接返回上次的结果、不再执行。'
+            + '不确定是"没执行"还是"执行了但回包丢了"时，这正是你需要的。'
         }
       },
       required: ['command'],
@@ -230,7 +319,9 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
       properties: {
         localPath: { type: 'string', description: '本机文件路径（建议绝对路径）' },
         remoteDir: { type: 'string', description: '远端目标目录（不填 = 会话当前目录）；会先 cd 过去再传' },
-        terminal: { type: 'string', description: '会话终端名；不填则用当前活动/最近会话' }
+        session: { type: 'string', description: '会话 id（s-xxxx）或别名（A/B）；不填则用你自己的唯一绑定（没有/多于一条会拒绝）' },
+        expectCursor: { type: 'number', description: '乐观并发校验：带上一次读取拿到的 cursor；会话被改动过就拒绝' },
+        terminal: { type: 'string', description: '旧参数，等价于 session' }
       },
       required: ['localPath'],
       additionalProperties: false
@@ -246,7 +337,9 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
       properties: {
         remotePath: { type: 'string', description: '远端文件路径' },
         localDir: { type: 'string', description: '本机落盘目录；默认工作区下的 .bastion-downloads/' },
-        terminal: { type: 'string', description: '会话终端名；不填则用当前活动/最近会话' }
+        session: { type: 'string', description: '会话 id（s-xxxx）或别名（A/B）；不填则用你自己的唯一绑定（没有/多于一条会拒绝）' },
+        expectCursor: { type: 'number', description: '乐观并发校验：带上一次读取拿到的 cursor；会话被改动过就拒绝' },
+        terminal: { type: 'string', description: '旧参数，等价于 session' }
       },
       required: ['remotePath'],
       additionalProperties: false
@@ -260,20 +353,25 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
  * 分发本身很薄，但它把所有工具的**参数缺省与错误处理**收在一处：
  * 参数缺失、能力抛异常，都变成给模型看得懂的文本，而不是让整个会话炸掉。
  */
-export function createToolDispatch(api: McpSessionApi): (name: string, args: Record<string, unknown>) => Promise<McpToolResult> {
-  return async (name, args) => {
+export function createToolDispatch(
+  api: McpSessionApi
+): (name: string, args: Record<string, unknown>, ctx?: ToolCallContext) => Promise<McpToolResult> {
+  return async (name, args, ctx) => {
     const a = args ?? {}
+    /** 调用者标识：由 MCP 端从请求头取（X-BastionShell-Client）；工具层只透传 */
+    const clientId = ctx?.clientId
     switch (name) {
       case 'bastion_listSessions':
-        return { text: await api.listSessions() }
+        return { text: await api.listSessions({ clientId }) }
       case 'bastion_health':
-        return { text: await api.health() }
+        return { text: await api.health({ clientId }) }
       case 'bastion_listProfiles':
         return { text: await api.listProfiles() }
       case 'bastion_tail': {
+        const session = typeof a.session === 'string' ? a.session : undefined
         const terminal = typeof a.terminal === 'string' ? a.terminal : undefined
         const lines = typeof a.lines === 'number' ? a.lines : undefined
-        return { text: await api.tail({ terminal, lines }) }
+        return { text: await api.tail({ session, terminal, lines, clientId }) }
       }
       case 'bastion_push': {
         const localPath = typeof a.localPath === 'string' ? a.localPath : ''
@@ -282,7 +380,9 @@ export function createToolDispatch(api: McpSessionApi): (name: string, args: Rec
           text: await api.push({
             localPath,
             remoteDir: typeof a.remoteDir === 'string' ? a.remoteDir : undefined,
-            terminal: typeof a.terminal === 'string' ? a.terminal : undefined
+            session: typeof a.session === 'string' ? a.session : undefined,
+            terminal: typeof a.terminal === 'string' ? a.terminal : undefined,
+            clientId
           })
         }
       }
@@ -293,15 +393,27 @@ export function createToolDispatch(api: McpSessionApi): (name: string, args: Rec
           text: await api.pull({
             remotePath,
             localDir: typeof a.localDir === 'string' ? a.localDir : undefined,
-            terminal: typeof a.terminal === 'string' ? a.terminal : undefined
+            session: typeof a.session === 'string' ? a.session : undefined,
+            terminal: typeof a.terminal === 'string' ? a.terminal : undefined,
+            clientId
           })
         }
       }
       case 'bastion_exec': {
         const command = typeof a.command === 'string' ? a.command : ''
         if (!command.trim()) return { text: '错误：bastion_exec 需要 command 参数（要执行的命令）', isError: true }
+        const session = typeof a.session === 'string' ? a.session : undefined
         const terminal = typeof a.terminal === 'string' ? a.terminal : undefined
-        return { text: await api.exec({ command, terminal }) }
+        return {
+          text: await api.exec({
+            command,
+            session,
+            terminal,
+            clientId,
+            expectCursor: typeof a.expectCursor === 'number' ? a.expectCursor : undefined,
+            idempotencyKey: typeof a.idempotencyKey === 'string' ? a.idempotencyKey : undefined
+          })
+        }
       }
       case 'bastion_connect': {
         const profile = typeof a.profile === 'string' ? a.profile : ''
@@ -309,7 +421,7 @@ export function createToolDispatch(api: McpSessionApi): (name: string, args: Rec
         const host = typeof a.host === 'string' ? a.host : undefined
         const userChoice = typeof a.userChoice === 'string' ? a.userChoice : undefined
         const assetId = typeof a.assetId === 'string' ? a.assetId : undefined
-        return { text: await api.connect({ profile, host, userChoice, assetId }) }
+        return { text: await api.connect({ profile, host, userChoice, assetId, clientId }) }
       }
       case 'bastion_habits': {
         const action = typeof a.action === 'string' ? a.action : 'read'
@@ -319,6 +431,23 @@ export function createToolDispatch(api: McpSessionApi): (name: string, args: Rec
             profile: typeof a.profile === 'string' ? a.profile : undefined,
             habit: typeof a.habit === 'string' ? a.habit : undefined,
             privilege: typeof a.privilege === 'string' ? a.privilege : undefined
+          })
+        }
+      }
+      case 'bastion_use': {
+        const session = typeof a.session === 'string' ? a.session : ''
+        if (!session.trim()) {
+          return {
+            text: '错误：bastion_use 需要 session 参数（会话 id 如 s-7f3a，或终端名的一部分 —— 必须唯一命中）',
+            isError: true
+          }
+        }
+        return {
+          text: await api.use({
+            session,
+            as: typeof a.as === 'string' ? a.as : undefined,
+            unbind: a.unbind === true,
+            clientId
           })
         }
       }
@@ -341,7 +470,15 @@ export const MCP_INSTRUCTIONS =
   '做完之后你直接在同一条会话上接着干 —— 不需要重新认证，也不需要重新连接。' +
   '所以遇到「需要人来一下」的情况（要选资产、要选账号、要输密码、屏幕认不出来），' +
   '正确做法是**把情况说清楚并让用户操作**，而不是猜一个数字发进去、也不是断言目标机不存在。\n' +
-  '**工具调用失败时按这个顺序处理，不要直接放弃**：\n' +
+  '**会话绑定（很重要）**：写入类工具（exec / push / pull）必须让服务端知道你要哪条会话 —— ' +
+'传 session（会话 id 或别名 A/B），或者先 bastion_use 绑定一次。没绑定（或绑定多于一条）时会**拒绝执行**，' +
+'不会用"当前活动窗口"兜底（那可能是别的 AI 或用户正在用的会话）。要同时操作两台机器：各 bastion_connect 一次' +
+'（会自动绑定成 A、B），之后每次 exec 传 session:"A" / "B"。绑定存在服务端，你的上下文被压缩后照样有效。\n' +
+'**执行前先看清 cursor，重试要带幂等键**：' +
+'tail / listSessions 会返回每个会话的 cursor（屏幕每有输出就 +1）。准备执行写操作时把刚才读到的 cursor 作为 expectCursor 带上 —— ' +
+'这期间用户在那个终端里敲了东西、或另一个 AI 动了它，服务端会**拒绝执行**并让你先 tail。' +
+'**重试同一件事时带同一个 idempotencyKey**：失败可能只是回包丢了（命令其实已经跑过），带 key 重试不会重复执行。\n' +
+'**工具调用失败时按这个顺序处理，不要直接放弃**：\n' +
   '1. 先**原样重试一次** —— 扩展刚重载完（比如刚装了新版本）时会出现一次瞬时失败；\n' +
   '2. 还失败就调 **bastion_health**：它能返回 → 端点是好的，回到第 1 步重试或换个工具；\n' +
   '3. 连 bastion_health 都调不动 → 端点没在跑，请**明确告诉用户**：在 VS Code 里重启 MCP 服务器' +

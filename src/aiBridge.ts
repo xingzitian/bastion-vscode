@@ -6,6 +6,7 @@
  */
 
 import * as vscode from 'vscode'
+import { resolveProfile } from './profiles'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -15,12 +16,26 @@ import { getProfiles } from './profiles'
 import { getHabits, resolvePrivilege, habitsForAI } from './habits'
 import { isWaitingForPassword, resolvePasswordPrompts } from './recognize'
 import { log } from './log'
-import { ctx, terminals, lastBastionTerminal, getMcpEndpointInfo } from './state'
+import { ctx, terminals, lastBastionTerminal, getMcpEndpointInfo, nextSessionId } from './state'
 import { defaultDownloadDir as defaultDownloadDirShared } from './downloadDir'
 import { ensureConnection, openTerminal, openSessionToHost, type AssetPicked } from './sessions'
 import { describeAsset, describeAssets, classifySessionScreen, menuStuckMessage, resolveMenuHints, type SessionScreenState } from './menu'
 import { pullPath, pushPath, type TransferSession } from './transferPath'
 import { fmtBytes } from './status'
+import {
+  bindSession,
+  bindingsOf,
+  expectCursorProblem,
+  cleanupBindings,
+  describeBindings,
+  loadBindings,
+  normalizeClientId,
+  ownerClients,
+  resolveSessionRef,
+  saveBindings,
+  aliasOfSession,
+  type SessionRef
+} from './sessionBindings'
 
 export function workspaceRoot(): string | undefined {
   const folders = vscode.workspace.workspaceFolders
@@ -63,26 +78,132 @@ export function writeOutputFile(output: string): void {
  * - 输出回传：返回值 + 写入 .vscode/bastion-last-output.txt（AI 读文件兜底）
  * - 人在终端里实时看到命令与输出
  */
-/** 找到目标会话（按终端名匹配，没指定就用活动/最近的）。工具层共用 */
-export function findSession(terminalName?: string): { term: BastionTerminal; name: string } | { error: string } {
-  const want = (terminalName ?? '').trim()
-  if (want) {
-    for (const [vt, t] of terminals) {
-      if (vt.name === want || vt.name.includes(want)) return { term: t, name: vt.name }
-    }
-    return { error: `找不到会话「${want}」。先用 bastion_listSessions 看有哪些会话（名字形如 用户@主机）` }
-  }
-  const vt = vscode.window.activeTerminal
-  const active = vt ? terminals.get(vt) : undefined
-  if (active && vt) return { term: active, name: vt.name }
-  const last = lastBastionTerminal ?? undefined
-  if (last) {
-    for (const [v, t] of terminals) if (t === last) return { term: t, name: v.name }
-  }
-  return { error: '没有活动堡垒机会话，请先用 BastionShell 连接' }
+/** 会话条目：终端对象 + 解析用的最小信息 */
+export interface SessionEntry {
+  vt: vscode.Terminal
+  term: BastionTerminal
+  ref: SessionRef
 }
 
-export async function execRemote(arg?: string | { command?: string; terminal?: string }): Promise<string> {
+export function sessionEntries(): SessionEntry[] {
+  return [...terminals.entries()].map(([vt, term]) => {
+    // 正常路径下 openTerminal 已经赋过 id；这里兜底是为了「任何途径造出来的会话
+    // 都不会在 id 位上显示 undefined」—— 那会让 AI 拿不到可用的句柄。
+    if (!term.sessionId) term.sessionId = nextSessionId()
+    return {
+      vt,
+      term,
+      ref: { id: term.sessionId, name: vt.name, no: term.sessionNo, state: sessionScreenState(term), cursor: term.screenCursor ?? 0 }
+    }
+  })
+}
+
+/** 只在读操作的回退里用：活动终端 → 最近会话。写操作**绝不**走这里。 */
+function activeOrRecentRef(entries: SessionEntry[]): SessionRef | undefined {
+  const vt = vscode.window.activeTerminal
+  if (vt) {
+    const hit = entries.find((x) => x.vt === vt)
+    if (hit) return hit.ref
+  }
+  if (lastBastionTerminal) {
+    const hit = entries.find((x) => x.term === lastBastionTerminal)
+    if (hit) return hit.ref
+  }
+  return undefined
+}
+
+export interface FoundSession {
+  term: BastionTerminal
+  vt: vscode.Terminal
+  /** 完整终端名（含 #N） */
+  name: string
+  /** 不可变会话 id */
+  id: string
+  /** 这次是怎么指认出来的（binding/alias/fragment/fallback…），用于在返回里说明 */
+  via: string
+  /** 屏幕游标（P2-a） */
+  cursor: number
+}
+
+/**
+ * 找到目标会话。**所有工具共用这一个入口**，规则见 docs/session-identity.md。
+ *
+ * - `mode: 'write'`（exec / push / pull）：只认**调用者自己的绑定**；没绑定就拒绝。
+ *   以前没指定就回退到「活动终端」—— 那是全局 UI 焦点，两个 AI 或人一操作就会变，
+ *   命令会落到错的机器上。这条回退**已经删掉**。
+ * - `mode: 'read'`（tail）：没有绑定时允许回退到活动/最近会话，但返回里会写明用了哪条。
+ */
+export function findSession(
+  selector?: string,
+  opts: {
+    mode?: 'read' | 'write'
+    clientId?: string
+    allowActiveFallback?: boolean
+    /** P2-a：写操作的乐观并发校验（来自上一次 tail/listSessions 的 cursor） */
+    expectCursor?: number
+  } = {}
+): FoundSession | { error: string } {
+  const mode = opts.mode ?? 'write'
+  const clientId = normalizeClientId(opts.clientId)
+  const entries = sessionEntries()
+  const bindings = loadBindings()
+  if (cleanupBindings(bindings, entries.map((x) => x.ref.id))) saveBindings(bindings)
+  const client = bindingsOf(bindings, clientId)
+  const r = resolveSessionRef(entries.map((x) => x.ref), selector, {
+    mode,
+    client,
+    fallback: activeOrRecentRef(entries),
+    allowWriteFallback: opts.allowActiveFallback === true
+  })
+  if (!r.ok) {
+    log(`会话解析被拒绝（${mode} / ${clientId}）：${r.message}`)
+    return { error: r.message }
+  }
+  const hit = entries.find((x) => x.ref.id === r.ref.id)
+  if (!hit) return { error: `会话 ${r.ref.id} 已经不在了，先 bastion_listSessions 重新选一条。` }
+  // P2-a：乐观并发校验（只在写操作传了 expectCursor 时才生效）
+  const cursorProblem = expectCursorProblem(opts.expectCursor, hit.ref.cursor)
+  if (cursorProblem) {
+    log(`拒绝执行（cursor 不符）：${cursorProblem}`)
+    return { error: cursorProblem }
+  }
+  return { term: hit.term, vt: hit.vt, name: hit.vt.name, id: r.ref.id, via: r.via, cursor: hit.ref.cursor }
+}
+
+/**
+ * 新开的会话自动绑到调用者身上 —— connect 之后就能直接 exec，省掉一次 use。
+ * 失败（别名满/文件写不进去）不影响连接本身，只在返回里说明。
+ */
+export function autoBind(
+  clientId: string | undefined,
+  term: BastionTerminal,
+  vt: vscode.Terminal
+): { alias: string; existing: boolean } | { error: string } {
+  const bindings = loadBindings()
+  const ref: SessionRef = {
+    id: term.sessionId,
+    name: vt.name,
+    no: term.sessionNo,
+    state: sessionScreenState(term),
+    cursor: term.screenCursor ?? 0
+  }
+  const r = bindSession(bindings, normalizeClientId(clientId), ref)
+  if ('error' in r) return r
+  saveBindings(bindings)
+  return r
+}
+
+export async function execRemote(
+  arg?: string | {
+    command?: string
+    session?: string
+    terminal?: string
+    clientId?: string
+    allowActiveFallback?: boolean
+    /** P2-a：带着"我上次读到的 cursor"来，会话被改动过就拒绝执行 */
+    expectCursor?: number
+  }
+): Promise<string> {
   const input = typeof arg === 'string' ? { command: arg } : (arg ?? {})
   let command = input.command ?? ''
   if (!command) command = readCommandFile()
@@ -92,7 +213,12 @@ export async function execRemote(arg?: string | { command?: string; terminal?: s
     return msg
   }
 
-  const found = findSession(input.terminal)
+  const found = findSession(input.session ?? input.terminal, {
+    mode: 'write',
+    clientId: input.clientId,
+    allowActiveFallback: input.allowActiveFallback,
+    expectCursor: input.expectCursor
+  })
   if ('error' in found) {
     log(`bastion_exec 未执行：${found.error}`)
     writeOutputFile(found.error)
@@ -143,13 +269,15 @@ export async function connectToTarget(input?: {
   host?: string
   userChoice?: string
   assetId?: string
+  /** 调用它的客户端（X-BastionShell-Client）；用来把新会话自动绑到它身上 */
+  clientId?: string
 }): Promise<string> {
   const profileName = input?.profile ?? ''
   const host = input?.host ?? ''
   if (!profileName) {
     return '错误：需要 profile（档案名）参数'
   }
-  const profile = getProfiles(ctx).find((p) => p.name === profileName)
+  const profile = resolveProfile(getProfiles(ctx), profileName)
   if (!profile) {
     return `找不到档案「${profileName}」，请先在侧边栏「连接档案」里创建`
   }
@@ -158,9 +286,14 @@ export async function connectToTarget(input?: {
     return `连接「${profileName}」失败`
   }
   if (profile.mode === 'direct') {
-    const { vt } = openTerminal(conn, profile, `${profile.username}@${profile.host}`)
+    const { term, vt } = openTerminal(conn, profile, `${profile.username}@${profile.host}`)
     vt.show()
-    return `已直接连接 ${profile.username}@${profile.host}，终端名 ${profile.username}@${profile.host}。之后用 bastion_exec 在这台机器上执行命令。${habitNote(profileName)}`
+    const b = autoBind(input?.clientId, term, vt)
+    return (
+      `已直接连接 ${profile.username}@${profile.host} —— 会话 ${term.sessionId}（${vt.name}），${bindNoteOf(b)}。` +
+      `之后 bastion_exec 不传 session 时就落在这条会话上（绑定多于一条时必须指定）。` +
+      `${habitNote(profileName)}`
+    )
   }
   if (!host) {
     return '堡垒机模式需要 host（目标机器 IP）参数'
@@ -178,7 +311,17 @@ export async function connectToTarget(input?: {
   }
 
   const assetNote = assetNoteOf(host, opened.asset)
-  return `已连接到目标 ${host}，终端名 ${profile.username}@${host}。之后用 bastion_exec 在这台机器上执行命令。${assetNote}${habitNote(profileName)}`
+  const bound = autoBind(input?.clientId, opened.term, opened.vt)
+  return (
+    `已连接到目标 ${host} —— 会话 ${opened.term.sessionId}（${opened.vt.name}），${bindNoteOf(bound)}。` +
+    `之后 bastion_exec 不传 session 时就落在这条会话上（绑定多于一条时必须指定）。` +
+    `${assetNote}${habitNote(profileName)}`
+  )
+}
+
+/** 自动绑定的结果 → 一句人话 */
+function bindNoteOf(b: { alias: string; existing: boolean } | { error: string }): string {
+  return 'alias' in b ? `已绑定为该客户端的 ${b.alias}` : `未能自动绑定（${b.error}）`
 }
 
 /** 把「这次选了哪条资产」写清楚 —— 人多条同名资产时，这一步是唯一能看出差别的地方 */
@@ -266,13 +409,14 @@ export function exitCodeNote(term: BastionTerminal): string {
  *   1. **排障** —— AI 看到「命令好像没反应」时能直接看一眼屏幕，而不是反复 exec；
  *   2. **人工接手的收尾** —— 人说"我在终端里弄完了"，AI 看一眼就知道走到哪一步了。
  */
-export function tailScreen(input: { terminal?: string; lines?: number } = {}): string {
-  const found = findSession(input.terminal)
+export function tailScreen(input: { session?: string; terminal?: string; lines?: number; clientId?: string } = {}): string {
+  const found = findSession(input.session ?? input.terminal, { mode: 'read', clientId: input.clientId })
   if ('error' in found) return found.error
   const n = Math.max(1, Math.min(200, Math.floor(input.lines ?? 40)))
   const state = sessionScreenState(found.term)
   const tail = found.term.getTail(n).trim()
-  const head = `会话 ${found.name}（${sessionStateLabel(state)}）屏幕最后 ${n} 行：`
+  const via = found.via === 'fallback' ? '（没有绑定，回退到活动/最近会话）' : ''
+  const head = `会话 ${found.id}（${found.name}，${sessionStateLabel(state)}）cursor=${found.cursor} 屏幕最后 ${n} 行${via}：`
   return `${head}\n${tail || '（屏幕是空的）'}`
 }
 
@@ -282,12 +426,25 @@ export function tailScreen(input: { terminal?: string; lines?: number } = {}): s
  * 那个模块负责：能力探测（有没有 rz）→ 选通道（rz / base64 降级 / tar 打包）→ 传完回读校验。
  * 这里只做三件事：找会话、套上"菜单上别发命令"的拦截、把结果翻成人话。
  */
-export async function pushFile(input: { localPath?: string; remoteDir?: string; terminal?: string }): Promise<string> {
+export async function pushFile(input: {
+  localPath?: string
+  remoteDir?: string
+  session?: string
+  terminal?: string
+  clientId?: string
+  allowActiveFallback?: boolean
+  expectCursor?: number
+}): Promise<string> {
   const localPath = (input.localPath ?? '').trim()
   if (!localPath) return '错误：需要 localPath（本机文件或目录路径，建议绝对路径）'
   // 本地路径先查：这类错误和会话无关，先报出来更好定位（目录是允许的，会打包再传）
   if (!fs.existsSync(localPath)) return `错误：本机找不到这个路径：${localPath}`
-  const found = findSession(input.terminal)
+  const found = findSession(input.session ?? input.terminal, {
+    mode: 'write',
+    clientId: input.clientId,
+    allowActiveFallback: input.allowActiveFallback,
+    expectCursor: input.expectCursor
+  })
   if ('error' in found) return found.error
   const guard = menuGuard(found.name, found.term)
   if (guard) return guard
@@ -305,10 +462,23 @@ export async function pushFile(input: { localPath?: string; remoteDir?: string; 
  * 默认落在**工作区的 `.bastion-downloads/`** 下 —— 因为拉回来通常就是给 AI 读的，
  * 放在工作区里它自己的文件工具就能直接读；没有工作区时落到 `~/.bastionshell/downloads/`。
  */
-export async function pullFile(input: { remotePath?: string; localDir?: string; terminal?: string }): Promise<string> {
+export async function pullFile(input: {
+  remotePath?: string
+  localDir?: string
+  session?: string
+  terminal?: string
+  clientId?: string
+  allowActiveFallback?: boolean
+  expectCursor?: number
+}): Promise<string> {
   const remotePath = (input.remotePath ?? '').trim()
   if (!remotePath) return '错误：需要 remotePath（远端文件路径）'
-  const found = findSession(input.terminal)
+  const found = findSession(input.session ?? input.terminal, {
+    mode: 'write',
+    clientId: input.clientId,
+    allowActiveFallback: input.allowActiveFallback,
+    expectCursor: input.expectCursor
+  })
   if ('error' in found) return found.error
   const guard = menuGuard(found.name, found.term)
   if (guard) return guard
@@ -348,8 +518,18 @@ function defaultDownloadDir(): string {
 }
 
 
-export function listSessions(): string {
-  const rows = sessionHealthLines().map(({ name, state }) => `- ${name}：${sessionStateLabel(state)}`)
+export function listSessions(clientId?: string): string {
+  const entries = sessionEntries()
+  const bindings = loadBindings()
+  const client = normalizeClientId(clientId)
+  const clientBindings = bindingsOf(bindings, client)
+  if (cleanupBindings(bindings, entries.map((x) => x.ref.id))) saveBindings(bindings)
+  const rows = entries.map(({ ref }) => {
+    const alias = aliasOfSession(clientBindings, ref.id)
+    const others = ownerClients(bindings, ref.id).filter((c) => c !== client)
+    const tags = [alias ? `你的(${alias})` : '', others.length ? `其他客户端: ${others.join(',')}` : ''].filter(Boolean).join(' · ')
+    return `- ${ref.id}  ${ref.name}  ${sessionStateLabel(ref.state as SessionScreenState)}  cursor=${ref.cursor}${tags ? '  ' + tags : ''}`
+  })
   // 把 MCP 端点写进返回里：AI 报「工具出错」时，这一行能立刻分清是
   // 「端点没连上（根本没返回）」还是「连上了但工具里出错（返回里会有这行）」。
   const ep = getMcpEndpointInfo()
@@ -360,8 +540,11 @@ export function listSessions(): string {
   return (
     `当前堡垒机会话（${rows.length} 个）：\n` +
     rows.join('\n') +
-    '\n\n提示：这些都是**人和 AI 共用**的会话 —— 需要人工操作（MFA、选资产、输密码、过菜单）时，' +
-    '请让用户在终端里做完，然后你直接在这些会话上继续执行命令，不需要重新连接或认证。' +
+    '\n\n' + describeBindings(bindings, client) +
+    '\n提示：这些会话都是**人和 AI 共用**的 —— 需要人工操作（MFA、选资产、输密码、过菜单）时，' +
+    '请让用户在终端里做完，然后你直接在这些会话上继续执行命令，不需要重新连接或认证。\n' +
+    '⚠️ 执行命令（exec/push/pull）时**必须让服务端知道你要哪条会话**：要么传 session（id 或别名 A/B），' +
+    '要么先 bastion_use 绑定 —— 没绑定时不会替你猜，也不会用"当前活动窗口"兜底（那是别的 AI 的会话）。' +
     endpointNote
   )
 }

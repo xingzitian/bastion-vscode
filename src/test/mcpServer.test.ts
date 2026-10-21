@@ -12,6 +12,7 @@ function api(over: Partial<McpSessionApi> = {}): McpSessionApi {
   return {
     listSessions: async () => '会话列表',
     listProfiles: async () => '档案列表',
+    use: async (i) => `已绑定 `,
     exec: async (i) => `执行：${i.command}`,
     connect: async (i) => `连接：${i.host}`,
     habits: async () => '习惯',
@@ -76,7 +77,7 @@ test('ping 回空结果（客户端用它探活）', async () => {
   assert.deepEqual(r.result, {})
 })
 
-test('tools/list 返回 5 个工具，形状符合规范', async () => {
+test('tools/list 返回 10 个工具，形状符合规范', async () => {
   const s = server()
   const r = (await s.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' })) as RpcResult
   const tools = r.result?.tools as { name: string; description: string; inputSchema: { type: string } }[]
@@ -96,7 +97,8 @@ test('tools/list 返回 5 个工具，形状符合规范', async () => {
       'bastion_listSessions',
       'bastion_pull',
       'bastion_push',
-      'bastion_tail'
+      'bastion_tail',
+      'bastion_use'
     ]
   )
 })

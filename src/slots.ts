@@ -13,6 +13,7 @@ import type { SharedConnection } from './connection'
 import type { BastionTerminal } from './terminal'
 import { listActiveForwards } from './forward'
 import { log } from './log'
+import { updateAiBindingSlot } from './sessionBindingsView'
 
 /**
  * 可以关掉的「常驻」格子。底栏是稀缺资源，有人嫌挤 —— 允许自己选显示哪几格。
@@ -69,6 +70,8 @@ export function isStatusSlotEnabled(name: StatusSlotKey): boolean {
 
 /** 右下角常驻状态：当前几个会话、活动的是谁。点击展开右侧「总览与进度」面板 */
 export function updateStatusBar(): void {
+  // AI 会话绑定跟着会话增减一起刷新（会话关掉之后绑定格不该还显示旧数字）
+  updateAiBindingSlot()
   updateOverwriteSlot()
   updateReadOnlySlot()
   updateKeepTerminalSlot()

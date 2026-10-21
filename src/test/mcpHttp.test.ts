@@ -19,6 +19,7 @@ function api(over: Partial<McpSessionApi> = {}): McpSessionApi {
   return {
     listSessions: async () => '当前堡垒机会话（1 个）：\n- deploy@10.0.0.1',
     listProfiles: async () => '可用的连接档案（1 个）',
+    use: async (i) => `已绑定 `,
     exec: async (i) => `输出：${i.command}`,
     connect: async (i) => `已连接 ${i.host}`,
     habits: async () => '习惯',

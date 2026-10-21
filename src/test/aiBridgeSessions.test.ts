@@ -46,8 +46,8 @@ test('会话状态标进返回里：在 shell 里的可以直接用，停在菜�
   const b = putSession('deploy@172.20.30.143', REAL_ASSET_LIST)
   try {
     const text = listSessions()
-    assert.match(text, /deploy@10\.0\.0\.1：✅ 在 shell 里/)
-    assert.match(text, /deploy@172\.20\.30\.143：⚠️ 还停在堡垒机菜单上/)
+    assert.match(text, /deploy@10\.0\.0\.1\s+✅ 在 shell 里/)
+    assert.match(text, /deploy@172\.20\.30\.143\s+⚠️ 还停在堡垒机菜单上/)
     assert.match(text, /人和 AI 共用/, '要写清人和 AI 共用这条会话')
   } finally {
     terminals.delete(a)
@@ -86,7 +86,7 @@ test('tailScreen：带上会话名和状态，并回屏幕最后几行', () => {
   const vt = putSession('deploy@10.0.0.9', 'total 0\n-rw-r--r-- 1 root root 12 x.conf\n[deploy@10.0.0.9 ~]$ ')
   try {
     const text = tailScreen({ terminal: 'deploy@10.0.0.9', lines: 5 })
-    assert.match(text, /会话 deploy@10\.0\.0\.9/)
+    assert.match(text, /会话 \S+（deploy@10\.0\.0\.9/)
     assert.match(text, /在 shell 里/)
     assert.match(text, /x\.conf/)
   } finally {

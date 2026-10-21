@@ -17,6 +17,7 @@ function fakeApi(over: Partial<McpSessionApi> = {}): McpSessionApi {
   return {
     listSessions: async () => '当前堡垒机会话（2 个）：\n- deploy@10.0.0.1\n- deploy@10.0.0.2',
     listProfiles: async () => '可用的连接档案（1 个）：\n- 生产（deploy@10.0.0.10:22，堡垒机，提权习惯=sudo）',
+    use: async (i) => `已绑定 `,
     exec: async () => 'hello from remote',
     connect: async (i) => `已连接到目标 ${i.host}`,
     habits: async () => '当前个人习惯（全局）：\n- 提权方式：ask',
@@ -36,11 +37,11 @@ test('MCP 工具包含全部语言模型工具，名字不许分叉（MCP 可以
   }
   // MCP 侧多出来的只有端点自检这类「只在 MCP 侧才有意义」的工具
   const extra = mcpNames.filter((n) => !lmNames.includes(n))
-  assert.deepEqual(extra, ['bastion_health'], '多出来的工具必须是刻意加的，不能是随手写的')
+  assert.deepEqual(extra, ['bastion_health', 'bastion_use'], '多出来的工具必须是刻意加的，不能是随手写的')
 })
 
 test('工具定义齐全：名字唯一、有说明、有 inputSchema、只读标记正确', () => {
-  assert.equal(MCP_TOOL_DEFS.length, 9)
+  assert.equal(MCP_TOOL_DEFS.length, 10)
 
   const names = MCP_TOOL_DEFS.map((t) => t.name)
   assert.equal(new Set(names).size, names.length, '工具名不能重复')
@@ -123,7 +124,14 @@ test('分发：exec 把 command 和 terminal 原样传给 api', async () => {
     })
   )
   await dispatch('bastion_exec', { command: 'df -h', terminal: 'deploy@10.0.0.1' })
-  assert.deepEqual(seen, { command: 'df -h', terminal: 'deploy@10.0.0.1' })
+  assert.deepEqual(seen, {
+    command: 'df -h',
+    terminal: 'deploy@10.0.0.1',
+    session: undefined,
+    clientId: undefined,
+    expectCursor: undefined,
+    idempotencyKey: undefined
+  })
 })
 
 test('分发：connect 缺 profile 也是可读错误', async () => {
@@ -159,7 +167,7 @@ test('分发：connect 把 assetId 原样传给能力层（一个 IP 多条资�
     })
   )
   await dispatch('bastion_connect', { profile: '生产', host: '10.0.0.1', userChoice: '2', assetId: '2' })
-  assert.deepEqual(seen, { profile: '生产', host: '10.0.0.1', userChoice: '2', assetId: '2' })
+  assert.deepEqual(seen, { profile: '生产', host: '10.0.0.1', userChoice: '2', assetId: '2', clientId: undefined })
 
   // 不传就是 undefined（决策层据此去问人，而不是瞎猜一条）
   await dispatch('bastion_connect', { profile: '生产', host: '10.0.0.1' })
@@ -226,9 +234,9 @@ test('分发：tail / push / pull 的参数原样传到能力层', async () => {
   await dispatch('bastion_tail', { terminal: 'deploy@10.0.0.1', lines: 20 })
   await dispatch('bastion_push', { localPath: 'D:/a.txt', remoteDir: '/opt/app' })
   await dispatch('bastion_pull', { remotePath: '/var/log/x.log' })
-  assert.deepEqual(seen.tail, { terminal: 'deploy@10.0.0.1', lines: 20 })
-  assert.deepEqual(seen.push, { localPath: 'D:/a.txt', remoteDir: '/opt/app', terminal: undefined })
-  assert.deepEqual(seen.pull, { remotePath: '/var/log/x.log', localDir: undefined, terminal: undefined })
+  assert.deepEqual(seen.tail, { terminal: 'deploy@10.0.0.1', lines: 20, session: undefined, clientId: undefined })
+  assert.deepEqual(seen.push, { localPath: 'D:/a.txt', remoteDir: '/opt/app', terminal: undefined, session: undefined, clientId: undefined })
+  assert.deepEqual(seen.pull, { remotePath: '/var/log/x.log', localDir: undefined, terminal: undefined, session: undefined, clientId: undefined })
 })
 
 test('分发：push / pull 缺关键参数时给可读错误，而不是抛异常', async () => {
