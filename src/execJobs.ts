@@ -323,9 +323,31 @@ const PROMPTS: Array<{ re: RegExp; hint: string }> = [
   { re: /(press any key|任意键继续)/i, hint: '在等按键 —— 让用户在终端里按一下' }
 ]
 
+/** 用户自定义规则（设置项 bastion.inputPromptRules）：先于内置规则匹配，坏正则会被跳过 */
+let extraRules: Array<{ re: RegExp; hint: string }> = []
+
+export function configurePromptRules(rules: Array<{ pattern?: string; hint?: string }> | undefined): void {
+  const next: Array<{ re: RegExp; hint: string }> = []
+  for (const r of rules ?? []) {
+    const p = (r?.pattern ?? '').trim()
+    if (!p) continue
+    try {
+      next.push({ re: new RegExp(p, 'i'), hint: r?.hint?.trim() || '自定义提示 —— 需要人工输入' })
+    } catch {
+      // 坏正则不注册（别让一条配错把整组规则带坏）
+    }
+  }
+  extraRules = next
+}
+
+export function customPromptRuleCount(): number {
+  return extraRules.length
+}
+
 export function detectPrompt(text: string): { prompt: string; hint: string } | undefined {
   const tail = text.slice(-2000)
-  for (const p of PROMPTS) {
+  // 自定义规则优先（用户加的那条就是要立刻生效）
+  for (const p of [...extraRules, ...PROMPTS]) {
     const m = p.re.exec(tail)
     if (m) {
       const line = m[0].trim().slice(0, 200)
@@ -422,4 +444,8 @@ export function emitJobEvent(job: ExecJob): void {
       // 订阅者出错不能影响状态机
     }
   }
+}
+/** 内置的交互提示规则条数（health 里向 AI 说明"能认多少种"） */
+export function promptRuleCount(): number {
+  return PROMPTS.length
 }

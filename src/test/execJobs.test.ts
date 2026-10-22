@@ -261,3 +261,19 @@ test('★ 静默本身不算完成（sleep 45 不能被误判）；必须靠"提
   assert.equal(j.state, 'completed')
   assert.equal(j.markerSeen, false)
 })
+test('★ 自定义提示规则：先于内置匹配，坏正则被跳过（陌生提示不用等发版）', async () => {
+  const m = await import('../execJobs')
+  m.configurePromptRules([
+    { pattern: '===PICK==>', hint: '在等菜单选择 —— 让用户在终端里选' },
+    { pattern: '([', hint: '坏正则' }
+  ])
+  assert.equal(m.customPromptRuleCount(), 1, '坏正则应被跳过')
+  const hit = m.detectPrompt('  ===PICK==> ')
+  assert.ok(hit, '自定义规则应命中')
+  assert.match(hit!.hint, /菜单选择/)
+  // 内置规则仍然生效（自定义规则不该把内置挤掉）
+  assert.match(m.detectPrompt('Password: ')!.hint, /密码/)
+  m.configurePromptRules([])
+  assert.equal(m.customPromptRuleCount(), 0)
+  assert.equal(m.detectPrompt('  ===PICK==> '), undefined, '清空后不该再命中')
+})

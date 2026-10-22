@@ -63,6 +63,8 @@ export interface ToolCallContext {
   scope?: 'observer' | 'operator' | 'full'
   /** 本次请求实际带的标准请求头（用于在 health 里给出「将来会强制」的提示） */
   headers?: { version?: string; method?: string; name?: string }
+  /** 本次请求的 _meta 代际信息：AI 要能自证「我是 modern / 我声明了 tasks 没有」 */
+  meta?: { version?: string; modern: boolean; declaresTasks: boolean }
 }
 
 export interface McpSessionApi {
@@ -133,7 +135,11 @@ export interface McpSessionApi {
   /** MRTR 第二步：把客户端交上来的输入写回会话，续跑等输入的任务 */
   resumeTask(input: { jobId?: string; responses?: unknown }): Promise<ExecResponse>
   /** 端点自检：AI 遇到「工具调用出错」时用它分清端点坏了还是这次偶发 */
-  health(input?: ToolCallContext): Promise<string>
+  health(input?: {
+    clientId?: string
+    headers?: { version?: string; method?: string; name?: string }
+    meta?: { version?: string; modern: boolean; declaresTasks: boolean }
+  }): Promise<string>
 }
 
 const SESSIONS_DESC =
@@ -499,7 +505,7 @@ export function createToolDispatch(
         return { text: await api.listSessions({ clientId }) }
       case 'bastion_health':
         // 把请求头一起传给自检：AI 要能看到自己发没发标准头（压测 A11 的遗留）
-        return { text: await api.health({ clientId, headers: ctx?.headers }) }
+        return { text: await api.health({ clientId, headers: ctx?.headers, meta: ctx?.meta }) }
       case 'bastion_listProfiles':
         return { text: await api.listProfiles() }
       case 'bastion_wait': {

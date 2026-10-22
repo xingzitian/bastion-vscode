@@ -534,9 +534,19 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
             method: typeof req.headers['mcp-method'] === 'string' ? String(req.headers['mcp-method']) : undefined,
             name: typeof req.headers['mcp-name'] === 'string' ? String(req.headers['mcp-name']) : undefined
           }
+          const reqMeta = readMeta((parsed as JsonRpcRequest).params)
           const reply = await server.handle(
             parsed as JsonRpcRequest,
-            { clientId, scope: caller.scope, headers: requestHeaders },
+            {
+              clientId,
+              scope: caller.scope,
+              headers: requestHeaders,
+              meta: {
+                version: reqMeta.version || headerVersion,
+                modern: !!reqMeta.version || !!headerVersion,
+                declaresTasks: clientSupportsTasks(reqMeta)
+              }
+            },
             headerVersion
           )
           if (reply === null) {

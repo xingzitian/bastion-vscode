@@ -38,6 +38,7 @@ import { getDangerRules } from './dangerConfig'
 import { appendHabit, habitsForAI, isPrivilegeMode, setPrivilege } from './habits'
 import { log } from './log'
 import { lastSweepCountOf } from './sessionBindings'
+import { allJobs, promptRuleCount } from './execJobs'
 import { cachedNote, createExecMemo } from './execIdempotency'
 import type { ExecResponse } from './aiBridge'
 import { getMcpEndpointInfo } from './state'
@@ -159,7 +160,11 @@ export async function habitsTool(input: {
  * （真实案例：listSessions 报错后它就转而让用户手工敲命令）。
  * 有了这个工具，AI 的自救路径是：**先重试一次 → 再调 bastion_health → 还不行就明确告诉用户「重启 MCP 服务器」**。
  */
-export function healthReport(clientId?: string, headers?: { version?: string; method?: string; name?: string }): string {
+export function healthReport(
+  clientId?: string,
+  headers?: { version?: string; method?: string; name?: string },
+  meta?: { version?: string; modern: boolean; declaresTasks: boolean }
+): string {
   const ep = getMcpEndpointInfo()
   const lines: string[] = ['BastionShell MCP 端点自检']
   if (!ep) {
@@ -187,6 +192,30 @@ export function healthReport(clientId?: string, headers?: { version?: string; me
         '如果你的客户端现在没带，建议尽早补上（`Mcp-Method` 必填；`tools/call` 还要 `Mcp-Name`）。'
     )
   }
+  // 代际与能力：AI 要能自证"我是 modern 吗、我声明 tasks 了吗"——否则它会瞎猜（压测里就猜错过）
+  {
+    const era = meta ? (meta.modern ? `modern（版本 ${meta.version ?? '未知'}，${headers?.version ? '带头' : '仅 _meta'}）` : 'legacy（没有 _meta 也没带版本头）') : '未知（不是经 HTTP 调用的）'
+    lines.push(`- 协议代际：${era}`)
+    if (meta && meta.modern) {
+      lines.push(
+        `- 客户端扩展：tasks ${meta.declaresTasks ? '✓ 已声明（可拿 resultType:"task"）' : '✗ 没声明（**拿不到** resultType:"task"；MRTR 仍需 modern）'}`
+      )
+    }
+  }
+  // 在跑作业：AI 判断"是不是还有东西占着会话"的直接依据
+  {
+    const running = allJobs().filter((j) => j.state === 'working' || j.state === 'input_required')
+    if (running.length > 0) {
+      const rows = running.map((j) => `${j.id}（会话 ${j.sessionId}，${Math.round((Date.now() - j.startedAt) / 1000)}s，${j.state}）`)
+      lines.push(`- 在跑作业：${running.length} 条 —— ${rows.join('、')}`)
+    } else {
+      lines.push('- 在跑作业：0 条')
+    }
+  }
+  lines.push(
+    `- 提示识别：内置 ${promptRuleCount()} 条规则（密码 / 动态码 / y-n / 口令 / 菜单 / 按键），` +
+      `可用 bastion.inputPromptRules 追加自定义正则；清单见 docs/exec-protocol.md §7`
+  )
   const sessions = sessionHealthLines()
   // 绑定清扫掉的条数：让 AI 分清「我没绑定」和「绑定指向的会话真的没了」
   {

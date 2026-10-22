@@ -94,6 +94,7 @@ import { registerSessionBindingsView, showAiBindings } from './sessionBindingsVi
 import { changeTokenScopeFlow, issueTokenFlow, manageAiTokens, revokeTokenFlow } from './mcpRegister'
 import { focusAiSession, registerAiAccess } from './aiAccessTree'
 import { setLiveSessionIds } from './sessionBindings'
+import { configurePromptRules, customPromptRuleCount, promptRuleCount } from './execJobs'
 import { loadBindings, saveBindings, unbind as unbindBinding } from './sessionBindings'
 import { openConfigFile, openHabitsFile, showLog, pickOverwriteMode, openDangerRules } from './configCmd'
 import { generateMenuRule } from './menuCmd'
@@ -124,6 +125,22 @@ export function activate(context: vscode.ExtensionContext): void {
   const overviewProvider = new OverviewProvider()
   setOverviewProvider(overviewProvider)
   // 「AI 访问」：令牌 / 权限 / 绑定 —— 和档案一样在左侧树里看和管（先建好，命令里要用它刷新）
+  // 交互提示规则：内置之外允许用户自定义（陌生提示不用等发版）
+  {
+    const readRules = (): void => {
+      const cfg = vscode.workspace.getConfiguration('bastion')
+      const raw = cfg.get<Array<{ pattern?: string; hint?: string }>>('inputPromptRules', [])
+      configurePromptRules(Array.isArray(raw) ? raw : [])
+      log(`提示识别规则：自定义 ${customPromptRuleCount()} 条 + 内置 ${promptRuleCount()} 条`)
+    }
+    readRules()
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('bastion.inputPromptRules')) readRules()
+      })
+    )
+  }
+
   // 绑定清扫要知道「现在有哪些会话还活着」：避免死会话长期占着别名（压测里 A 被僵尸会话占着）
   setLiveSessionIds(() => [...terminals.values()].map((t) => t.sessionId))
 
