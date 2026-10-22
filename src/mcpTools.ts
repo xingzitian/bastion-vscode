@@ -15,6 +15,7 @@
  */
 
 import type { ExecResponse } from './execResult'
+import { CANCEL_OUTPUT_SCHEMA, EXEC_OUTPUT_SCHEMA, JOB_OUTPUT_SCHEMA, WAIT_OUTPUT_SCHEMA } from './execSchema'
 
 /** 一个 MCP 工具的元数据（`tools/list` 直接返回它） */
 export interface McpToolDef {
@@ -24,6 +25,8 @@ export interface McpToolDef {
   description: string
   /** JSON Schema（入参） */
   inputSchema: Record<string, unknown>
+  /** JSON Schema（结构化返回值）；声明了就必须让 structuredContent 符合它 */
+  outputSchema?: Record<string, unknown>
   /**
    * 只读工具：MCP 客户端据此**不弹确认框**（VS Code 的 `readOnlyHint`）。
    * 有副作用的工具绝不能标成只读。
@@ -58,6 +61,8 @@ export interface ToolCallContext {
    * 不传 = full（内部调用 / 测试 / VS Code 内的 Copilot 直连）。
    */
   scope?: 'observer' | 'operator' | 'full'
+  /** 本次请求实际带的标准请求头（用于在 health 里给出「将来会强制」的提示） */
+  headers?: { version?: string; method?: string; name?: string }
 }
 
 export interface McpSessionApi {
@@ -125,6 +130,8 @@ export interface McpSessionApi {
   job(input: { jobId?: string; sinceOffset?: number; maxBytes?: number }): Promise<ExecResponse>
   /** 取消作业（往那条会话发 Ctrl-C） */
   cancel(input: { jobId?: string }): Promise<ExecResponse>
+  /** MRTR 第二步：把客户端交上来的输入写回会话，续跑等输入的任务 */
+  resumeTask(input: { jobId?: string; responses?: unknown }): Promise<ExecResponse>
   /** 端点自检：AI 遇到「工具调用出错」时用它分清端点坏了还是这次偶发 */
   health(input?: ToolCallContext): Promise<string>
 }
@@ -291,6 +298,7 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
     title: '在远端执行命令',
     description: EXEC_DESC,
     readOnly: false,
+    outputSchema: EXEC_OUTPUT_SCHEMA,
     inputSchema: {
       type: 'object',
       properties: {
@@ -345,6 +353,7 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
     title: '等作业（完成 / 等某个输出出现）',
     description: WAIT_DESC,
     readOnly: true,
+    outputSchema: WAIT_OUTPUT_SCHEMA,
     inputSchema: {
       type: 'object',
       properties: {
@@ -362,6 +371,7 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
     title: '读作业日志（增量）',
     description: JOB_DESC,
     readOnly: true,
+    outputSchema: JOB_OUTPUT_SCHEMA,
     inputSchema: {
       type: 'object',
       properties: {
@@ -378,6 +388,7 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
     title: '取消作业',
     description: CANCEL_DESC,
     readOnly: false,
+    outputSchema: CANCEL_OUTPUT_SCHEMA,
     inputSchema: {
       type: 'object',
       properties: {

@@ -214,6 +214,7 @@ export function completeJob(job: ExecJob, input: { exitCode?: number; markerSeen
   job.state = ok ? 'completed' : 'failed'
   if (!ok) job.reason = 'exit_nonzero'
   clearActive(job)
+  emitJobEvent(job)
   wake(job)
 }
 
@@ -223,6 +224,7 @@ export function markInputRequired(job: ExecJob, prompt: string, hint: string): v
   job.state = 'input_required'
   job.prompt = prompt
   job.hint = hint
+  emitJobEvent(job)
   wake(job)
 }
 
@@ -241,6 +243,7 @@ export function cancelJob(job: ExecJob): void {
   job.state = 'cancelled'
   job.reason = 'cancelled'
   clearActive(job)
+  emitJobEvent(job)
   wake(job)
 }
 
@@ -251,6 +254,7 @@ export function failJob(job: ExecJob, reason: 'session_lost' | 'session_exited' 
   job.reason = reason
   if (note) job.lastLine = note
   clearActive(job)
+  emitJobEvent(job)
   wake(job)
 }
 
@@ -388,4 +392,28 @@ export function resetJobs(): void {
   jobs.clear()
   activeBySession.clear()
   seq = 0
+}
+
+// ── 作业事件（subscriptions/listen 的 notifications/tasks 数据源）──
+
+export type JobEventListener = (event: { jobId: string; status: ExecStatus; exitCode?: number; reason?: string }) => void
+const jobListeners = new Set<JobEventListener>()
+
+/** 订阅作业状态变化（返回取消订阅函数） */
+export function onJobEvent(cb: JobEventListener): () => void {
+  jobListeners.add(cb)
+  return () => jobListeners.delete(cb)
+}
+
+/** 广播一次作业状态（由状态机在变化时调用） */
+export function emitJobEvent(job: ExecJob): void {
+  if (jobListeners.size === 0) return
+  const payload = { jobId: job.id, status: job.state, exitCode: job.exitCode, reason: job.reason }
+  for (const cb of [...jobListeners]) {
+    try {
+      cb(payload)
+    } catch {
+      // 订阅者出错不能影响状态机
+    }
+  }
 }

@@ -16,6 +16,7 @@ import { getProfiles } from './profiles'
 import { getHabits, resolvePrivilege, habitsForAI } from './habits'
 import { isWaitingForPassword, resolvePasswordPrompts } from './recognize'
 import { log } from './log'
+import { firstInputValue, isSecretPrompt } from './mrt'
 import { isRecentlyClosedSession, rememberClosedSession } from './closedSessions'
 import { teePaths } from './execTee'
 import {
@@ -30,8 +31,10 @@ import {
   getJob,
   jobText,
   quietExpired,
+  resumeJob,
   sliceJob,
   waitJob,
+  viewOf,
   WAIT_BUDGET_MS
 } from './execJobs'
 import { ctx, terminals, lastBastionTerminal, getMcpEndpointInfo, nextSessionId } from './state'
@@ -930,3 +933,57 @@ export function isSudoPasswordPrompt(command: string, output: string): boolean {
   return isWaitingForPassword(tail, patterns) || /\[sudo\]/i.test(tail)
 }
 
+
+/**
+ * 续跑一个"等人工输入"的作业（MRTR 的第二步）。
+ *
+ * 安全红线：密码 / 动态码 / 口令这类提示**永远不代填** —— 客户端即使把值传上来也不写进终端，
+ * 而是让用户自己在终端里敲（会话是同一条）。y/n、菜单这类非凭据提示才允许代填。
+ */
+export async function resumeExecJob(input: {
+  jobId?: string
+  responses?: unknown
+}): Promise<{ text: string; structured: Record<string, unknown>; isError?: boolean }> {
+  const job = input.jobId ? getJob(input.jobId) : undefined
+  if (!job) {
+    return {
+      text: `找不到任务「${input.jobId ?? ''}」（作业只在本次扩展运行期间有效）。`,
+      structured: { status: 'failed', reason: 'not_found' },
+      isError: true
+    }
+  }
+  const hit = termOfSessionId(job.sessionId)
+  const cursor = hit?.term.screenCursor
+  const view = viewOf(job, Date.now(), cursor)
+  if (job.state !== 'input_required') {
+    return { text: `作业 ${job.id} 现在不在等输入（状态 ${job.state}），不用再提交。`, structured: { ...view } }
+  }
+  if (isSecretPrompt(`${job.prompt ?? ''} ${job.hint ?? ''}`)) {
+    return {
+      text:
+        `这个提示是**凭据类**（${job.prompt ?? ''}），不会代填。` +
+        `\n请让用户直接在终端里输入（同一条会话，不需重连），输入完成后命令会自己往下走；` +
+        `之后用 bastion_wait({jobId:"${job.id}"}) 接着等。`,
+      structured: { ...view, hint: '凭据类提示必须人工输入' }
+    }
+  }
+  const value = firstInputValue(input.responses)
+  if (!value) {
+    return { text: `inputResponses 里没有可用的值（形如 {"prompt":{"action":"accept","content":"y"}}）。`, structured: { ...view } }
+  }
+  if (!hit) {
+    failJob(job, 'session_lost', '会话已关闭，作业随之结束')
+    return { text: `作业 ${job.id} 所在的会话已经关闭了。`, structured: { status: 'failed', reason: 'session_lost' }, isError: true }
+  }
+  await hit.term.write(value.replace(/\r?\n/g, '') + '\r')
+  resumeJob(job)
+  const after = await waitJob(job, { waitMs: 5000 })
+  const text =
+    `已把输入提交给作业 ${job.id}` +
+    (after.status === 'completed'
+      ? `，命令已完成（退出码 ${after.exitCode ?? 0}）。`
+      : after.status === 'working'
+        ? `，命令继续在跑（已 ${Math.round(after.elapsedMs / 1000)}s）—— 用 bastion_wait 接着等。`
+        : `，当前状态：${after.status}${after.reason ? `（${after.reason}）` : ''}。`)
+  return { text, structured: { ...after, submitted: true } }
+}

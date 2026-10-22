@@ -34,6 +34,7 @@ function recordingApi() {
       calls.push({ tool: 'cancel', input: i as Record<string, unknown> })
       return { text: `取消 ${i.jobId}` }
     },
+    resumeTask: async (i) => ({ text: '续跑 ' + (i.jobId ?? '') }),
     connect: async (i) => {
       calls.push({ tool: 'connect', input: i as Record<string, unknown>, clientId: i.clientId })
       return `已连接 ${i.host}`

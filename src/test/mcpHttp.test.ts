@@ -24,6 +24,7 @@ function api(over: Partial<McpSessionApi> = {}): McpSessionApi {
     wait: async (i) => ({ text: `作业 ${i.jobId}：working` }),
     job: async (i) => ({ text: `作业 ${i.jobId} 的日志` }),
     cancel: async (i) => ({ text: `已取消 ${i.jobId}` }),
+    resumeTask: async (i) => ({ text: '续跑 ' + (i.jobId ?? '') }),
     connect: async (i) => `已连接 ${i.host}`,
     habits: async () => '习惯',
     health: async () => '端点自检：正常',

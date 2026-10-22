@@ -12,6 +12,7 @@ import {
   waitForExecJob,
   readExecJob,
   cancelExecJob,
+  resumeExecJob,
 
   listProfilesForAI,
   listSessions,
@@ -157,7 +158,7 @@ export async function habitsTool(input: {
  * （真实案例：listSessions 报错后它就转而让用户手工敲命令）。
  * 有了这个工具，AI 的自救路径是：**先重试一次 → 再调 bastion_health → 还不行就明确告诉用户「重启 MCP 服务器」**。
  */
-export function healthReport(clientId?: string): string {
+export function healthReport(clientId?: string, headers?: { version?: string; method?: string; name?: string }): string {
   const ep = getMcpEndpointInfo()
   const lines: string[] = ['BastionShell MCP 端点自检']
   if (!ep) {
@@ -173,6 +174,18 @@ export function healthReport(clientId?: string): string {
     `- 扩展版本：${ep.version ?? '未知'}`,
     `- 工具：${MCP_TOOL_DEFS.length} 个`
   )
+  // 头校验：规范要求 MCP-Protocol-Version / Mcp-Method / Mcp-Name，我们**还没强制**（怕把手配好的客户端全打死）。
+  // 但必须让 AI 知道「将来会强制」，这样它能提前提醒用户升级客户端。
+  {
+    const h = headers ?? {}
+    const mark = (v?: string): string => (v ? `✓ ${v}` : '✗ 没带')
+    lines.push(
+      `- 本次请求头：MCP-Protocol-Version ${mark(h.version)}｜Mcp-Method ${mark(h.method)}｜Mcp-Name ${mark(h.name)}`,
+      '- 头校验：**尚未强制**（0.3.10 测试期故意放宽）。规范 2026-07-28 要求每个 POST 都带这几个头，' +
+        '将来强制之后，缺头的客户端会被 **400 + -32020（HeaderMismatch）** 拒绝。' +
+        '如果你的客户端现在没带，建议尽早补上（`Mcp-Method` 必填；`tools/call` 还要 `Mcp-Name`）。'
+    )
+  }
   const sessions = sessionHealthLines()
   if (sessions.length === 0) {
     lines.push('- 会话：0 个（工具本身是通的 —— 现在是「没连服务器」，不是「调用出错」）')
@@ -251,5 +264,6 @@ export const sessionApi: McpSessionApi = {
   wait: async (input) => waitForExecJob(input),
   job: async (input) => readExecJob(input),
   cancel: async (input) => cancelExecJob(input),
-  health: async (input) => healthReport(input?.clientId)
+  resumeTask: async (input) => resumeExecJob(input),
+  health: async (input) => healthReport(input?.clientId, input?.headers)
 }

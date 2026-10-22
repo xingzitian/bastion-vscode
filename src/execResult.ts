@@ -8,4 +8,6 @@
 export interface ExecResponse {
   text: string
   structured?: Record<string, unknown>
+  /** true = 这次是「可读的错误」（例如拒绝代填凭据），而不是工具坏了 */
+  isError?: boolean
 }

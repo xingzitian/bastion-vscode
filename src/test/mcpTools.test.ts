@@ -22,6 +22,7 @@ function fakeApi(over: Partial<McpSessionApi> = {}): McpSessionApi {
     wait: async (i) => ({ text: '等作业 ' + (i.jobId ?? '') }),
     job: async (i) => ({ text: '作业日志 ' + (i.jobId ?? '') }),
     cancel: async (i) => ({ text: '已取消 ' + (i.jobId ?? '') }),
+    resumeTask: async (i) => ({ text: '续跑 ' + (i.jobId ?? '') }),
     connect: async (i) => `已连接到目标 ${i.host}`,
     habits: async () => '当前个人习惯（全局）：\n- 提权方式：ask',
     health: async () => '端点自检：正常',

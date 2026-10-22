@@ -48,7 +48,8 @@ import {
   type McpToolDef,
   type ToolCallContext
 } from './mcpTools'
-import { getJob, jobText, viewOf, type ExecJob } from './execJobs'
+import { getJob, jobText, onJobEvent, viewOf, type ExecJob } from './execJobs'
+import { decodeRequestState, encodeRequestState, inputRequestsFor } from './mrt'
 
 /** 我们实现的 MCP 协议版本；握手时按客户端请求回（不认识就回这个最新的 legacy 版本） */
 export const LATEST_PROTOCOL_VERSION = '2025-06-18'
@@ -256,11 +257,34 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
           )
         }
 
+        // ── MRTR 第二步：客户端带着 inputResponses + requestState 重试 ──
+        const inputResponses = (msg.params as { inputResponses?: unknown })?.inputResponses
+        const rawState = (msg.params as { requestState?: unknown })?.requestState
+        if (inputResponses && rawState !== undefined) {
+          const st = decodeRequestState(rawState)
+          const resumed = await opts.api.resumeTask({ jobId: st.jobId, responses: inputResponses })
+          const payload: Record<string, unknown> = { content: [{ type: 'text', text: resumed.text }] }
+          if (resumed.structured) payload.structuredContent = resumed.structured
+          return ok(id, toolResult(payload, resumed.isError === true))
+        }
+
         try {
           const r = await dispatch(name, args, ctx)
           const payload: Record<string, unknown> = { content: [{ type: 'text', text: r.text }] }
           // structuredContent：AI 不用再从文本里猜状态
           if (r.structured) payload.structuredContent = r.structured
+
+          // ── MRTR：等人工输入 → InputRequiredResult（带 requestState，客户端可带 inputResponses 重试）──
+          if (modern && r.structured?.status === 'input_required' && typeof r.structured?.jobId === 'string') {
+            return ok(id, {
+              resultType: 'input_required',
+              inputRequests: inputRequestsFor(
+                typeof r.structured.prompt === 'string' ? r.structured.prompt : undefined,
+                typeof r.structured.hint === 'string' ? r.structured.hint : undefined
+              ),
+              requestState: encodeRequestState({ jobId: r.structured.jobId })
+            })
+          }
 
           // ── Tasks 扩展：长任务改成"先给句柄，客户端轮询" ──
           // 只有**声明了** io.modelcontextprotocol/tasks 的客户端才允许收到任务（规范明确要求）。
@@ -451,6 +475,46 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
           return
         }
         try {
+          // ── subscriptions/listen：单请求上的长连接 SSE（2026-07-28 用它取代 GET 流）──
+          // 先 ack，再把作业状态变化以 notifications/tasks 推出去；客户端断开即结束。
+          const m = (parsed as JsonRpcRequest).method
+          if (m === 'subscriptions/listen') {
+            res.writeHead(200, {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-store',
+              'X-Accel-Buffering': 'no',
+              Connection: 'keep-alive'
+            })
+            const writeEvent = (event: string, data: unknown): void => {
+              res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+            }
+            writeEvent('message', {
+              jsonrpc: '2.0',
+              method: 'notifications/subscriptions/acknowledged',
+              params: { subscriptionId: `sub-${Date.now().toString(36)}`, filters: { tasks: true } }
+            })
+            const unsubscribe = onJobEvent((e) => {
+              writeEvent('message', {
+                jsonrpc: '2.0',
+                method: 'notifications/tasks',
+                params: { taskId: e.jobId, status: e.status, exitCode: e.exitCode, reason: e.reason }
+              })
+            })
+            const keepAlive = setInterval(() => {
+              // SSE 注释行：保持连接，客户端会忽略
+              res.write(': keep-alive\n\n')
+            }, 25_000)
+            ;(keepAlive as unknown as { unref?: () => void }).unref?.()
+            const close = (): void => {
+              clearInterval(keepAlive)
+              unsubscribe()
+            }
+            // ⚠️ 只监听 res 的 close：req 的 'close' 在请求体读完就会触发，会把订阅立刻取消
+            res.on('close', close)
+            log('MCP：已开 subscriptions/listen 长连接（推 notifications/tasks）')
+            return
+          }
+
           // 调用者标识：客户端可以在配置里加请求头 `X-BastionShell-Client`。
           // 它**不是鉴权**（能被伪造），只是让"某个 AI 绑定在哪条会话上"能隔离开；
           // 真隔离请给每个客户端发独立 token（P0b）。
@@ -459,7 +523,16 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
           const headerClient = typeof rawClient === 'string' ? rawClient : undefined
           const clientId = caller.clientId === 'default' ? headerClient ?? caller.clientId : caller.clientId
           const headerVersion = String(req.headers['mcp-protocol-version'] ?? '').trim() || undefined
-          const reply = await server.handle(parsed as JsonRpcRequest, { clientId, scope: caller.scope }, headerVersion)
+          const requestHeaders = {
+            version: headerVersion,
+            method: typeof req.headers['mcp-method'] === 'string' ? String(req.headers['mcp-method']) : undefined,
+            name: typeof req.headers['mcp-name'] === 'string' ? String(req.headers['mcp-name']) : undefined
+          }
+          const reply = await server.handle(
+            parsed as JsonRpcRequest,
+            { clientId, scope: caller.scope, headers: requestHeaders },
+            headerVersion
+          )
           if (reply === null) {
             // 通知：按规范用 202 且不带 body
             res.writeHead(202, { 'Cache-Control': 'no-store' })
