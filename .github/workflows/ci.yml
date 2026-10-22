@@ -1,7 +1,7 @@
 name: CI
 
 # 扩展这边的单元测试**不需要启动 VS Code**（vscode 模块在测试里打了桩），
-# 所以可以在 Linux runner 上秒级跑完 239 项，顺便把 vsix 也打出来。
+# 所以可以在 Linux runner 上秒级跑完 650+ 项，顺便把 vsix 也打出来。
 on:
   push:
     branches: [main]
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '为已有的 tag 补发 Release（留空则只跑测试；填了会构建并把这个 tag 的 Release 建出来）'
+        description: '为已有的 tag 补发/修复 Release（留空则只跑测试；填了会重建这个 tag 的 Release，正文与附件都会被更新）'
         required: false
         default: ''
 
@@ -36,8 +36,22 @@ jobs:
       - name: 编译 + 单元测试
         run: npm test
 
+      - name: 版本一致性（tag 必须等于 package.json 的 version）
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -e
+          pkg="$(node -p "require('./package.json').version")"
+          want="${TAG#v}"
+          echo "tag=$TAG  package.json=$pkg"
+          if [ "$pkg" != "$want" ]; then
+            echo "::error::tag 是 $TAG，但 package.json 是 $pkg —— 先改版本再打 tag（否则用户装了会看到错误的版本号）"
+            exit 1
+          fi
+
       - name: 打包 vsix（可直接上传商店）
-        run: npx --yes @vscode/vsce package --allow-missing-repository
+        run: npx --yes @vscode/vsce package --allow-missing-repository --out "bastion-vscode-$(node -p "require('./package.json').version").vsix"
 
       - name: 上传 vsix
         uses: actions/upload-artifact@v4
@@ -49,7 +63,12 @@ jobs:
   # 发布：把打好的 vsix 挂到 GitHub Release 上 —— 用户就能直接下载安装，不用自己打包。
   # 触发方式两种：
   #   1) 推 v* tag（正常流程）
-  #   2) 手动 Run workflow 并填 tag（补发历史版本）
+  #   2) 手动 Run workflow 并填 tag（补发历史版本，或**修正文**：已有 Release 会被 edit 覆盖）
+  #
+  # 发布说明的优先级（从高到低）：
+  #   RELEASE-<版本>.md 在仓库里 → 用它（人写过的，最完整）
+  #   附注 tag 的注释            → 用它
+  #   自动生成的提交记录          → 兜底
   release:
     if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
     needs: test
@@ -61,7 +80,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # 需要拿到附注 tag 的对象（发布说明取自 tag 注释）
+          # 需要拿到附注 tag 的对象（发布说明可能取自 tag 注释）
           fetch-depth: 0
 
       - name: 取上一步打好的 vsix
@@ -69,13 +88,15 @@ jobs:
         with:
           name: bastion-vscode-vsix
 
-      - name: 创建 Release 并附上 vsix
+      - name: 创建/更新 Release 并附上 vsix
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG_INPUT: ${{ inputs.tag }}
         run: |
           set -e
-          tag="${{ inputs.tag || github.ref_name }}"
-          echo "目标 tag：$tag"
+          tag="${TAG_INPUT:-${GITHUB_REF_NAME}}"
+          ver="${tag#v}"
+          echo "目标 tag：$tag（版本 $ver）"
           ls -lh ./*.vsix
 
           if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
@@ -83,13 +104,25 @@ jobs:
             exit 1
           fi
 
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "该 tag 已有 Release → 只覆盖上传产物"
-            gh release upload "$tag" ./*.vsix --clobber
+          # 发布说明：优先人写过的 RELEASE-<版本>.md
+          notes_args=()
+          if [ -f "RELEASE-${ver}.md" ]; then
+            echo "用 RELEASE-${ver}.md 作为发布说明"
+            notes_args=(--notes-file "RELEASE-${ver}.md")
           elif git cat-file -t "refs/tags/$tag" | grep -qx tag; then
-            echo "用附注 tag 的说明当发布说明"
-            gh release create "$tag" ./*.vsix --title "$tag" --notes-from-tag
+            echo "没有 RELEASE-${ver}.md → 用附注 tag 的说明"
+            notes_args=(--notes-from-tag)
           else
-            echo "轻量 tag，没有说明 → 用自动生成的提交记录"
-            gh release create "$tag" ./*.vsix --title "$tag" --generate-notes
+            echo "轻量 tag 且没有 RELEASE 文件 → 用自动生成的提交记录"
+            notes_args=(--generate-notes)
           fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "该 tag 已有 Release → 更新正文并覆盖附件"
+            gh release edit "$tag" "${notes_args[@]}" --title "$tag"
+            gh release upload "$tag" ./*.vsix --clobber
+          else
+            gh release create "$tag" ./*.vsix --title "$tag" "${notes_args[@]}"
+          fi
+
+          echo "完成：$(gh release view "$tag" --json url -q .url)"
