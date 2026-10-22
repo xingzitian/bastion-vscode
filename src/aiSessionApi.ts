@@ -177,8 +177,8 @@ export function healthReport(clientId?: string, headers?: { version?: string; me
   )
   // 头校验：规范要求 MCP-Protocol-Version / Mcp-Method / Mcp-Name，我们**还没强制**（怕把手配好的客户端全打死）。
   // 但必须让 AI 知道「将来会强制」，这样它能提前提醒用户升级客户端。
-  {
-    const h = headers ?? {}
+  if (headers) {
+    const h = headers
     const mark = (v?: string): string => (v ? `✓ ${v}` : '✗ 没带')
     lines.push(
       `- 本次请求头：MCP-Protocol-Version ${mark(h.version)}｜Mcp-Method ${mark(h.method)}｜Mcp-Name ${mark(h.name)}`,
