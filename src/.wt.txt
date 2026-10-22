@@ -1,8 +1,0 @@
-## 等输入、被要输入：不用猜
-
-命令卡在 `[y/n]`、菜单、密码提示上时，`bastion_exec` 会返回 `status:"input_required"` 并给出 `prompt`/`hint`。
-支持 2026-07-28 的客户端还会拿到 `resultType:"input_required"`（多轮往返）：人可以填的（`y/n`、菜单选择）
-可以由客户端代填后重试；**密码 / 动态码 / 口令一律不代填**，必须由人在终端里输入。
-
-另外：`bastion_health` 会显示本次请求带了哪些标准请求头（`MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name`），
-并提醒将来会强制 —— 如果你的客户端现在没带，尽早补上。
