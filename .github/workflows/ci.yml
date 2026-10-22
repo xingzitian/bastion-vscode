@@ -109,7 +109,7 @@ jobs:
           if [ -f "RELEASE-${ver}.md" ]; then
             echo "用 RELEASE-${ver}.md 作为发布说明"
             notes_args=(--notes-file "RELEASE-${ver}.md")
-          elif git cat-file -t "refs/tags/$tag" | grep -qx tag; then
+          elif [ "$(git for-each-ref "refs/tags/$tag" --format='%(objecttype)')" = "tag" ]; then
             echo "没有 RELEASE-${ver}.md → 用附注 tag 的说明"
             notes_args=(--notes-from-tag)
           else
