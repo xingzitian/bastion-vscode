@@ -1,3 +1,11 @@
+# 更新日志
+
+本扩展遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+
+> 想快速了解 **0.3.6 → 0.3.11** 这六版到底变了什么，直接看文末
+> [附录：0.3.6 → 0.3.11 全貌](#附录036--0311-全貌一页看懂)（一页表格：工具 8→13、协议 legacy→2026-07-28、执行协议状态机）。
+
+
 ## 0.3.11
 
 > 0.3.10 上线后，用三个 AI 会话做了 4 轮实机压测（A~C 共 40 多个用例，含协议层 curl 探测）。
@@ -89,6 +97,7 @@
 ### 文档
 
 - 新增 `docs/mcp-protocol.md`：两代差异对照表、我们的兼容策略、Tasks 映射、未做项（MRTR / subscriptions / 头强制校验）。
+  **注：MRTR 与 subscriptions/listen 已在 0.3.11 补上；Mcp-Method/Mcp-Name 仍未强制（只在 health 里提示）。**
 - 新增 `scripts/probe-protocol.js`：起真端点把 11 种 wire 行为打一遍（不需要 VS Code）。
 ## 0.3.9
 
@@ -116,7 +125,7 @@
 
 ### 说明
 
-- 桌面版仍是旧的「哨兵 + 静默」逻辑，下一步对齐。
+- 桌面版当时还是旧的「哨兵 + 静默」逻辑 —— **0.3.11 已对齐**（作业自持完成、session_lost/exited、dual-era 协议、outputSchema、本机作业日志）。
 - 多文件 / 目录推送这次**没做**（rsync 链路还没测通）。
 ## 0.3.8
 
@@ -132,10 +141,6 @@
 
 - 别名是**给人用的短名**，会话真正不可变的是 `s-xxxx` id —— 解绑后旧别名失效，
   但真 id 依然可达（解绑是"我不再用它了"，不是"把它关了"）。
-# 更新日志
-
-本扩展遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
-
 ## 0.3.7
 
 > 0.3.6 是「AI 访问」时代的起点（令牌 / 权限分档 / 会话绑定 / 管理入口）；
@@ -612,3 +617,63 @@
 - 部署任务：文件式任务，批量连接目标机 → 前置命令 → 上传 → 脚本。
 - 快捷命令、端口转发、批量连接。
 - AI 桥接：`bastion_exec` 让运行在 VS Code 里的 AI 插件能在服务器上执行命令。
+
+---
+
+## 附录：0.3.6 → 0.3.11 全貌（一页看懂）
+
+0.3.6 是「AI 访问」时代的起点（令牌 / 权限分档 / 会话绑定 / 管理入口）。之后六版做的事可以归成四类，
+下面把「现在是什么样」和「哪一版变成这样」对齐，避免翻六篇更新日志还拼不出来。
+
+### 一、MCP 工具从 8 个涨到 13 个
+
+| 工具 | 用途 | 哪一版加的 |
+|---|---|---|
+| `bastion_listSessions` | 会话清单（id / 名字 / 状态 / 绑定） | 早期 |
+| `bastion_listProfiles` | 可用连接档案 | 早期 |
+| `bastion_exec` | 执行命令（结构化状态；0.3.9 起带 `waitMs/quietMs/mode/background/logToFile/force`） | 早期（0.3.9 重做） |
+| `bastion_tail` | 看屏幕最后几行 | 早期 |
+| `bastion_connect` | 连新机器（0.3.8 起可 `as` 直接起别名） | 早期（0.3.8 增强） |
+| `bastion_habits` | 读/写"这台机器上的习惯" | 早期 |
+| `bastion_push` / `bastion_pull` | 传文件（rz/sz） | 早期 |
+| `bastion_health` | 端点自检（0.3.11 升级成诊断面板：代际 / 客户端能力 / 在跑作业 / 绑定清扫 / 请求头 / 提示规则） | 早期（0.3.11 重做） |
+| `bastion_use` | 把"我正在操作哪条会话"记在服务端 | **0.3.6** |
+| `bastion_wait` | 等作业结束或等某个正则（一整个 `sleep` 的替代品） | **0.3.9** |
+| `bastion_job` | 按字节偏移增量读完整日志 | **0.3.9** |
+| `bastion_cancel` | 发 Ctrl-C 收场（误起的 sleep / tail -f） | **0.3.9** |
+
+### 二、执行协议（exec）两级跳
+
+| 版本 | 变化 |
+|---|---|
+0.3.6 | 加 `idempotencyKey`（失败重试不会把 `rm`/`restart` 跑两遍）+ `expectCursor` 乐观并发 |
+0.3.9 | 从「一个布尔值」改成**结构化状态机**：`working` / `input_required` / `completed` / `failed` / `cancelled`，带 `exitCode`/`elapsedMs`/`jobId`/`markerSeen`；`quietMs` 从 3s 改 15s（长构建不再被误判）；超时不算失败，转作业 |
+0.3.11 | **完成判定归作业自己**（哨兵 + 静默，exec 超时返回后仍生效）；静默不能单独判完成；`elapsedMs` 按完成时刻；`session_exited` / `session_lost` 分开；哨兵识别容错 ANSI 前缀；`interactive` 也给 `jobId` |
+
+### 三、MCP 协议：legacy → 2026-07-28（modern）
+
+| 版本 | 变化 |
+|---|---|
+0.3.9 | 结果带 `structuredContent`，客户端不用再从文本猜状态 |
+0.3.10 | **一步到 2026-07-28**：`server/discover`、每请求 `_meta`、`resultType`、`ttlMs`+`cacheScope`、**Tasks 扩展**（`tasks/get|cancel|update`）、`MCP-Protocol-Version` 头；错误改成 400/404（legacy 仍 200） |
+0.3.11 | **MRTR**（`input_required` + `requestState` 往返）、**`subscriptions/listen`**（SSE 推作业状态）、`outputSchema`（exec 族四工具）、**能力驱动降级**（没声明 elicitation 就不给往返，避免客户端抛 `no handler` 把作业卡死） |
+
+### 四、会话身份与 AI 访问（"命令别打到别的机器上"）
+
+| 版本 | 变化 |
+|---|---|
+0.3.6 | 会话不可变 id `s-xxxx`；`bastion_use` 服务端绑定；解析顺序 *id > 全名 > 别名 > 唯一片段*，歧义拒绝；写操作 fail-closed；多客户端令牌 + 权限分档（observer/operator/full）；管理入口搬到左侧「AI 访问」树 + 右侧总览；私钥口令可记住；密码失效有出路 |
+0.3.7 | 修「签发令牌后消失」（写回覆盖 `clients`）、修「只带请求头的客户端看不见」 |
+0.3.8 | 连接时直接起别名（`as`）、绑定上限 8 → 32（`A`…`AF`） |
+0.3.11 | 绑定加载即清扫（死会话不再占别名）；「会话已关闭」与「指认不到」文案分开 |
+
+### 五、0.3.11 独有的新增
+
+- **命令「BastionShell: 自检执行协议」**：四条内置命令 + 断言表，30 秒自证协议层没坏
+- **设置 `bastion.inputPromptRules`**：自定义交互提示规则（陌生提示不用等发版）
+
+### 六、规模（0.3.11）
+
+- MCP 工具 **13** 个、命令 **64** 条、设置项 **21** 个
+- 单元测试 **678** 条（0.3.6 时约 400 条）
+- 契约文档：`docs/exec-protocol.md`、`docs/mcp-protocol.md`、`docs/session-identity.md`
