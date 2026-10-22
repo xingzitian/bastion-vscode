@@ -118,7 +118,8 @@ test('★ subscriptions/listen：先 ack，再把作业状态变化推成 notifi
     req2.destroy()
 
     const all = received.join('')
-    assert.match(all, /notifications\/tasks/)
+    // 没声明 tasks 的客户端收到我们自己的通知名：不能"discover 说支持、call 不给 task、SSE 却按 task 推"
+    assert.match(all, /notifications\/bastionshell\/job/)
     assert.match(all, /"taskId":"j-/)
     assert.match(all, /"status":"completed"/)
   } finally {

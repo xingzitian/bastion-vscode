@@ -14,7 +14,7 @@ import { trackTransfer, beginUpload } from './transfer';
 import { fmtBytes as formatBytes } from './status';
 import { pushPath, type TransferSession } from './transferPath';
 // 单向依赖：menu.ts 不 import terminal.ts，所以这里可以放心用它的提示符识别
-import { resolveMenuHints, detectPrompt } from './menu';
+import { classifySessionScreen, resolveMenuHints, detectPrompt } from './menu';
 import { describeConnectError, isAuthFailure, MAX_AUTH_ATTEMPTS, shouldOfferRetry } from './authError';
 import { hasSavedPassphrase, hasSavedPassword, offerPassphraseReset, offerPasswordReset } from './profiles';
 import {
@@ -884,7 +884,15 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     removeBroadcastTarget(this);
     // 会话关闭 = 它上面还在跑的作业一律终结（不然会永远 working，把会话"锁死"）
     if (this.activeJob) {
-      failJob(this.activeJob, 'session_lost', '会话已关闭，作业随之结束');
+      // 屏幕停在堡垒机菜单 = `exit` 之类把 shell 退了（session_exited）；
+      // 否则是用户关掉了终端/连接断了（session_lost）。两者下一步不一样，必须分开。
+      // 直接用 menu 模块的分类器（terminal 不能 import aiBridge，会成环）
+      const exited = classifySessionScreen(this.getTail(12)) === 'menu';
+      failJob(
+        this.activeJob,
+        exited ? 'session_exited' : 'session_lost',
+        exited ? '命令让 shell 退出了（屏幕已回到堡垒机菜单）' : '会话已关闭，作业随之结束'
+      );
       this.activeJob = undefined;
     }
     // 记下"刚关闭的会话"，这样 AI 再指认它时能说清是"已关闭"而不是"参数写错"
@@ -1133,17 +1141,23 @@ function hasMarkerLine(s: string, marker: string): boolean {
  * 行格式：`<marker>:<rc>`（老版本是裸 `<marker>`，这里也兼容 —— 兼容是为了
  * 「远端 shell 里已经有一行旧标记」这种边角情况不会把解析搞崩）。
  */
-function readMarkerLine(s: string, marker: string): { seen: boolean; rc?: number } {
+/**
+ * 在输出里找哨兵。
+ *
+ * **不要求行首**：真机上哨兵那行前面常残留 ANSI 转义或提示符刷新（`\x1b[K__BASTION…`），
+ * 用"整行 equals/startsWith"会漏判 —— 表现就是"命令明明跑完了却报退出码未知"。
+ * 回显里的 `echo <marker>:$ec` 是**字面量**（`$ec` 没有展开成数字），
+ * 所以 `marker:(数字)` 这种匹配不会把命令回显误当成完成。
+ */
+export function readMarkerLine(s: string, marker: string): { seen: boolean; rc?: number } {
   if (!marker) return { seen: false };
-  for (const line of s.split(/\r?\n/)) {
-    const t = line.trim();
-    if (t === marker) return { seen: true };
-    if (t.startsWith(marker + ':')) {
-      const rc = Number.parseInt(t.slice(marker.length + 1), 10);
-      return { seen: true, rc: Number.isFinite(rc) ? rc : undefined };
-    }
-  }
-  return { seen: false };
+  const idx = s.lastIndexOf(marker + ':');
+  if (idx < 0) return { seen: false };
+  const rest = s.slice(idx + marker.length + 1);
+  const m = /^(\d+)/.exec(rest);
+  // 必须带数字才算：回显里的 cho MARKER: 是字面量，没有数字 → 不能当完成
+  if (!m) return { seen: false };
+  return { seen: true, rc: Number.parseInt(m[1], 10) };
 }
 
 /** shell 单引号引用（远端路径里可能有空格/引号） */

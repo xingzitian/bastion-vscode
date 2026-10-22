@@ -58,6 +58,8 @@ const add = (...cells) => rows.push(cells.join(' | '))
     add('modern server/discover', c.status, `resultType=${c.json.result?.resultType}`, `versions=${(c.json.result?.supportedVersions || []).join(',')}`, `tasks=${!!c.json.result?.capabilities?.extensions?.['io.modelcontextprotocol/tasks']}`, `ttlMs=${c.json.result?.ttlMs}`, `cacheScope=${c.json.result?.cacheScope}`)
 
     const d = await post(p, { jsonrpc: '2.0', id: 4, method: 'tools/list', params: modernMeta() }, { 'MCP-Protocol-Version': '2026-07-28' })
+    const execDef = (d.json.result?.tools || []).find((x) => x.name === 'bastion_exec')
+    add('exec outputSchema', execDef?.outputSchema ? '有 (' + Object.keys(execDef.outputSchema.properties || {}).length + ' 个字段)' : '没有')
     add('modern tools/list', d.status, `resultType=${d.json.result?.resultType}`, `tools=${d.json.result?.tools?.length}`, `ttlMs=${d.json.result?.ttlMs}`)
 
     const e = await post(p, { jsonrpc: '2.0', id: 5, method: 'tools/list', params: modernMeta({}, '1900-01-01') }, { 'MCP-Protocol-Version': '1900-01-01' })

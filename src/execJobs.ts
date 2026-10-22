@@ -51,6 +51,8 @@ export interface ExecJob {
   scanTail: string
   /** 等待者（waitJob 注册；状态或输出变化时唤醒） */
   waiters: Set<() => void>
+  /** 进入终态的时刻（elapsedMs 用它，避免再查一次就变成 41s） */
+  completedAt?: number
 }
 
 export interface JobView {
@@ -212,6 +214,7 @@ export function completeJob(job: ExecJob, input: { exitCode?: number; markerSeen
   job.markerSeen = input.markerSeen === true
   const ok = input.exitCode === undefined ? true : input.exitCode === 0
   job.state = ok ? 'completed' : 'failed'
+  job.completedAt = Date.now()
   if (!ok) job.reason = 'exit_nonzero'
   clearActive(job)
   emitJobEvent(job)
@@ -241,6 +244,7 @@ export function resumeJob(job: ExecJob): void {
 export function cancelJob(job: ExecJob): void {
   if (job.state === 'completed' || job.state === 'failed' || job.state === 'cancelled') return
   job.state = 'cancelled'
+  job.completedAt = Date.now()
   job.reason = 'cancelled'
   clearActive(job)
   emitJobEvent(job)
@@ -251,6 +255,7 @@ export function cancelJob(job: ExecJob): void {
 export function failJob(job: ExecJob, reason: 'session_lost' | 'session_exited' | 'force_superseded' | 'exec_error', note?: string): void {
   if (job.state === 'completed' || job.state === 'failed' || job.state === 'cancelled') return
   job.state = 'failed'
+  job.completedAt = Date.now()
   job.reason = reason
   if (note) job.lastLine = note
   clearActive(job)
@@ -293,7 +298,7 @@ export function viewOf(job: ExecJob, now = Date.now(), cursorNow?: number): JobV
     jobId: job.id,
     status: job.state,
     exitCode: job.exitCode,
-    elapsedMs: now - job.startedAt,
+    elapsedMs: (job.completedAt ?? now) - job.startedAt,
     cursor,
     // 还在跑但屏幕游标没动 = 真没动静（可能是命令卡住/等输入），这是很便宜的活性判据
     cursorMoved: cursorNow === undefined ? false : cursorNow > job.cursorAtStart,
@@ -311,7 +316,8 @@ const PROMPTS: Array<{ re: RegExp; hint: string }> = [
   { re: /\[sudo\]\s*password\s*for\s+\S+\s*:/i, hint: 'sudo 在等密码 —— 让用户在终端里输入，或改用免密 sudo' },
   { re: /(^|\n)\s*(password|passwd|密码)\s*(for\s+\S+)?\s*[:：]\s*$/im, hint: '在等密码 —— 让用户在终端里输入（不要把密码交给 AI）' },
   { re: /(verification code|动态码|验证码|otp)\s*[:：]/i, hint: '在等动态码 —— 让用户在终端里输入' },
-  { re: /(\(yes\/no\)|\[y\/n\]|\[Y\/n\]|\(y\/n\))\s*[?]?\s*$/im, hint: '在等确认（y/n）—— 让用户决定' },
+  // 允许尾部有冒号/问号/空格（真机上常见 `Continue? (y/n): `，之前因为要求行尾而漏判）
+  { re: /(\(yes\/no\)|\[y\/n\]|\(y\/n\))\s*[:：?]*\s*$/im, hint: '在等确认（y/n）—— 让用户决定' },
   { re: /(enter passphrase|passphrase for key)/i, hint: '在等口令（passphrase）—— 让用户输入' },
   { re: /(请选择|请选择目标机|请选择账号|输入编号|资产\s*ID|菜单)/, hint: '停在堡垒机菜单/选择项上 —— 让用户在终端里走完这一步' },
   { re: /(press any key|任意键继续)/i, hint: '在等按键 —— 让用户在终端里按一下' }

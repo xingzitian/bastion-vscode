@@ -99,6 +99,8 @@ export function toMcpTool(def: McpToolDef): object {
     title: def.title,
     description: def.description,
     inputSchema: def.inputSchema,
+    // 声明了就给出去：客户端据此校验 structuredContent（压测 B10 就是这条没生效）
+    ...(def.outputSchema ? { outputSchema: def.outputSchema } : {}),
     annotations: { title: def.title, readOnlyHint: def.readOnly }
   }
 }
@@ -493,11 +495,15 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
               method: 'notifications/subscriptions/acknowledged',
               params: { subscriptionId: `sub-${Date.now().toString(36)}`, filters: { tasks: true } }
             })
+            // 通知名跟着客户端能力走：声明了 Tasks 扩展才叫 notifications/tasks，
+            // 否则用我们自己的名字 —— 别出现"discover 说支持、call 又不给 task、SSE 却按 task 推"的自相矛盾
+            const listenTasks = clientSupportsTasks(readMeta((parsed as JsonRpcRequest).params))
+            const method = listenTasks ? 'notifications/tasks' : 'notifications/bastionshell/job'
             const unsubscribe = onJobEvent((e) => {
               writeEvent('message', {
                 jsonrpc: '2.0',
-                method: 'notifications/tasks',
-                params: { taskId: e.jobId, status: e.status, exitCode: e.exitCode, reason: e.reason }
+                method,
+                params: { taskId: e.jobId, jobId: e.jobId, status: e.status, exitCode: e.exitCode, reason: e.reason }
               })
             })
             const keepAlive = setInterval(() => {

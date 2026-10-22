@@ -498,7 +498,8 @@ export function createToolDispatch(
       case 'bastion_listSessions':
         return { text: await api.listSessions({ clientId }) }
       case 'bastion_health':
-        return { text: await api.health({ clientId }) }
+        // 把请求头一起传给自检：AI 要能看到自己发没发标准头（压测 A11 的遗留）
+        return { text: await api.health({ clientId, headers: ctx?.headers }) }
       case 'bastion_listProfiles':
         return { text: await api.listProfiles() }
       case 'bastion_wait': {

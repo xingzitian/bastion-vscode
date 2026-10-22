@@ -286,7 +286,8 @@ function statusLine(
   if (status === 'failed' || (r.exitCode !== undefined && r.exitCode !== 0)) {
     return `\n\n[退出码 ${r.exitCode ?? '未知'}：命令以非 0 退出，通常表示失败 —— 结合输出判断原因]`
   }
-  if (!r.markerSeen) {
+  // 有退出码就信退出码：markerSeen=false 只说明"不是靠哨兵判的"，不代表没有退出码（压测里 true 就出现过结构化 0、文字写未知）
+  if (r.exitCode === undefined && !r.markerSeen) {
     return `\n\n[退出码未知：没拿到结束标记（输出静止 ${Math.max(1, Math.round(r.elapsedMs / 1000))}s 就返回了）。` +
       `上面的输出可能不完整 —— 用 bastion_tail 看屏幕现状，或 bastion_job 读完整日志]`
   }
@@ -410,12 +411,26 @@ export async function execRemote(
 
   // interactive：只发不等（top / vi / sudo -i / 菜单这类）
   if (input.mode === 'interactive') {
+    // 也要建作业：否则返回里没有 jobId，AI 既不能 cancel 也没法跟进（压测 A8 的遗留问题）
+    const ijob = createJob({
+      sessionId: term.sessionId,
+      sessionNo: term.sessionNo,
+      command,
+      cursorAtStart: term.screenCursor,
+      quietMs: 60_000
+    })
+    ensureJobWatcher()
     await term.write(command.replace(/\r\n/g, '\n') + '\r')
+    term.activeJob = ijob
     const msg =
       `已发出（interactive 模式：只发不等）：${command}\n` +
-      `这类命令会占着终端，拿不到可靠输出。用 bastion_tail 看屏幕现状；人工接手也走同一条会话。`
+      `这类命令会占着终端，拿不到可靠输出。用 bastion_tail 看屏幕现状；` +
+      `要停掉用 bastion_cancel({jobId:"${ijob.id}"})；人工接手也走同一条会话。`
     writeOutputFile(msg)
-    return { text: msg, structured: { status: 'working', mode: 'interactive', cursor: term.screenCursor } }
+    return {
+      text: msg,
+      structured: { status: 'working', mode: 'interactive', cursor: term.screenCursor, jobId: ijob.id }
+    }
   }
 
   // 阻塞预算：默认 15s；background 或超过客户端预算 → 立刻转作业

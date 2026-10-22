@@ -156,3 +156,36 @@
 - `tasks/*`：升级到 `2026-07-28` 的 modern 协议后，把作业暴露成标准 task（`tasks/get`/`tasks/cancel`，
   可选 `notifications/tasks` = 真回调）。
 - 桌面版对齐：桌面版的 `exec` 仍是旧的"哨兵 + 静默"逻辑。
+
+## 7. 支持的交互提示模式（`input_required` 的判定依据）
+
+识别是**正则匹配输出尾部 2KB**。当前认这些（大小写不敏感）：
+
+| 模式 | 例子 |
+|---|---|
+sudo 密码 | `[sudo] password for deploy:` |
+密码 | `Password:` / `密码：` |
+动态码 | `Verification code:` / `动态码：` / `验证码：` / `OTP:` |
+确认 | `(y/n)` / `(yes/no)` / `[y/n]` —— **尾部允许跟冒号/问号**（`Continue? (y/n): ` 也认） |
+口令 | `Enter passphrase for key` |
+菜单/选择 | `请选择目标机` / `输入编号` / `资产 ID` / `菜单` |
+按键 | `Press any key` / `任意键继续` |
+
+> 没被识别的自定义提示（例如 `[1-3] 请选择>` 之外的写法）会表现为"输出静止但不判完成" ——
+> 这时用 `bastion_tail` 看屏幕，或按 `docs/exec-protocol.md` 报给我们加规则。
+
+**凭据类**（密码/动态码/口令/验证码）在 MRTR 里**永远不代填**：客户端即使把值传上来也不会写进终端。
+
+## 8. 客户端代际与功能可用性
+
+| 能力 | legacy（initialize，≤2025-11-25） | modern（2026-07-28，每请求 `_meta`） |
+|---|---|---|
+`bastion_wait` / `bastion_job` / `bastion_cancel` | ✅ | ✅ |
+`resultType` / `ttlMs` / `cacheScope` | ✗（不返回） | ✅ |
+**Tasks**（`resultType:"task"`） | ❌ **拿不到**（扩展能力要按请求 `_meta` 声明） | ✅ |
+**MRTR**（`input_required` 往返） | ❌ 拿不到 `requestState` | ✅ |
+`subscriptions/listen` 推送 | ✅（收 `notifications/bastionshell/job`） | ✅（收 `notifications/tasks`） |
+
+> 这就是压测里 "B8 声明了 tasks 却拿不到 task" 的原因：**legacy 客户端没法在 initialize 里声明扩展**，
+> 服务端只认每个请求 `_meta` 里的 `clientCapabilities.extensions`。要让 AI 用上 Tasks/MRTR，
+> 它的 MCP 客户端必须走 modern（每请求带 `_meta`）。
