@@ -37,6 +37,7 @@ import { describeDanger, findDangerous } from './danger'
 import { getDangerRules } from './dangerConfig'
 import { appendHabit, habitsForAI, isPrivilegeMode, setPrivilege } from './habits'
 import { log } from './log'
+import { lastSweepCountOf } from './sessionBindings'
 import { cachedNote, createExecMemo } from './execIdempotency'
 import type { ExecResponse } from './aiBridge'
 import { getMcpEndpointInfo } from './state'
@@ -187,6 +188,11 @@ export function healthReport(clientId?: string, headers?: { version?: string; me
     )
   }
   const sessions = sessionHealthLines()
+  // 绑定清扫掉的条数：让 AI 分清「我没绑定」和「绑定指向的会话真的没了」
+  {
+    const swept = lastSweepCountOf()
+    if (swept > 0) lines.push(`- 绑定清扫：刚清掉 ${swept} 条指向已关闭会话的绑定`)
+  }
   if (sessions.length === 0) {
     lines.push('- 会话：0 个（工具本身是通的 —— 现在是「没连服务器」，不是「调用出错」）')
   } else {

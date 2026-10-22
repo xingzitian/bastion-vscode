@@ -51,7 +51,7 @@ Cursor 或者任何支持 HTTP MCP 的客户端，都能直接操作你**已经�
 > 详细说明与排查见下文「MCP」一节。
 >
 > **协议版本**：已支持 **2026-07-28**（modern：`server/discover`、每请求 `_meta`、`resultType`、缓存字段、
-> Tasks 扩展），同时保留 legacy（`initialize`）—— 老客户端不受影响。详见 [`docs/mcp-protocol.md`](docs/mcp-protocol.md)。
+> Tasks 扩展、**多轮往返（MRTR）**、`subscriptions/listen` 长连接推送），同时保留 legacy（`initialize`）—— 老客户端不受影响。详见 [`docs/mcp-protocol.md`](docs/mcp-protocol.md)。
 
 ## 🖥 一个 AI 同时管多条会话（会话绑定）
 

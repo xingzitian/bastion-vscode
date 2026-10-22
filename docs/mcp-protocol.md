@@ -73,7 +73,11 @@ header only (no _meta)   | 200 | resultType=complete
 no token                 | 401 (want 401)
 ```
 
-## 5. 还没做的（按影响排序）
+## 5. 已做 / 还没做
+
+**已做**：MRTR（resultType input_required + inputResponses 重试，凭据类拒绝代填）、subscriptions/listen + notifications/tasks、outputSchema（exec 族）、头校验提示、桌面版 dual-era + Tasks。
+
+## 6. 还没做的（按影响排序）
 
 1. **MRTR**（`resultType: "input_required"` + `inputResponses` 重试）：需要把 sudo/OTP 的提示
    变成协议级往返。现在只通过任务状态 + `inputRequests` 暴露，客户端不一定展示。

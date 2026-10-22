@@ -109,10 +109,23 @@ export function loadBindings(): BindingsFile {
  * 新会话只能拿到 B/C；而且 health 与 listSessions 两处显示不一致。
  * 现在所有读绑定的地方都走这个入口，别名分配就不会被僵尸占住。
  */
+let lastSweptCount = 0
+
 export function loadBindingsSwept(): BindingsFile {
   const f = loadBindings()
-  if (sweepDeadBindings(f, liveSessionIds())) saveBindings(f)
+  const count = (x: BindingsFile): number =>
+    Object.values(x.clients ?? {}).reduce((n, c) => n + Object.keys(c.sessions ?? {}).length, 0)
+  const before = count(f)
+  if (sweepDeadBindings(f, liveSessionIds())) {
+    lastSweptCount = Math.max(0, before - count(f))
+    saveBindings(f)
+  }
   return f
+}
+
+/** 上一次清扫掉了几条失效绑定（health 里用来区分"没绑定"和"刚被清掉"） */
+export function lastSweepCountOf(): number {
+  return lastSweptCount
 }
 
 /** 当前还活着的会话 id（由宿主注入，避免这个模块 import vscode/state） */
