@@ -313,3 +313,30 @@ test('★ 元测试：dispatch 读的每个参数都必须在 schema 里声明�
     assert.deepEqual(missing, [], `${def.name} 读了未声明的参数：${missing.join(', ')}（schema: ${props.join(', ')}）`)
   }
 })
+test('★ ctx.meta / ctx.headers 必须到达 health（同类接线 bug 已经犯过三次）', async () => {
+  const seen: Array<Record<string, unknown>> = []
+  const api = fakeApi({
+    health: async (input) => {
+      seen.push(input as Record<string, unknown>)
+      return 'ok'
+    }
+  })
+  const dispatch = createToolDispatch(api)
+  await dispatch(
+    'bastion_health',
+    {},
+    {
+      clientId: 'c1',
+      headers: { version: '2026-07-28', method: 'tools/call', name: 'bastion_health' },
+      meta: { version: '2026-07-28', modern: true, declaresTasks: true, declaresElicitation: false }
+    }
+  )
+  assert.equal(seen.length, 1)
+  assert.deepEqual(seen[0].headers, { version: '2026-07-28', method: 'tools/call', name: 'bastion_health' })
+  assert.deepEqual(seen[0].meta, {
+    version: '2026-07-28',
+    modern: true,
+    declaresTasks: true,
+    declaresElicitation: false
+  })
+})

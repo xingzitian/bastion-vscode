@@ -25,6 +25,7 @@ import {
   MODERN_VERSION,
   SUPPORTED_PROTOCOL_VERSIONS as ALL_SUPPORTED_VERSIONS,
   TASKS_EXTENSION,
+  clientSupportsElicitation,
   clientSupportsTasks,
   createTaskResult,
   discoverResult,
@@ -277,7 +278,14 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
           if (r.structured) payload.structuredContent = r.structured
 
           // ── MRTR：等人工输入 → InputRequiredResult（带 requestState，客户端可带 inputResponses 重试）──
-          if (modern && r.structured?.status === 'input_required' && typeof r.structured?.jobId === 'string') {
+          // 只有**声明了 elicitation** 的客户端才给：没声明却给，它会抛 "no handler for elicitation/create"，
+          // 作业就卡在 input_required 占着会话（压测实测）。没声明时退化成普通结果 + 明确下一步。
+          if (
+            modern &&
+            clientSupportsElicitation(meta) &&
+            r.structured?.status === 'input_required' &&
+            typeof r.structured?.jobId === 'string'
+          ) {
             return ok(id, {
               resultType: 'input_required',
               inputRequests: inputRequestsFor(
@@ -286,6 +294,15 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
               ),
               requestState: encodeRequestState({ jobId: r.structured.jobId })
             })
+          }
+          // 没声明 elicitation 的客户端：状态照样是 input_required，但给出"下一步做什么"
+          if (modern && !clientSupportsElicitation(meta) && r.structured?.status === 'input_required') {
+            payload.structuredContent = {
+              ...(r.structured ?? {}),
+              hint:
+                '客户端没声明 elicitation 能力，所以不给输入往返（给了它会抛 no handler）。' +
+                '让用户在终端里直接输入，再用 bastion_wait 接着等。'
+            }
           }
 
           // ── Tasks 扩展：长任务改成"先给句柄，客户端轮询" ──
@@ -544,7 +561,8 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
               meta: {
                 version: reqMeta.version || headerVersion,
                 modern: !!reqMeta.version || !!headerVersion,
-                declaresTasks: clientSupportsTasks(reqMeta)
+                declaresTasks: clientSupportsTasks(reqMeta),
+                declaresElicitation: clientSupportsElicitation(reqMeta)
               }
             },
             headerVersion

@@ -64,7 +64,7 @@ export interface ToolCallContext {
   /** 本次请求实际带的标准请求头（用于在 health 里给出「将来会强制」的提示） */
   headers?: { version?: string; method?: string; name?: string }
   /** 本次请求的 _meta 代际信息：AI 要能自证「我是 modern / 我声明了 tasks 没有」 */
-  meta?: { version?: string; modern: boolean; declaresTasks: boolean }
+  meta?: { version?: string; modern: boolean; declaresTasks: boolean; declaresElicitation?: boolean }
 }
 
 export interface McpSessionApi {
@@ -138,7 +138,7 @@ export interface McpSessionApi {
   health(input?: {
     clientId?: string
     headers?: { version?: string; method?: string; name?: string }
-    meta?: { version?: string; modern: boolean; declaresTasks: boolean }
+    meta?: { version?: string; modern: boolean; declaresTasks: boolean; declaresElicitation?: boolean }
   }): Promise<string>
 }
 

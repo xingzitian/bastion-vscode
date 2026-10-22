@@ -163,7 +163,7 @@ export async function habitsTool(input: {
 export function healthReport(
   clientId?: string,
   headers?: { version?: string; method?: string; name?: string },
-  meta?: { version?: string; modern: boolean; declaresTasks: boolean }
+  meta?: { version?: string; modern: boolean; declaresTasks: boolean; declaresElicitation?: boolean }
 ): string {
   const ep = getMcpEndpointInfo()
   const lines: string[] = ['BastionShell MCP 端点自检']
@@ -198,7 +198,14 @@ export function healthReport(
     lines.push(`- 协议代际：${era}`)
     if (meta && meta.modern) {
       lines.push(
-        `- 客户端扩展：tasks ${meta.declaresTasks ? '✓ 已声明（可拿 resultType:"task"）' : '✗ 没声明（**拿不到** resultType:"task"；MRTR 仍需 modern）'}`
+        `- 客户端扩展：tasks ${meta.declaresTasks ? '✓ 已声明（可拿 resultType:"task"）' : '✗ 没声明（**拿不到** resultType:"task"）'}`
+      )
+      lines.push(
+        `- 客户端能力：elicitation ${
+          meta.declaresElicitation
+            ? '✓ 已声明（input_required 可走往返）'
+            : '✗ 没声明（**不给** InputRequiredResult，否则你会抛 no handler；改用 bastion_wait 跟进）'
+        }`
       )
     }
   }
@@ -300,5 +307,5 @@ export const sessionApi: McpSessionApi = {
   job: async (input) => readExecJob(input),
   cancel: async (input) => cancelExecJob(input),
   resumeTask: async (input) => resumeExecJob(input),
-  health: async (input) => healthReport(input?.clientId, input?.headers)
+  health: async (input) => healthReport(input?.clientId, input?.headers, input?.meta)
 }

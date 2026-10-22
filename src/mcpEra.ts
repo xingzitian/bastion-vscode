@@ -215,3 +215,14 @@ export function headerMismatchError(headerVersion: string, metaVersion: string):
     message: `Header mismatch: MCP-Protocol-Version '${headerVersion}' 与请求体 _meta 里的 '${metaVersion}' 不一致`
   }
 }
+/**
+ * 客户端有没有声明 elicitation 能力。
+ *
+ * 这决定了能不能给 `resultType:"input_required"`：没声明却给了，客户端会直接抛
+ * "no handler is registered for 'elicitation/create'" —— 作业留在 input_required、占着会话（压测实测）。
+ * 没声明时退化成普通结果（status 仍是 input_required，但用 bastion_wait 跟进），不抛错、不留坑。
+ */
+export function clientSupportsElicitation(meta: RequestMeta): boolean {
+  const caps = meta.clientCapabilities as { elicitation?: unknown } | undefined
+  return caps?.elicitation !== undefined
+}
