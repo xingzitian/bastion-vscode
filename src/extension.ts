@@ -67,7 +67,7 @@ import {
   sendLastReportToAI,
   restoreLastReport
 } from './deployRun'
-import { execRemote } from './aiBridge'
+import { execRemote, runProtocolSelfTest } from './aiBridge'
 // 会话能力的唯一实现：语言模型工具和 MCP 工具都走它（这样两条路的行为不会分叉）
 import { sessionApi } from './aiSessionApi'
 import { registerMcp, showMcpInfo, stopMcp } from './mcpRegister'
@@ -210,6 +210,22 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('bastion.openDeployTask', openDeployTask),
     vscode.commands.registerCommand('bastion.exportDeployTasks', () => void exportDeployTasks(ctx)),
     vscode.commands.registerCommand('bastion.exec', execRemote),
+    vscode.commands.registerCommand('bastion.selfTest', async () => {
+      const out = vscode.window.createOutputChannel('BastionShell 自检')
+      out.show(true)
+      out.appendLine('正在跑协议自检（4 条内置命令，约 20 秒）…')
+      try {
+        const r = await runProtocolSelfTest()
+        out.appendLine('')
+        out.appendLine(r.text)
+        if (r.ok) void vscode.window.showInformationMessage('BastionShell 协议自检通过（4/4）')
+        else void vscode.window.showWarningMessage('BastionShell 协议自检有失败项，详见「BastionShell 自检」输出通道')
+        return r.ok
+      } catch (e) {
+        out.appendLine('自检异常：' + (e instanceof Error ? e.message : String(e)))
+        throw e
+      }
+    }),
     vscode.commands.registerCommand('bastion.reconnect', () => void reconnect()),
     vscode.commands.registerCommand('bastion.openProfilesFile', () => openConfigFile(PROFILES_FILE, PROFILES_HEADER)),
     vscode.commands.registerCommand('bastion.openForwardsFile', () => openConfigFile(FORWARD_FILE, FORWARD_HEADER)),

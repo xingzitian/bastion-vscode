@@ -17,6 +17,7 @@ import { getHabits, resolvePrivilege, habitsForAI } from './habits'
 import { isWaitingForPassword, resolvePasswordPrompts } from './recognize'
 import { log } from './log'
 import { firstInputValue, isSecretPrompt } from './mrt'
+import { formatSelfTestTable, runSelfTest } from './selfTest'
 import { isRecentlyClosedSession, rememberClosedSession } from './closedSessions'
 import { teePaths } from './execTee'
 import {
@@ -1001,4 +1002,41 @@ export async function resumeExecJob(input: {
         ? `，命令继续在跑（已 ${Math.round(after.elapsedMs / 1000)}s）—— 用 bastion_wait 接着等。`
         : `，当前状态：${after.status}${after.reason ? `（${after.reason}）` : ''}。`)
   return { text, structured: { ...after, submitted: true } }
+}
+/**
+ * 「BastionShell: 自检执行协议」—— 在选定的会话上跑 4 条内置命令并给出断言表。
+ *
+ * 只在 shell 态会话上跑（菜单态会先把命令喂进菜单）；选不到会话就直接告诉人。
+ */
+export async function runProtocolSelfTest(): Promise<{ text: string; ok: boolean }> {
+  const live = [...terminals.entries()].map(([vt, t]) => ({ vt, t }))
+  if (live.length === 0) {
+    return { ok: false, text: '自检需要至少一条已连上的会话：先在 BastionShell 面板里连一台服务器。' }
+  }
+  let target = live[0]
+  if (live.length > 1) {
+    const pick = await vscode.window.showQuickPick(
+      live.map((entry) => ({
+        label: `#${entry.t.sessionNo} ${entry.vt.name}`,
+        description: entry.t.sessionId,
+        entry
+      })),
+      { placeHolder: '在哪条会话上跑协议自检？（只会跑 true / false / echo / sleep+echo 四条内置命令）' }
+    )
+    if (!pick) return { ok: false, text: '已取消。' }
+    target = pick.entry
+  }
+  const label = `#${target.t.sessionNo} ${target.vt.name}`
+  const state = sessionScreenState(target.t)
+  if (state === 'menu') {
+    return { ok: false, text: `${label} 现在停在堡垒机菜单上，自检会失效。请先在终端里走完菜单落到 shell，再重跑。` }
+  }
+  if (state === 'unknown') {
+    return { ok: false, text: `看不出 ${label} 现在是什么状态（屏幕没读出来）。先 bastion_tail 看一眼再重跑。` }
+  }
+  const { rows, ok } = await runSelfTest(
+    (input) => execRemote({ command: input.command, session: target.t.sessionId, waitMs: input.waitMs, quietMs: input.quietMs, allowActiveFallback: false }),
+    async (input) => waitForExecJob({ jobId: input.jobId, waitMs: input.waitMs })
+  )
+  return { ok, text: formatSelfTestTable(rows, label) }
 }

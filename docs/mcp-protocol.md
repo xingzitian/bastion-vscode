@@ -85,3 +85,26 @@ no token                 | 401 (want 401)
 3. **`Mcp-Method` / `Mcp-Name` 头的强制校验**：规范要求，我们**接受但不强制**（强制会让
    现在手配的客户端全部 400，等客户端都发头了再收）。
 4. **桌面版**：仍只到 2025-06-18，没有 `server/discover`、没有 Tasks。
+
+## 9. 能力矩阵与降级规则（**一张表说清"声明什么 → 得到什么"**）
+
+服务端行为**完全由客户端在请求里声明了什么**决定，不猜、不降级到"看起来能用"：
+
+| 客户端声明（每请求 `_meta`） | `exec` 返回 | `input_required` 时 | 是否给 `resultType:"task"` |
+|---|---|---|---|
+无 `_meta`、无版本头（legacy） | 普通结果 | 普通结果（`status:"input_required"` + `hint`） | ❌ |
+版本头 / `_meta.protocolVersion` | 普通结果 + `resultType:"complete"` | 同上（**没有 elicitation 就不给往返**） | ❌ |
+`clientCapabilities.elicitation` | 同上 | ✅ `resultType:"input_required"` + `inputRequests` + `requestState` | ❌ |
+`clientCapabilities.extensions['io.modelcontextprotocol/tasks']` | 同上 | —— | ✅ `resultType:"task"` + `taskId`，用 `tasks/get` 轮询 |
+
+**三条硬规则**
+
+1. **没声明的能力一律不给**。给了的代价是客户端直接抛错（`no handler is registered for 'elicitation/create'`），
+   作业卡在 `input_required` 占着会话 —— 这是实测踩过的坑。
+2. **凭据类提示永远不代填**（密码 / 动态码 / 口令 / 验证码），无论客户端声明了什么。
+   人必须在终端里输入 —— 会话是同一条，不需要重连。
+3. **降级不是失败**：拿不到 `resultType` / `task` 的客户端，`status` / `exitCode` / `hint` 仍然准确，
+   `bastion_wait` / `bastion_job` / `bastion_cancel` 一律可用。
+
+**自查方法**：调一次 `bastion_health`，它会打印
+`协议代际` / `客户端扩展：tasks ✓|✗` / `客户端能力：elicitation ✓|✗` —— 不用猜自己属于哪一档。

@@ -1,44 +1,71 @@
-## 0.3.10 · 测试期补充（未升版）
+## 0.3.11
 
-> 版本锁定在 0.3.10：这一节是 0.3.10 上线后继续测试期间的修复，随同一个版本号一起测。
-> 0.3.10 压测（另一轮 AI 实机跑了 A~H 共 20 多个用例）暴露的问题全部修掉，含一个会把会话锁死的 P0。
+> 0.3.10 上线后，用三个 AI 会话做了 4 轮实机压测（A~C 共 40 多个用例，含协议层 curl 探测）。
+> 这一版把压测报告里的问题**全部修完**，并补上了 2026-07-28 协议的最后几块。
+>
+> 三个真 P0（都是"看起来能用、实际会卡死"那种）：
+> ① 命令跑完状态不翻转 → 下一条命令被拒、会话被锁死；
+> ② 退出码 0 被当成"没拿到退出码"（falsy 零）→ 文字说"未知"，AI 会把成功当失败；
+> ③ 哨兵行前面带 ANSI/提示符残留时判不出来 → 短命令永远等静默兜底（25 秒的命令报 41 秒）。
 
-### 修复（P0）
+### 修复：执行协议（P0）
 
-- **作业完成后状态永不翻转**（会话被锁死）：完成判定原来绑在 exec 的等待窗口里，exec 一超时返回、
-  监听器被摘掉，就再没人看结束标记 —— 命令早跑完了，状态永远 `working`，下一条命令被"还有命令在跑"拒绝。
-  现在**作业自己持有哨兵与 quietMs**：每来一块输出就扫 `‹marker›:‹rc›`，命中即完成（退出码 0 也能正确识别）；
-  exec 只在看到哨兵时收作业，其余交给看门狗。
-- **静默不再单独判完成**：`sleep 45` 这类"长时间没输出"不再被误判成结束；兜底条件改成
-  **静默 + 提示符已回**，并区分"shell 退出（回堡垒机菜单）→ `failed/session_exited`"。
-- **会话关闭后作业不终结**：终端关闭/销毁时把它上面的作业置 `failed/session_lost`（原来会永远 working）。
+- **完成判定归作业自己**：作业持有哨兵与 `quietMs`，每来一块输出就扫 `‹marker›:‹rc›`，命中即完成并让出会话；
+  `exec` 只在看到哨兵时收作业，超时/静默**不再替作业下结论**。上一版正是这样把会话锁死的。
+- **退出码 0 不再被当成"没有退出码"**：`if (hit)` → `if (hit !== undefined)`，文字与结构化不再互相打脸。
+- **哨兵识别容错**：从"整行等于/以标记开头"改为**任意位置 + 必须带数字** ——
+  容忍真机上那行前面的 ANSI/提示符残留，同时不会把命令回显（字面量 `$ec`，没有数字）误判成完成。
+- **静默不能单独判完成**：兜底条件改为「静默 + 提示符已回」，`sleep 45` 不再被误判；
+  `elapsedMs` 按**完成时刻**算（不再"再查一次就从 25s 变 41s"）。
+- **终态区分**：屏幕回到堡垒机菜单 → `failed/session_exited`；终端被关/连接断 → `failed/session_lost`。
 
-### 修复（P1）
+### 修复：AI 接口（P1/P2）
 
-- **`bastion_exec` 的 schema 缺参数**：`waitMs/quietMs/mode/background/logToFile/force/session` 之前只加进了分发、
-  没进 `inputSchema`，而 schema 是 `additionalProperties:false` —— 严格客户端根本传不进来。已补齐，
-  并加**元测试**（用 Proxy 记录 dispatch 实际读取的参数键，与 schema 对账）防止再漏。
-- **两种"找不到会话"文案相同**：现在"会话 s-xxxx 已关闭（刚才还活着）"与"指认不到"分开，下一步动作不同。
-- **`initialize` 请求非法版本静默降级**：改为 `-32022`（和 `MCP-Protocol-Version` 头路径一致）。
-- **Tasks 扩展声明了却给不了任务**：门槛里多余的 `modern &&` 去掉 —— 按扩展规范只看客户端是否声明；
-  声明了就一定拿到 `resultType:"task"`，没声明绝不塞。
+- `bastion_exec` 的 `inputSchema` 补齐 `waitMs / quietMs / mode / background / logToFile / force / session` ——
+  上一版只在分发里读了它们，schema 是 `additionalProperties:false`，严格客户端根本传不进来。
+- 「会话已关闭」与「指认不到」两句分开（新增"刚关闭的 sid"记录，TTL 10 分钟）。
+- `bastion_job` 的 `maxBytes` 下限从 1024 降到 **1**；`job`/`wait` 的 `structuredContent` 补 `chunk` / `markerSeen` / `reason`。
+- 绑定在**加载时清扫**（`loadBindingsSwept`）：死会话不再长期占别名，`health` / 树 / 列表三处一致。
+- `mode:"interactive"` 也建作业 → 返回里终于有 `jobId`，可以 `bastion_cancel` 跟进。
+- `force:true` 插队后旧作业的 `reason=force_superseded` 在 `wait` / `job` 返回里可见。
 
-### 修复（P2）
+### 协议：2026-07-28 补完
 
-- `force:true` 插队后旧作业的 `reason=force_superseded` 在 wait/job 返回里可见。
-- `bastion_job` 的 `maxBytes` 下限从 1024 降到 **1**（并写进 schema），不再"传 50 得 102）。
-- `bastion_job`/`bastion_wait` 的 `structuredContent` 补上 `chunk`（正文）、`markerSeen`、`reason`。
-- 绑定统一在加载时清扫（`loadBindingsSwept`）：死会话不再长期占着别名；`health`/树/列表三处一致。
+- `server/discover`（版本清单 + `capabilities.extensions` + `ttlMs` / `cacheScope`）。
+- `initialize` 请求非法版本 → **`-32022`**（不再静默降级）；未知方法 modern → **404**、legacy → 200。
+- **MRTR（多轮往返）**：`input_required` 时返回 `resultType:"input_required"` + `inputRequests` + `requestState`；
+  客户端带 `inputResponses` + `requestState` 重试即可续跑。**凭据类提示永远不代填**（密码/动态码/口令）。
+- **`subscriptions/listen`**：POST 单请求上的长连接 SSE，先 ack，再推作业状态变化
+  （声明了 tasks 的客户端收 `notifications/tasks`，否则收 `notifications/bastionshell/job`）。
+- **Tasks 扩展**：声明了扩展的客户端拿 `resultType:"task"` + `taskId`，配套 `tasks/get` / `tasks/cancel` / `tasks/update`。
+- **能力驱动降级**（关键）：客户端**没声明** elicitation 时**不给** `InputRequiredResult` ——
+  否则它会抛 `no handler for 'elicitation/create'`，作业卡在等输入占着会话。这时退化成普通结果 + 明确 `hint`。
+- `outputSchema`：`exec` / `wait` / `job` / `cancel` 四个工具声明输出结构。
+
+### 新增
+
+- **命令「BastionShell: 自检执行协议」**：在选定会话上跑 `true` / `false` / `echo` / `sleep+echo` 四条内置命令，
+  输出断言表（状态、退出码、哨兵、耗时、jobId）。这三轮踩的坑都能在 30 秒内自证，不必再拉人复测。
+  只跑内置命令，不接受自定义输入。
+- **设置 `bastion.inputPromptRules`**：自定义交互提示规则（`[{pattern, hint}]`），先于内置规则匹配、
+  坏正则自动跳过、改完即时生效 —— 遇到陌生的 "请选择/确认" 提示不用等发版。
+- **`bastion_health` 升级成诊断面板**：协议代际（modern/legacy、带头还是仅 `_meta`）、
+  客户端能力（`tasks ✓/✗`、`elicitation ✓/✗`）、在跑作业清单、绑定清扫条数、
+  提示识别规则条数、本次请求头三连。
 
 ### 文档
 
-- `docs/exec-protocol.md` 新增「谁负责判完成」分工表（作业 / exec / 看门狗），并写明"静默不能单独判完成"。
+- `docs/exec-protocol.md`：新增「谁负责判完成」分工表、「支持的交互提示模式」清单、
+  「客户端代际与功能可用性」表。
+- `docs/mcp-protocol.md`：新增「能力矩阵与降级规则」—— 一张表说清"声明什么 → 得到什么"。
 
-### 桌面版
+### 桌面版（同步语义，不加新功能）
 
-- 同样的 P0 修复：作业自持哨兵、静默 + 提示符兜底、会话关闭置 `session_lost`；
-- exec schema 补齐 `session/waitMs/quietMs/mode/background/force`；
-- "刚关闭的会话"与"指认不到"文案分开；版本 0.9.2。
+- 同一套：作业自持完成 + 哨兵容错、`session_lost/session_exited`、dual-era 协议（discover/Tasks/MRTR/SSE）、
+  `outputSchema`、本机作业日志（`job-logs/job-<id>.log`，替代堡垒机场景下不可行的远端 tee）。
+- 版本 0.9.2。
+
+
 ## 0.3.10
 
 > MCP 协议升级：**一步到 2026-07-28**（modern），同时保留 legacy —— 老客户端照旧能用。
