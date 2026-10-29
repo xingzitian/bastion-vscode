@@ -27,7 +27,30 @@
   `elapsedMs` 按**完成时刻**算（不再"再查一次就从 25s 变 41s"）。
 - **终态区分**：屏幕回到堡垒机菜单 → `failed/session_exited`；终端被关/连接断 → `failed/session_lost`。
 
-### 修复：AI 接口（P1/P2）
+### 修复：断线后会话卡在面板上、关闭按钮点不动
+
+真机现象：两条会话已经断开（右下角也弹了「连接已断开 / 重连」），但「总览」里仍留着两张
+`已断开` 卡片，点它们的「关闭」毫无反应，只能等重载窗口。
+
+根因有三层，都在这次修掉：
+
+- **断线只收拾了转发和状态栏，没收拾会话**：`conn.onClose` 里没有遍历关闭终端。
+  断线时 shell 通道不一定发 `close`（TCP reset 时 ssh2 常常只发 client 级 close），
+  通道 close 不到 → `finish()` 不跑 → 终端不关 → 表里永远留着一条死记录。
+  现在断线会主动 `closeSessionsOfConn()`，300ms 后再兜底清表（并区分"别的连接上的会话"不动）。
+- **`close()` 被 `closed` 闸门永久锁死**：`finish()` 只在第一次生效。如果那一次 `closeEmitter`
+  被 VS Code 漏掉（终端还没 attach、窗口被隐藏），此后调 `close()` 直接 return ——
+  `dispose()` 变成空操作，终端和卡片都清不掉。现在显式 `close()` 会**兜底重发**一次关闭事件
+  （正常路径仍只发一次，有测试钉住）。
+- **`closeSession` 静默失败**：原实现是 `find()?.vt.dispose()`，找不到会话就什么都不做、也不打日志。
+  现在找不到会写日志；dispose 后 300ms 若还在表里，强制移除并提示"终端窗口可能是残留，请手动关掉"。
+
+顺带两处：
+- `onDidCloseTerminal` 的面板刷新从 `if (terminals.delete(t))` 里移出来 —— 删不到也要刷新，
+  否则会长期显示已死的卡片。
+- 断线卡片新增 **「重连」** 按钮（原来只有「关闭」）；界面刷新失败不再阻塞会话收尾。
+
+测试：+3（close 二次调用必须发事件、finish 重复调用不重复发、断线收尾只动本连接且能清表）。### 修复：AI 接口（P1/P2）
 
 - `bastion_exec` 的 `inputSchema` 补齐 `waitMs / quietMs / mode / background / logToFile / force / session` ——
   上一版只在分发里读了它们，schema 是 `additionalProperties:false`，严格客户端根本传不进来。

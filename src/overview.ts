@@ -188,7 +188,27 @@ export class OverviewProvider implements vscode.WebviewViewProvider {
         break
       }
       case 'closeSession': {
-        find()?.vt.dispose()
+        const hit = find()
+        if (!hit) {
+          // 以前这里是 find()?.vt.dispose()：找不到就静默什么都不做，用户只看到"点了没反应"
+          log(`总览面板：关闭失败 —— 找不到 #${no} 的会话（可能已经关掉了，面板马上刷新）`)
+          break
+        }
+        log(`总览面板：关闭会话 #${no} ${hit.vt.name}`)
+        hit.vt.dispose()
+        // 兜底：dispose 之后终端若还在（pty 的 close 被 VS Code 漏掉过），强制从表里摘掉并刷新，
+        // 否则面板会永远挂着一个点不动的"已断开"卡片。
+        setTimeout(() => {
+          const still = [...terminals.entries()].find(([, tm]) => tm.sessionNo === no)
+          if (!still) return
+          terminals.delete(still[0])
+          log(`总览面板：#${no} 关闭后仍在会话表里 → 强制移除（终端窗口可能是残留，请手动关掉）`)
+          void vscode.window.showInformationMessage(
+            `已移除会话 #${no} 的记录；如果它的终端窗口还在，请手动关掉那个窗口。`
+          )
+          updateStatusBar()
+          refreshOverview()
+        }, 300)
         break
       }
       case 'stopForward': {
@@ -490,6 +510,8 @@ export function buildOverviewHtml(cspSource: string): string {
             (x.readOnly
               ? btnOff('不参与广播', '只读会话不参与广播：它连人工输入都拦，广播不该往里写')
               : btn(x.broadcasting ? '移出广播' : '加入广播', { type: 'toggleBroadcastSession', no: x.no })) +
+            // 断线的卡片最该给的是「重连」，只给「关闭」等于让人自己想办法
+            (x.ready ? '' : btn('重连', { type: 'action', name: 'reconnect' }, 'primary')) +
             btn('关闭', { type: 'closeSession', no: x.no }) +
           '</div></div>');
       }

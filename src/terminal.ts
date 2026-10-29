@@ -94,6 +94,8 @@ export class BastionTerminal implements vscode.Pseudoterminal {
 
   private stream: ClientChannel | null = null;
   private closed = false;
+  /** close 事件是否已经发过（发过但终端仍在 = 那次 close 被 VS Code 漏了，close() 要兜底重发） */
+  private closeFired = false;
   private zmodem: ZmodemSessionController | null = null;
   private cols = 120;
   private rows = 30;
@@ -148,8 +150,36 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     void this.connect();
   }
 
+  /**
+   * 显式关闭（VS Code dispose / 用户点「关闭」/ 断线收尾）。
+   *
+   * ⚠️ 这里**不能再被 `closed` 闸门挡住**：`finish()` 里的 `if (this.closed) return` 只应该
+   * 拦住"重复清理/重复输出"。但如果第一次 `finish()` 发的 `closeEmitter` 被 VS Code 漏掉
+   * （终端当时还没 attach、或窗口被隐藏），`closed` 已经是 true —— 之后再调 close() 就永久
+   * 什么都不做：终端关不掉、`onDidCloseTerminal` 不触发、面板上的会话也删不掉，
+   * 表现就是「点了关闭没反应」。所以这里**无条件再发一次** close 事件。
+   */
   close(): void {
+    const alreadyFired = this.closeFired;
     this.finish(0);
+    if (!alreadyFired) return;
+    // 走到这里说明：close 事件早就发过了，但终端还在（VS Code 那次没兑现）。
+    // 再发一次 —— 否则 dispose() 永远是空操作，终端和面板里的会话都清不掉。
+    try {
+      this.closeEmitter.fire(0);
+      log(`兜底重发关闭事件：#${this.sessionNo}${this.nameOf()}（上次的 close 没被兑现）`);
+    } catch (e) {
+      log(`兜底重发关闭事件失败：#${this.sessionNo} ${(e as Error).message}`);
+    }
+  }
+
+  /** 日志/提示里用的会话名（没有则空串） */
+  private nameOf(): string {
+    try {
+      return this.vt ? ` ${this.vt.name}` : '';
+    } catch {
+      return '';
+    }
   }
 
   /** 由 extension.ts 绑定 VS Code Terminal 对象，用于 MFA 时聚焦 */
@@ -920,6 +950,13 @@ export class BastionTerminal implements vscode.Pseudoterminal {
       }
       this.stream = null;
     }
+    this.fireClose(exitCode);
+  }
+
+  /** 只发一次 close（正常路径）；需要兜底重发时走 close() */
+  private fireClose(exitCode: number): void {
+    if (this.closeFired) return;
+    this.closeFired = true;
     this.closeEmitter.fire(exitCode);
   }
 

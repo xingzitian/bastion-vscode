@@ -41,6 +41,7 @@ import {
   activeSession
 } from './state'
 import { updateStatusBar, updateForwardSlot, updateReadOnlySlot } from './slots'
+import { refreshOverview } from './overview'
 
 export interface ProfilePickItem extends vscode.QuickPickItem {
   profile?: ConnectionProfile
@@ -100,6 +101,44 @@ export async function ensureConnection(profile: ConnectionProfile): Promise<Shar
   return conn
 }
 
+/**
+ * 连接断了以后，把它上面的会话全部收尾。
+ *
+ * 为什么必须主动做：断线时 shell 通道不一定发 `close`（TCP reset 时 ssh2 常常只发 client 级 close），
+ * 通道 close 不到 → `finish()` 不跑 → 终端不关 → `onDidCloseTerminal` 不触发 →
+ * `terminals` 表里永远留着一条"已断开"的记录，面板上就是一张点不动的卡片。
+ */
+export function closeSessionsOfConn(conn: SharedConnection): void {
+  // 界面刷新不能挡住收尾：状态栏/面板还没建好（启动早期、或测试环境）时不能因此漏掉清理
+  const safeUi = (what: string, fn: () => void): void => {
+    try {
+      fn()
+    } catch (e) {
+      log(`${what} 失败（不影响会话收尾）：${(e as Error).message}`)
+    }
+  }
+  const mine = [...terminals.entries()].filter(([, t]) => t.conn === conn)
+  if (mine.length === 0) return
+  log(`连接断开：收尾 ${mine.length} 条会话（${mine.map(([, t]) => `#${t.sessionNo}`).join(' ')}）`)
+  for (const [vt, t] of mine) {
+    try {
+      t.close() // 现在 close() 会兜底重发关闭事件，终端能真正关掉
+    } catch (e) {
+      log(`收尾会话 #${t.sessionNo} 失败：${(e as Error).message}`)
+    }
+    // 双保险：300ms 后若还在表里（VS Code 没兑现 close），强制摘掉
+    setTimeout(() => {
+      if (terminals.delete(vt)) {
+        log(`兜底：已从会话表移除 #${t.sessionNo}（终端窗口可能是残留）`)
+        safeUi('刷新状态栏', updateStatusBar)
+        safeUi('刷新总览面板', refreshOverview)
+      }
+    }, 300)
+  }
+  safeUi('刷新状态栏', updateStatusBar)
+  safeUi('刷新总览面板', refreshOverview)
+}
+
 /** 断连时弹一次提示（带「重连」按钮），每个连接只挂一次避免多会话重复弹 */
 export function attachReconnectNotice(conn: SharedConnection, profile: ConnectionProfile): void {
   if (reconnectNotified.has(conn)) return
@@ -112,6 +151,10 @@ export function attachReconnectNotice(conn: SharedConnection, profile: Connectio
     forwardProvider.refresh()
     updateForwardSlot()
     updateReadOnlySlot()
+    // ★ 会话也要收尾：以前这里只收拾了转发和状态栏，终端全留着 ——
+    // 只要 shell 通道没走到 close（TCP reset 时常见），终端就永远挂着，
+    // 面板上留一堆点不动的「已断开」卡片。现在主动关掉，300ms 后再兜底清表。
+    closeSessionsOfConn(conn)
     void vscode.window
       .showWarningMessage(`连接已断开（${profile.name} · ${profile.username}@${profile.host}）`, '重连')
       .then((sel) => {

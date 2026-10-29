@@ -316,17 +316,22 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('bastion.stopForward', stopForwardRule),
     vscode.commands.registerCommand('bastion.deleteForwardRule', deleteForwardRule),
     vscode.window.onDidCloseTerminal((t) => {
-      if (terminals.delete(t)) {
-        if (terminals.size === 0) {
-          void vscode.commands.executeCommand('setContext', 'bastion.hasSession', false)
-        }
-        // 关闭后重新判定：活动终端是否仍是堡垒机
-        const vt = vscode.window.activeTerminal
-        setActiveIsBastion(vt ? terminals.has(vt) : false)
-        updateStatusBar()
-        updateReadOnlySlot()
+      const removed = terminals.delete(t)
+      if (!removed) {
+        // 表里没有它（可能已被兜底移除）也要刷新：以前整段刷新被 `if (delete)` 包着，
+        // 删不到就完全不刷新，面板会一直挂着已经死掉的卡片
         refreshOverview()
+        return
       }
+      if (terminals.size === 0) {
+        void vscode.commands.executeCommand('setContext', 'bastion.hasSession', false)
+      }
+      // 关闭后重新判定：活动终端是否仍是堡垒机
+      const vt = vscode.window.activeTerminal
+      setActiveIsBastion(vt ? terminals.has(vt) : false)
+      updateStatusBar()
+      updateReadOnlySlot()
+      refreshOverview()
     }),
     vscode.window.onDidChangeActiveTerminal((t) => {
       setActiveIsBastion(t ? terminals.has(t) : false)
