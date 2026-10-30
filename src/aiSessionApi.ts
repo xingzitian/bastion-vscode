@@ -91,20 +91,10 @@ export async function execChecked(input: {
     }
   }
   const run = (): Promise<ExecResponse> =>
-    execRemote({
-      command,
-      session: input.session,
-      terminal: input.terminal,
-      clientId: input.clientId,
-      allowActiveFallback: input.allowActiveFallback,
-      expectCursor: input.expectCursor,
-      waitMs: input.waitMs,
-      quietMs: input.quietMs,
-      mode: input.mode,
-      background: input.background,
-      logToFile: input.logToFile,
-      force: input.force
-    })
+    // ⚠️ 必须**整体透传**，不要逐字段列举。
+    // 这类"列举漏了新字段"的 bug 已经踩过 4 次（headers / meta / 权限 / 这次的 why+intentId）：
+    // 漏掉时不报错，只表现为"参数传了但没生效"，最难查。
+    execRemote({ ...input, command })
 
   // P2-b：幂等键。没带 key 就普通执行（服务端无法保证不重复执行，工具说明里写明了）。
   const key = (input.idempotencyKey ?? '').trim()

@@ -342,3 +342,17 @@ test('★ ctx.meta / ctx.headers 必须到达 health（同类接线 bug 已经�
     declaresElicitation: false
   })
 })
+test('★ exec 的 why / intentId 必须原样交给 api（漏了不会报错，只表现为参数没生效）', async () => {
+  let seen: Record<string, unknown> | undefined
+  const dispatch = createToolDispatch(
+    fakeApi({
+      exec: async (i) => {
+        seen = i as unknown as Record<string, unknown>
+        return { text: 'ok' }
+      }
+    })
+  )
+  await dispatch('bastion_exec', { command: 'true', why: '重启服务', intentId: 'deploy-42' })
+  assert.equal(seen?.why, '重启服务')
+  assert.equal(seen?.intentId, 'deploy-42')
+})
