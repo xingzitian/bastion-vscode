@@ -356,3 +356,9 @@ test('★ exec 的 why / intentId 必须原样交给 api（漏了不会报错，
   assert.equal(seen?.why, '重启服务')
   assert.equal(seen?.intentId, 'deploy-42')
 })
+test('★ exec 的工具说明必须硬性要求 intentId 与 why（B 方案）', () => {
+  const def = MCP_TOOL_DEFS.find((d) => d.name === 'bastion_exec')!
+  assert.match(def.description, /必须传 why 与 intentId/)
+  assert.match(def.description, /同一次任务里的所有 exec 必须复用同一个值/)
+  assert.match(def.description, /按时间归并/, '要说明不传的后果')
+})

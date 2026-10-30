@@ -29,3 +29,15 @@ test('health：声明了 tasks/elicitation 时应显示 ✓', async () => {
   assert.match(text, /客户端扩展：tasks ✓/)
   assert.match(text, /客户端能力：elicitation ✓/)
 })
+
+test('★ health 要报动作声明率（intentId / why），低于 80% 给出提醒', async () => {
+  const { resetJobs, createJob } = await import('../execJobs')
+  setMcpEndpointInfo({ url: 'http://127.0.0.1:39311/mcp', port: 39311, portFallback: false, version: '0.3.13' })
+  resetJobs()
+  createJob({ sessionId: 's-a', sessionNo: 1, command: 'ls', cursorAtStart: 0, intentId: 'i-1', why: '看目录' })
+  createJob({ sessionId: 's-a', sessionNo: 1, command: 'pwd', cursorAtStart: 0 })
+  const text = await sessionApi.health({})
+  assert.match(text, /动作声明：本次运行 2 个作业，intentId 50%、why 50%/)
+  assert.match(text, /声明率偏低/, '低于 80% 必须提醒')
+  resetJobs()
+})

@@ -209,6 +209,22 @@ export function healthReport(
       lines.push('- 在跑作业：0 条')
     }
   }
+  // 动作声明率：面板好不好用，取决于 AI 有没有写 why / intentId —— 把它变成可度量的数字
+  {
+    const jobs = allJobs()
+    if (jobs.length > 0) {
+      const withIntent = jobs.filter((j) => !!j.intentId).length
+      const withWhy = jobs.filter((j) => !!j.why).length
+      const pct = (n: number): number => Math.round((n / jobs.length) * 100)
+      lines.push(`- 动作声明：本次运行 ${jobs.length} 个作业，intentId ${pct(withIntent)}%、why ${pct(withWhy)}%`)
+      if (pct(withIntent) < 80) {
+        lines.push(
+          '  ⚠️ 声明率偏低：面板会把没声明 intentId 的动作按「同会话 + 60 秒」归并，看起来像流水账。' +
+            '同一次任务的多条 exec 请复用同一个 intentId，每件事的第一条命令写 why（≤60 字）。'
+        )
+      }
+    }
+  }
   lines.push(
     `- 提示识别：内置 ${promptRuleCount()} 条规则（密码 / 动态码 / y-n / 口令 / 菜单 / 按键），` +
       `可用 bastion.inputPromptRules 追加自定义正则；清单见 docs/exec-protocol.md §7`

@@ -182,7 +182,13 @@ const EXEC_DESC =
   '- waitMs 默认 15s、服务端夹到 55s（MCP 客户端单次调用有自己的超时，等太久客户端先超时反而更难诊断）；\n' +
   '  要等更久就分段调 bastion_wait，**不要用 sleep 硬等**（无进度、不可取消、白等）。\n' +
   '- quietMs 默认 15s：输出静止多久算"没输出了"。构建类命令阶段之间会静默几十秒，别把它当成结束。\n' +
-  '- background:true = 立刻拿 jobId 不阻塞；mode:"interactive" = 只发不等（top/vi/sudo -i/菜单这类）。'
+  '- background:true = 立刻拿 jobId 不阻塞；mode:"interactive" = 只发不等（top/vi/sudo -i/菜单这类）。\n' +
+  '\n**必须传 why 与 intentId —— 这不是可选项**：\n' +
+  '- `intentId`：**同一次任务里的所有 exec 必须复用同一个值**（例如 `deploy-20261030-a`），每开一件新事换一个新的。' +
+  '用户靠它把一串命令折叠成一张卡片；不传的话面板只能按时间猜，会显示「按时间归并」—— 等于把"你想干什么"藏起来了。\n' +
+  '- `why`：**每件事的第一条命令必须写**（≤60 字，只写目的不写过程，例如"部署新版本到两台"）；' +
+  '同一个 intent 的后续命令可以不写，组标题沿用第一条。\n' +
+  '- 用户会在「行动面板」和账本里逐条看到 `why + 摘要 + 状态 + 退出码`；`bastion_health` 会统计你的声明率。'
 
 const WAIT_DESC =
   '等一个作业（bastion_exec 返回 working 时给的 jobId）。这是"不要用 sleep 硬等"的正解：' +
