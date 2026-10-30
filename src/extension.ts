@@ -68,6 +68,10 @@ import {
   restoreLastReport
 } from './deployRun'
 import { execRemote, runProtocolSelfTest } from './aiBridge'
+import { showActionPanel } from './actionPanel'
+import { appendActionRecord, loadActionRecords } from './actionLedgerIo'
+import { getJob, onJobEvent } from './execJobs'
+import { recordFromJob } from './actionLedger'
 // 会话能力的唯一实现：语言模型工具和 MCP 工具都走它（这样两条路的行为不会分叉）
 import { sessionApi } from './aiSessionApi'
 import { registerMcp, showMcpInfo, stopMcp } from './mcpRegister'
@@ -209,7 +213,20 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('bastion.batchConnect', batchConnect),
     vscode.commands.registerCommand('bastion.openDeployTask', openDeployTask),
     vscode.commands.registerCommand('bastion.exportDeployTasks', () => void exportDeployTasks(ctx)),
+    // 「行动面板（预览）」：AI 在哪个会话、发了什么、为了什么、现在什么状态
+    vscode.commands.registerCommand('bastion.showActions', () => {
+      showActionPanel(loadActionRecords)
+    }),
     vscode.commands.registerCommand('bastion.exec', execRemote),
+    // 账本：每个作业状态变化都落一行（同 actionId 后来者覆盖），面板/DSH 都能读
+    (() => {
+      const off = onJobEvent((e) => {
+        const job = getJob(e.jobId)
+        if (!job) return
+        void appendActionRecord(recordFromJob(job))
+      })
+      return { dispose: off }
+    })(),
     vscode.commands.registerCommand('bastion.selfTest', async () => {
       const out = vscode.window.createOutputChannel('BastionShell 自检')
       out.show(true)

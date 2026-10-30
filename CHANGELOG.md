@@ -1,3 +1,28 @@
+## 0.3.13
+
+> 新增**行动面板**：AI 在哪个会话、刚发了什么命令、**为了什么**、现在什么状态 —— 一屏看完。
+> 起因：AI 爱把一长串命令写在一次调用里，人看不出在干什么；后台任务和"它说我在跑构建"更是看不见。
+
+### 新增
+
+- **命令「BastionShell: 打开行动面板（预览）」**：按 **Intent（一次目的）** 折叠成卡片，
+  展开看每条命令、退出码、耗时、脱敏后的原文；正在跑的可以「取消」。
+- **`exec` 新增 `why` 与 `intentId`**：`why`（≤60 字）是 AI 对"这条命令为了什么"的一句话声明，
+  服务端截断；`intentId` 让一串命令归到同一张卡片。**不写 why 会明确显示「AI 未说明」**，不假装有。
+- **命令摘要与脱敏**（`src/commandSummary.ts`，纯函数）：
+  `cd /data/app && git pull && npm ci && systemctl restart app` → `4 步：cd · git pull · npm ci · systemctl restart`；
+  `--password=` / `-pXXX` / `-u user:pass` / `NAME=xxx` 脱敏，**但 `ssh -p 22` 的端口不误伤**。
+- **`bastion_job` 的文本开头多一行**：`为了：部署新版本到两台｜4 步：cd · git pull · npm ci · systemctl restart`。
+- **SSE 新通道 `notifications/bastionshell/action`**：把 actionId/intentId/sessionNo/why/brief/steps/状态/退出码/耗时
+  一次推给外部客户端（DSH 插件以后复用这一条）。
+- **账本落盘**：`~/.bastionshell/action-ledger.jsonl`，同 actionId 后来者覆盖；超 2MB 自动裁剪到最近 500 条。
+  **落盘的是脱敏后的命令**，凭据不会进文件。
+
+### 说明
+
+- 「按时间归并」标记：AI 没传 `intentId` 时，同会话 + 60s 内相邻的命令会被归成一组，
+  卡片上明确写「按时间归并」——不把猜测当事实。
+- 面板读的是扩展自己的作业账本，**不经过 MCP**，所以不用 token、不用跨域。
 ## 0.3.12
 
 > 0.3.11 发布后真机发现的一个问题：**会话断开后卡片卡在「总览」里、关闭按钮点不动**，只能重载窗口。

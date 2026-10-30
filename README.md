@@ -30,7 +30,7 @@
 
 ## 装 & 用（三步）
 
-1. 装：扩展商店搜 **BastionShell SSH**，或 `code --install-extension bastion-vscode-0.3.12.vsix`
+1. 装：扩展商店搜 **BastionShell SSH**，或 `code --install-extension bastion-vscode-0.3.13.vsix`
 2. 连：命令面板 → **`BastionShell: 连接`**（输密码 + 动态码；堡垒机则过菜单选目标机）
 3. 用：终端里照常敲命令；要传文件就 `rz`/`sz`；要部署就用「部署任务」；要让 AI 干活就跑一次
    `BastionShell: 让外部 AI 连上（MCP 端点 / 一键复制配置）`
@@ -752,6 +752,24 @@ Cursor 或者任何支持 HTTP MCP 的客户端，都能直接操作你**已经�
 
 安全边界：**只跑这 4 条内置命令，不接受自定义输入**；会话停在堡垒机菜单上时会拒绝执行。
 
+## 🃏 行动面板：AI 在干什么，一屏看完
+
+命令面板 → **`BastionShell: 打开行动面板（预览）`**（侧边打开）
+
+AI 爱把一长串命令写在一次调用里（`cd /data/app && git pull && npm ci && systemctl restart app`），
+人看不出它在干什么；它说"我在跑构建"的时候，你也看不到机器上到底在跑什么。这个面板补的就是这块：
+
+- **按 Intent（一次目的）折叠**：一张卡片 = AI 声明的一件事（`why`），展开才是每条命令
+- 每条命令显示：**摘要**（`4 步：cd · git pull · npm ci · systemctl restart`）、状态、退出码、耗时
+- **正在跑的可以「取消」**；「看原文」展开脱敏后的完整命令
+- AI 没写 `why` 时，卡片明确写「**AI 未说明这条命令为了什么**」——不假装有
+- AI 没传 `intentId` 时，同会话 60 秒内相邻的命令会归成一组，并标注「**按时间归并**」
+
+数据来自 `~/.bastionshell/action-ledger.jsonl`（**落盘的是脱敏后的命令**，密码不会进文件），
+跨重载还在。它不经过 MCP，所以不用 token、不用跨域。
+
+> 想让卡片更准：让 AI 调 `bastion_exec` 时带上 `why:"部署新版本到两台"` 和
+> `intentId:"deploy-42"`（同一次任务里的多条命令共用同一个 intentId）。
 ## 📋 协议支持：2026-07-28（modern）+ legacy
 
 同一个端点同时支持两个时代，**行为由客户端的声明决定**，不猜：
