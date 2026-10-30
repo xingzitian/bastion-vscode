@@ -50,6 +50,10 @@ import {
   type ToolCallContext
 } from './mcpTools'
 import { getJob, jobText, onJobEvent, viewOf, type ExecJob } from './execJobs'
+import { groupByIntent } from './actionLedger'
+import { renderActionsHtml } from './actionPanelHtml'
+import { renderStandalonePanel } from './uiPage'
+import type { ActionRecord } from './actionLedger'
 import { decodeRequestState, encodeRequestState, inputRequestsFor } from './mrt'
 
 /** 我们实现的 MCP 协议版本；握手时按客户端请求回（不认识就回这个最新的 legacy 版本） */
@@ -75,6 +79,10 @@ export interface McpServerOptions {
   jobs?: {
     cursorOf?: (sessionId: string) => number | undefined
     cancel?: (jobId: string) => Promise<void>
+  }
+  /** 网页版行动面板的数据源（读账本；由宿主注入，本文件保持不 import vscode） */
+  ui?: {
+    listActions?: () => Promise<ActionRecord[]>
   }
 }
 
@@ -418,6 +426,98 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
       }
       res.writeHead(status, headers)
       res.end(text)
+    }
+
+    // ── 独立网页版行动面板（GET /ui/*）─────────────────────────────
+    // 为什么放在这个端点上：它就是"本机的、带令牌的"那个服务，不必再开一个端口。
+    // 只读：动作列表/SSE 推送；写操作仍然走 POST /mcp 的 tools/call（复用权限与安全策略）。
+    if (bare === '/ui' || bare.startsWith('/ui/')) {
+      // 这一支要读账本（异步），而 createServer 的回调是同步的 —— 用 IIFE 包起来
+      void (async () => {
+      const q = new URLSearchParams((url.split('?')[1] ?? ''))
+      const given = (q.get('token') ?? '').trim()
+      // 浏览器跨域：面板可能从别的 origin 打开（DSH 的 3080、或直接 file:// 预览）
+      const cors = {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+      }
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, cors)
+        res.end()
+        return
+      }
+      if (!tokenEquals(given, token)) {
+        send(401, { error: '需要 token', hint: '在面板地址后加 ?token=<mcp.json 里的 token>' }, cors)
+        return
+      }
+      if (bare === '/ui') {
+        const records = opts.ui?.listActions ? await opts.ui.listActions() : []
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...cors })
+        res.end(renderStandalonePanel(records as never, given))
+        return
+      }
+      if (bare === '/ui/actions') {
+        const records = opts.ui?.listActions ? await opts.ui.listActions() : []
+        const limit = Math.max(1, Math.min(500, Number(q.get('limit') ?? 100) || 100))
+        const slice = (records as never[]).slice(-limit)
+        const groups = groupByIntent(slice as never)
+        send(200, { total: (records as never[]).length, groups: groups.length, html: renderActionsHtml(groups) }, cors)
+        return
+      }
+      if (bare === '/ui/cancel' && req.method === 'POST') {
+        // 同源 POST：不碰 /mcp 的 CORS 策略，也不新开写接口 —— 只是把"取消"接到注入的能力上
+        let body = ''
+        req.on('data', (c: Buffer) => {
+          body += c.toString('utf8')
+          if (body.length > 4096) req.destroy()
+        })
+        req.on('end', () => {
+          void (async () => {
+            let jobId = ''
+            try {
+              jobId = String((JSON.parse(body || '{}') as { jobId?: string }).jobId ?? '')
+            } catch {
+              // 坏 JSON 当没传
+            }
+            if (!jobId) {
+              send(400, { error: '需要 jobId' }, cors)
+              return
+            }
+            try {
+              await opts.jobs?.cancel?.(jobId)
+              send(200, { ok: true, jobId }, cors)
+            } catch (e) {
+              send(500, { error: (e as Error).message }, cors)
+            }
+          })()
+        })
+        return
+      }
+      if (bare === '/ui/stream') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-store',
+          'X-Accel-Buffering': 'no',
+          Connection: 'keep-alive',
+          ...cors
+        })
+        const write = (event: string, data: unknown): void => {
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        }
+        write('ready', { ok: true })
+        const off = onJobEvent((e) => write('action', e))
+        const keep = setInterval(() => res.write(': keep-alive\n\n'), 25_000)
+        ;(keep as unknown as { unref?: () => void }).unref?.()
+        res.on('close', () => {
+          clearInterval(keep)
+          off()
+        })
+        return
+      }
+      send(404, { error: 'not found', hint: '可用：/ui/ · /ui/actions · /ui/stream' }, cors)
+      })()
+      return
     }
 
     if (bare !== path) {

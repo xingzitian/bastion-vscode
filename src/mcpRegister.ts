@@ -24,6 +24,7 @@ import { sessionApi } from './aiSessionApi'
 import { MCP_TOOL_DEFS } from './mcpTools'
 import { newMcpToken, startMcpHttpServer, toMcpTool, type McpHttpHandle } from './mcpServer'
 import { setMcpEndpointInfo, terminals } from './state'
+import { loadActionRecords } from './actionLedgerIo'
 import { cancelExecJob } from './aiBridge'
 import { normalizeClientId } from './sessionBindings'
 import { normalizeAiScope, SCOPE_INFO } from './aiAccess'
@@ -155,6 +156,10 @@ export async function ensureMcpServer(): Promise<McpHttpHandle | undefined> {
         port: state.port,
         serverName: 'bastionshell',
         serverVersion,
+        // 网页版行动面板的数据源（读 JSONL 账本）—— 协议层不 import vscode，所以在这里注入
+        ui: {
+          listActions: () => loadActionRecords(300)
+        },
         // 作业的宿主能力由这边注入（协议层不 import vscode）：Tasks 的 tasks/cancel 与 cursorMoved 要用
         jobs: {
           cursorOf: (sessionId) => {
@@ -640,4 +645,14 @@ export function mcpToolSummary(): string[] {
     const t = toMcpTool(d) as { name: string; annotations?: { readOnlyHint?: boolean } }
     return `${t.name}${t.annotations?.readOnlyHint ? '（只读）' : ''}`
   })
+}
+
+/** 当前 mcp.json 里的 token（网页版面板要用它拼地址；读不到就返回空串） */
+export function currentMcpToken(): string {
+  try {
+    const j = readJsonFile<{ token?: string }>(MCP_STATE_FILE, {}, (v): v is { token?: string } => typeof v === 'object' && v !== null)
+    return typeof j.token === 'string' ? j.token : ''
+  } catch {
+    return ''
+  }
 }

@@ -137,7 +137,8 @@
     "onView:bastion.quickCommands",
     "onView:bastion.forwards",
     "onCommand:bastion.selfTest",
-    "onCommand:bastion.showActions"
+    "onCommand:bastion.showActions",
+    "onCommand:bastion.openWebPanel"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -1078,6 +1079,11 @@
       {
         "command": "bastion.showActions",
         "title": "打开行动面板（预览：AI 在干什么）",
+        "category": "BastionShell"
+      },
+      {
+        "command": "bastion.openWebPanel",
+        "title": "在浏览器打开行动面板（给 DSH/外部预览）",
         "category": "BastionShell"
       }
     ],

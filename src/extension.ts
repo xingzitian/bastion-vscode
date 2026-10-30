@@ -68,6 +68,8 @@ import {
   restoreLastReport
 } from './deployRun'
 import { execRemote, runProtocolSelfTest } from './aiBridge'
+import { currentMcpToken } from './mcpRegister'
+import { getMcpEndpointInfo } from './state'
 import { showActionPanel } from './actionPanel'
 import { appendActionRecord, loadActionRecords } from './actionLedgerIo'
 import { getJob, onJobEvent } from './execJobs'
@@ -214,6 +216,21 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('bastion.openDeployTask', openDeployTask),
     vscode.commands.registerCommand('bastion.exportDeployTasks', () => void exportDeployTasks(ctx)),
     // 「行动面板（预览）」：AI 在哪个会话、发了什么、为了什么、现在什么状态
+    // 网页版行动面板：给 DSH 侧/浏览器预览用（同一个端点、同一份数据）
+    vscode.commands.registerCommand('bastion.openWebPanel', async () => {
+      const ep = getMcpEndpointInfo()
+      if (!ep) {
+        void vscode.window.showWarningMessage('MCP 端点没在跑：先执行一次「BastionShell: 让外部 AI 连上」')
+        return
+      }
+      const tok = currentMcpToken()
+      if (!tok) {
+        void vscode.window.showWarningMessage('读不到 mcp.json 里的 token')
+        return
+      }
+      const url = `${ep.url.replace(/\/mcp$/, '')}/ui/?token=${tok}`
+      await vscode.env.openExternal(vscode.Uri.parse(url))
+    }),
     vscode.commands.registerCommand('bastion.showActions', () => {
       showActionPanel(loadActionRecords)
     }),
