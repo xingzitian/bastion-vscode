@@ -239,9 +239,18 @@ export function healthReport(
     lines.push('- 会话：0 个（工具本身是通的 —— 现在是「没连服务器」，不是「调用出错」）')
   } else {
     const usable = sessions.filter((s) => s.state === 'shell').length
-    lines.push(`- 会话：${sessions.length} 个（**${usable} 个能直接执行命令**）`)
-    for (const s of sessions) lines.push(`  - ${s.name}：${sessionStateLabel(s.state)}`)
-    if (usable === 0) {
+    const busy = sessions.filter((s) => s.busy)
+    lines.push(`- 会话：${sessions.length} 个（**${usable} 个能直接执行命令**${busy.length ? `，${busy.length} 个正在跑作业` : ''}）`)
+    for (const s of sessions) {
+      const label = s.busy && s.state !== 'shell' ? '🔧 正在跑作业（屏幕没有提示符是正常的，别当它停在菜单上）' : sessionStateLabel(s.state)
+      lines.push(`  - ${s.name}：${label}`)
+    }
+    if (usable === 0 && busy.length > 0) {
+      lines.push(
+        '⚠️ 现在没有空闲会话：**有作业正在跑**（不是菜单问题）。',
+        '用 bastion_wait({jobId}) 等它，或 bastion_job 读日志，或 bastion_cancel 停掉；**不要发新命令**（会被"还有命令在跑"拒绝）。'
+      )
+    } else if (usable === 0) {
       // 这句是给 AI 看的：以前它看到「0 个能直接执行命令」还是会硬着头皮 exec，
       // 结果命令被敲进菜单里。所以这里把「为什么 0 个」和「该谁来做」写明白。
       lines.push(

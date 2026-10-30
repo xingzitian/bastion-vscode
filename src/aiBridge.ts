@@ -739,8 +739,17 @@ export function sessionScreenState(term: BastionTerminal): SessionScreenState {
 }
 
 /** 每条会话的名字 + 现在的状态（listSessions 和自检工具都用它） */
-export function sessionHealthLines(): { name: string; state: SessionScreenState }[] {
-  return [...terminals.entries()].map(([vt, t]) => ({ name: vt.name, state: sessionScreenState(t) }))
+export function sessionHealthLines(): { name: string; state: SessionScreenState; busy: boolean }[] {
+  return [...terminals.entries()].map(([vt, t]) => {
+    // 「有作业在跑」和「停在菜单上」在屏幕上长得一样（都没有提示符），
+    // 但下一步完全不同：前者该 wait，后者该让人去走菜单。不能混为一谈。
+    const job = activeJobOf(t.sessionId)
+    return {
+      name: vt.name,
+      state: sessionScreenState(t),
+      busy: !!job && (job.state === 'working' || job.state === 'input_required')
+    }
+  })
 }
 
 /** 会话状态 → 给人/AI 看的一句话 */
