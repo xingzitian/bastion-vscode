@@ -93,6 +93,10 @@ export interface McpSessionApi {
     logToFile?: boolean
     /** 会话上有命令在跑时强行插队（默认拒绝） */
     force?: boolean
+    /** 一句话目的（面板/账本显示给人看；≤60 字，服务端会截断） */
+    why?: string
+    /** 一串命令共用的 intent id（面板据此把整串折叠成一张卡片） */
+    intentId?: string
   }): Promise<ExecResponse>
   connect(input: {
     profile?: string
@@ -348,6 +352,16 @@ export const MCP_TOOL_DEFS: McpToolDef[] = [
         force: {
           type: 'boolean',
           description: '会话上有命令在跑时强行插队（默认拒绝；等于把命令喂给正在跑的程序）'
+        },
+        why: {
+          type: 'string',
+          description:
+            '一句话说明这条命令为了什么（≤60 字，只写目的、不写过程）。面板/账本会显示给人看；不写会标「未说明」'
+        },
+        intentId: {
+          type: 'string',
+          description:
+            '一串命令共用一个 intentId：同一次任务里的多条 exec 传同一个值，面板据此把整串折叠成一张卡片'
         }
       },
       required: ['command'],
@@ -577,7 +591,9 @@ export function createToolDispatch(
           mode: a.mode === 'interactive' ? 'interactive' : undefined,
           background: a.background === true,
           logToFile: a.logToFile === true,
-          force: a.force === true
+          force: a.force === true,
+          why: typeof a.why === 'string' ? a.why : undefined,
+          intentId: typeof a.intentId === 'string' ? a.intentId : undefined
         })
         return { text: r.text, structured: r.structured }
       }

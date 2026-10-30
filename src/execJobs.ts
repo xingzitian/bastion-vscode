@@ -12,6 +12,8 @@
 
 export type ExecStatus = 'working' | 'input_required' | 'completed' | 'failed' | 'cancelled'
 
+import { normalizeWhy, summarizeCommand, type CommandSummary } from './commandSummary'
+
 /** 作业日志的滚动上限（超出丢最老的字节；绝对偏移不受影响） */
 export const JOB_BUFFER_MAX = 8 * 1024 * 1024
 
@@ -51,6 +53,12 @@ export interface ExecJob {
   scanTail: string
   /** 等待者（waitJob 注册；状态或输出变化时唤醒） */
   waiters: Set<() => void>
+  /** AI 声明的一句目的（≤60 字，已归一化；空 = 它没写） */
+  why?: string
+  /** 一串命令共用的 intentId（面板按它分组） */
+  intentId?: string
+  /** 命令摘要：步骤数 / 一行 brief / 脱敏原文 / 高危片段 */
+  summary: CommandSummary
   /** 进入终态的时刻（elapsedMs 用它，避免再查一次就变成 41s） */
   completedAt?: number
 }
@@ -68,6 +76,16 @@ export interface JobView {
   prompt?: string
   hint?: string
   reason?: string
+  /** AI 说这条命令为了什么（空 = 它没写，面板显示"未说明"） */
+  why?: string
+  /** 同一串命令共用的 intent id（面板按它分组） */
+  intentId?: string
+  /** 摘要里的步骤数 */
+  steps?: number
+  /** 一行摘要（`4 步：cd · git pull · npm ci · systemctl restart`） */
+  brief?: string
+  /** 原文是否被脱敏过（有凭据参数时为 true） */
+  redacted?: boolean
 }
 
 const jobs = new Map<string, ExecJob>()
@@ -98,6 +116,10 @@ export function createJob(input: {
   marker?: string
   /** 静默兜底窗口（默认 15s） */
   quietMs?: number
+  /** AI 声明的一句目的（可选；服务端截断到 60 字） */
+  why?: string
+  /** 一串命令共用的 intent id（面板据此分组） */
+  intentId?: string
   now?: number
 }): ExecJob {
   const now = input.now ?? Date.now()
@@ -108,6 +130,9 @@ export function createJob(input: {
     command: input.command,
     startedAt: now,
     state: 'working',
+    why: normalizeWhy(input.why),
+    intentId: input.intentId,
+    summary: summarizeCommand(input.command),
     buffer: Buffer.alloc(0),
     dropped: 0,
     lastLine: '',
@@ -307,7 +332,13 @@ export function viewOf(job: ExecJob, now = Date.now(), cursorNow?: number): JobV
     logPath: job.logPath,
     prompt: job.prompt,
     hint: job.hint,
-    reason: job.reason
+    reason: job.reason,
+    // 叙事：面板/账本靠这三个字段说清「这条命令在干什么」
+    why: job.why,
+    intentId: job.intentId,
+    steps: job.summary.steps,
+    brief: job.summary.brief,
+    redacted: job.summary.redacted
   }
 }
 
@@ -424,7 +455,23 @@ export function resetJobs(): void {
 
 // ── 作业事件（subscriptions/listen 的 notifications/tasks 数据源）──
 
-export type JobEventListener = (event: { jobId: string; status: ExecStatus; exitCode?: number; reason?: string }) => void
+export type JobEventListener = (event: {
+  jobId: string
+  status: ExecStatus
+  exitCode?: number
+  reason?: string
+  /** 会话号（面板按它分组/定位） */
+  sessionNo?: number
+  intentId?: string
+  /** AI 说这条命令为了什么（空 = 没写） */
+  why?: string
+  /** 一行命令摘要 */
+  brief?: string
+  steps?: number
+  /** 原文是否被脱敏过 */
+  redacted?: boolean
+  elapsedMs?: number
+}) => void
 const jobListeners = new Set<JobEventListener>()
 
 /** 订阅作业状态变化（返回取消订阅函数） */
@@ -436,7 +483,20 @@ export function onJobEvent(cb: JobEventListener): () => void {
 /** 广播一次作业状态（由状态机在变化时调用） */
 export function emitJobEvent(job: ExecJob): void {
   if (jobListeners.size === 0) return
-  const payload = { jobId: job.id, status: job.state, exitCode: job.exitCode, reason: job.reason }
+  const payload = {
+    jobId: job.id,
+    status: job.state,
+    exitCode: job.exitCode,
+    reason: job.reason,
+    // 账本/面板要的叙事字段（订阅者按需取用）
+    sessionNo: job.sessionNo,
+    intentId: job.intentId,
+    why: job.why,
+    brief: job.summary.brief,
+    steps: job.summary.steps,
+    redacted: job.summary.redacted,
+    elapsedMs: (job.completedAt ?? Date.now()) - job.startedAt
+  }
   for (const cb of [...jobListeners]) {
     try {
       cb(payload)

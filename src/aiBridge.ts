@@ -358,6 +358,10 @@ export async function execRemote(
     logToFile?: boolean
     /** 会话上有命令在跑时，强行插队（默认拒绝 —— 插队等于把命令喂给正在跑的程序） */
     force?: boolean
+    /** 一句话说明这条命令为了什么（≤60 字；面板/账本会显示，缺省显示「未说明」） */
+    why?: string
+    /** 一串命令共用一个 intentId（AI 一次任务里的多条 exec 传同一个值，面板按它分组） */
+    intentId?: string
   }
 ): Promise<ExecResponse> {
   const input = typeof arg === 'string' ? { command: arg } : (arg ?? {})
@@ -418,7 +422,9 @@ export async function execRemote(
       sessionNo: term.sessionNo,
       command,
       cursorAtStart: term.screenCursor,
-      quietMs: 60_000
+      quietMs: 60_000,
+      why: input.why,
+      intentId: input.intentId
     })
     ensureJobWatcher()
     await term.write(command.replace(/\r\n/g, '\n') + '\r')
@@ -446,7 +452,9 @@ export async function execRemote(
     command,
     cursorAtStart: term.screenCursor,
     quietMs,
-    logPath: undefined
+    logPath: undefined,
+    why: input.why,
+    intentId: input.intentId
   })
   ensureJobWatcher()
 
@@ -571,7 +579,13 @@ export function readExecJob(input: { jobId?: string; sinceOffset?: number; maxBy
   const maxBytes = Math.max(1, Math.min(256 * 1024, Math.floor(input.maxBytes ?? 64 * 1024)))
   const from = Math.max(0, Math.floor(input.sinceOffset ?? 0))
   const r = sliceJob(job, from, maxBytes)
-  const head = `作业 ${job.id}｜状态 ${job.state}${job.exitCode !== undefined ? `｜退出码 ${job.exitCode}` : ''}` +
+  // 叙事行：这条命令为了什么、拆成几步。没写 why 就明确标「未说明」，不假装有。
+  const story =
+    `为了：${job.why || '（AI 未说明）'}｜` +
+    (job.summary.steps > 1 ? `${job.summary.steps} 步：${job.summary.brief.replace(/^\d+ 步：/, '')}` : job.summary.brief || job.command) +
+    `${job.summary.redacted ? '｜（凭据已脱敏）' : ''}`
+  const head = `${story}\n` +
+    `作业 ${job.id}｜状态 ${job.state}${job.exitCode !== undefined ? `｜退出码 ${job.exitCode}` : ''}` +
     `｜共 ${endOffset(job).toLocaleString()} 字节｜本次 [${from}, ${r.nextOffset})${r.truncated ? '（还有更多）' : ''}` +
     `${job.logPath ? `｜远端副本 ${job.logPath}` : ''}`
   const text = `${head}\n\n${r.chunk || '（这一段没有内容）'}` +

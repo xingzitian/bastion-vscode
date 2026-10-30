@@ -277,3 +277,33 @@ test('★ 自定义提示规则：先于内置匹配，坏正则被跳过（陌�
   assert.equal(m.customPromptRuleCount(), 0)
   assert.equal(m.detectPrompt('  ===PICK==> '), undefined, '清空后不该再命中')
 })
+test('★ 叙事：作业带上 why / 步骤摘要 / 脱敏标记，事件里也带（面板靠它画卡片）', async () => {
+  const m = await import('../execJobs')
+  m.resetJobs()
+  const seen: Array<Record<string, unknown>> = []
+  const off = m.onJobEvent((e) => seen.push(e as unknown as Record<string, unknown>))
+  const job = m.createJob({
+    sessionId: 's-narr',
+    sessionNo: 7,
+    command: 'cd /data/app && git pull && mysql -pS3cret -e "select 1"',
+    cursorAtStart: 0,
+    why: '  部署新版本\n到两台  ',
+    intentId: 'intent-1'
+  })
+  const v = m.viewOf(job)
+  assert.equal(v.why, '部署新版本 到两台', 'why 要归一化（压空白/去换行）')
+  assert.equal(v.intentId, 'intent-1')
+  assert.equal(v.steps, 3)
+  assert.match(v.brief!, /3 步：cd · git pull · mysql/)
+  assert.equal(v.redacted, true, '带密码参数必须标记脱敏')
+
+  m.appendJobOutput(job, 'ok <<=MARKER=>>:0\n') // 不触发完成也能发事件？—— 直接手动发一次
+  m.emitJobEvent(job)
+  off()
+  const ev = seen[seen.length - 1]
+  assert.equal(ev.why, '部署新版本 到两台')
+  assert.equal(ev.brief, v.brief)
+  assert.equal(ev.steps, 3)
+  assert.equal(ev.intentId, 'intent-1')
+  assert.equal(ev.sessionNo, 7)
+})

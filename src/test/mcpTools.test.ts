@@ -144,7 +144,9 @@ test('分发：exec 把 command 和 terminal 原样传给 api', async () => {
     mode: undefined,
     background: false,
     logToFile: false,
-    force: false
+    force: false,
+    why: undefined,
+    intentId: undefined
   })
 })
 

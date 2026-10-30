@@ -517,10 +517,30 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
             const listenTasks = clientSupportsTasks(readMeta((parsed as JsonRpcRequest).params))
             const method = listenTasks ? 'notifications/tasks' : 'notifications/bastionshell/job'
             const unsubscribe = onJobEvent((e) => {
+              // ① 任务通道（声明了 tasks 的客户端用）
               writeEvent('message', {
                 jsonrpc: '2.0',
                 method,
                 params: { taskId: e.jobId, jobId: e.jobId, status: e.status, exitCode: e.exitCode, reason: e.reason }
+              })
+              // ② 行动账本通道（自己的命名空间）：面板只靠这一条就能画卡片 ——
+              //    会话、为了什么、几步、状态、退出码、耗时，一次给全
+              writeEvent('message', {
+                jsonrpc: '2.0',
+                method: 'notifications/bastionshell/action',
+                params: {
+                  actionId: e.jobId,
+                  intentId: e.intentId,
+                  sessionNo: e.sessionNo,
+                  status: e.status,
+                  exitCode: e.exitCode,
+                  reason: e.reason,
+                  why: e.why,
+                  brief: e.brief,
+                  steps: e.steps,
+                  redacted: e.redacted,
+                  elapsedMs: e.elapsedMs
+                }
               })
             })
             const keepAlive = setInterval(() => {
