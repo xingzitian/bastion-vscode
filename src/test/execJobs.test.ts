@@ -307,3 +307,14 @@ test('★ 叙事：作业带上 why / 步骤摘要 / 脱敏标记，事件里也
   assert.equal(ev.intentId, 'intent-1')
   assert.equal(ev.sessionNo, 7)
 })
+test('★ 创建作业就广播一次（否则"在跑"的作业对面板/账本完全不可见）', async () => {
+  const m = await import('../execJobs')
+  m.resetJobs()
+  const got: Array<{ jobId?: string; status?: string }> = []
+  const off = m.onJobEvent((e) => got.push(e as unknown as { jobId: string; status: string }))
+  const job = m.createJob({ sessionId: 's-start', sessionNo: 1, command: 'sleep 40', cursorAtStart: 0, why: '在跑演示' })
+  off()
+  assert.equal(got.length, 1, '创建时必须发一次事件')
+  assert.equal(got[0].jobId, job.id)
+  assert.equal(got[0].status, 'working')
+})

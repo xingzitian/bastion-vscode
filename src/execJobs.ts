@@ -147,6 +147,10 @@ export function createJob(input: {
   }
   jobs.set(job.id, job)
   activeBySession.set(job.sessionId, job.id)
+  // ★ 创建时就广播一次：否则「已经开始跑但还没结束」的作业对订阅者完全不可见 ——
+  // 面板上看不到"在跑"的卡片，账本里也没有起始记录，DSH 那边更不会收到开始事件。
+  // 必须在 jobs.set 之后发：订阅者（账本钩子）会拿 jobId 去查作业。
+  emitJobEvent(job)
   return job
 }
 
