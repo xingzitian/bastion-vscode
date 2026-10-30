@@ -12,3 +12,4 @@ out/testkit/**
 node_modules/**/test/**
 node_modules/**/examples/**
 node_modules/**/*.md
+RELEASE-*.md

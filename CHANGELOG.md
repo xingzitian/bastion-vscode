@@ -22,7 +22,36 @@
 
 - 「按时间归并」标记：AI 没传 `intentId` 时，同会话 + 60s 内相邻的命令会被归成一组，
   卡片上明确写「按时间归并」——不把猜测当事实。
-- 面板读的是扩展自己的作业账本，**不经过 MCP**，所以不用 token、不用跨域。
+- VS Code 内的面板直接读扩展自己的作业账本与事件，**不用 token、不用跨域**；网页版走下面 `/ui/*` 的只读接口。
+### 修复（真机跑出来的）
+
+- **`why` / `intentId` 被转发器吞掉**：`aiSessionApi` 的 exec 转发是**逐字段列举**的，新加的两个参数不在
+  列表里 → 面板与账本里全是"未说明"。改成**整体透传** `execRemote({ ...input, command })`，以后加字段
+  不用再改这里。（同类事故第 4 次：headers / meta / 权限 / 这次 why+intentId。）
+- **"在跑"的作业对面板完全不可见**：`emitJobEvent` 只在状态变化时发，**创建时不发** → 后台任务要等它
+  结束才突然出现在面板上 —— 而这恰恰是"AI 走开了但机器还在跑"最该看见的时候。现在 `createJob` 在
+  登记之后广播一次（必须在 `jobs.set` 之后，订阅者会回查作业）。
+- **没有提示符 ≠ 停在菜单**：后台任务运行时 `bastion_health` 会输出"会话状态未知 / 请让用户走完菜单"，
+  而屏幕没有提示符是因为**命令正在跑**。后果是 AI 会去让用户白走一步。现在会话行标 `🔧 正在跑作业`，
+  计数行写"K 个正在跑作业"，并给"用 bastion_wait 跟进、不要发新命令"。
+
+### 新增：给外部宿主的只读 HTTP 接口（`/ui/*`）
+
+跑在扩展既有的 MCP 端点上（只监听 127.0.0.1，token 鉴权），**只读、不新增执行路径**：
+
+| 路由 | 用途 |
+|---|---|
+`GET /ui/` | 自包含 HTML 面板；`embed=1` 去掉标题/页脚并收紧留白（浮窗用），`theme=light\|dark` 切配色 |
+`GET /ui/actions` | `{ total, groups, groupsTotal, html }` —— 卡片片段可直接注入 |
+`GET /ui/status` | `{ ok, working, inputRequired, checkedAt, version, capabilities }`，读**实时作业表**（不读账本，避免脏行） |
+`GET /ui/stream` | SSE：`retry: 3000` + `ready` + 每个作业事件一个 `action` |
+`POST /ui/cancel` | 同源取消（走既有的 cancel 能力） |
+
+- `version` / `capabilities` 是**版本握手**：外部插件据此提示"升级 BastionShell"，而不是给用户一个空白面板。
+- 新命令 **`BastionShell: 在浏览器打开行动面板（给 DSH/外部预览）`**：一条命令拼好带 token 的地址打开。
+- 契约文档：`docs/ui-api.md`。**在 `/ui/groups` 提供之前，消费方请走 `iframe + embed=1`**，
+  不要在前端重写分组与状态回滚（那会导致两份语义漂移）。
+
 ## 0.3.12
 
 > 0.3.11 发布后真机发现的一个问题：**会话断开后卡片卡在「总览」里、关闭按钮点不动**，只能重载窗口。

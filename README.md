@@ -770,6 +770,23 @@ AI 爱把一长串命令写在一次调用里（`cd /data/app && git pull && npm
 
 > 想让卡片更准：让 AI 调 `bastion_exec` 时带上 `why:"部署新版本到两台"` 和
 > `intentId:"deploy-42"`（同一次任务里的多条命令共用同一个 intentId）。
+### 给别的宿主用：浏览器版 / 只读 HTTP 接口
+
+面板不只能在 VS Code 里看：
+
+- 命令 **`BastionShell: 在浏览器打开行动面板（给 DSH/外部预览）`** —— 一条命令起网页版（同一份数据、同一套卡片）
+- 端点还提供只读接口，供外部面板/浮窗消费（**只读，不新增执行路径**）：
+
+| 路由 | 用途 |
+|---|---|
+`GET /ui/?embed=1&theme=light\|dark` | 自包含 HTML 面板；`embed=1` 去掉标题页脚并收紧留白（浮窗用） |
+`GET /ui/actions` | `{ total, groups, groupsTotal, html }` |
+`GET /ui/status` | `{ ok, working, inputRequired, checkedAt, version, capabilities }`（读**实时**作业表） |
+`GET /ui/stream` | SSE：`retry: 3000` + `ready` + 每个作业事件一个 `action` |
+`POST /ui/cancel` | 同源取消 |
+
+端口与 token 在 `~/.bastionshell/mcp.json`（**端口被占会回退**，别写死 39311）。
+完整契约（字段、事件、版本握手、"什么时候该用 iframe"）见 [`docs/ui-api.md`](docs/ui-api.md)。
 ## 📋 协议支持：2026-07-28（modern）+ legacy
 
 同一个端点同时支持两个时代，**行为由客户端的声明决定**，不猜：
