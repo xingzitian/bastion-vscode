@@ -49,7 +49,7 @@ import {
   type McpToolDef,
   type ToolCallContext
 } from './mcpTools'
-import { getJob, jobText, onJobEvent, viewOf, type ExecJob } from './execJobs'
+import { allJobs, getJob, jobText, onJobEvent, viewOf, type ExecJob } from './execJobs'
 import { groupByIntent } from './actionLedger'
 import { renderActionsHtml } from './actionPanelHtml'
 import { renderStandalonePanel } from './uiPage'
@@ -453,8 +453,25 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
       }
       if (bare === '/ui') {
         const records = opts.ui?.listActions ? await opts.ui.listActions() : []
+        const groupsTotal = groupByIntent(records as never).length
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...cors })
-        res.end(renderStandalonePanel(records as never, given))
+        res.end(
+          renderStandalonePanel(records as never, given, {
+            embed: q.get('embed') === '1',
+            theme: q.get('theme') === 'light' ? 'light' : 'dark',
+            limit: Math.max(1, Math.min(500, Number(q.get('limit') ?? 100) || 100)),
+            groupsTotal
+          })
+        )
+        return
+      }
+      // 浮窗用的极轻接口：只看"现在有几条在跑/等输入"，**读实时作业表**，不读账本。
+      // 账本在 VS Code 崩掉时会留下永远 working 的脏行 —— 拿它数会让浮窗一直显示"1 条在跑"。
+      if (bare === '/ui/status') {
+        const live = allJobs()
+        const working = live.filter((j) => j.state === 'working').length
+        const inputRequired = live.filter((j) => j.state === 'input_required').length
+        send(200, { ok: true, working, inputRequired, checkedAt: Date.now() }, cors)
         return
       }
       if (bare === '/ui/actions') {
@@ -462,7 +479,7 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
         const limit = Math.max(1, Math.min(500, Number(q.get('limit') ?? 100) || 100))
         const slice = (records as never[]).slice(-limit)
         const groups = groupByIntent(slice as never)
-        send(200, { total: (records as never[]).length, groups: groups.length, html: renderActionsHtml(groups) }, cors)
+        send(200, { total: (records as never[]).length, groups: groups.length, groupsTotal: groupByIntent(records as never).length, html: renderActionsHtml(groups) }, cors)
         return
       }
       if (bare === '/ui/cancel' && req.method === 'POST') {
@@ -505,6 +522,7 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
         const write = (event: string, data: unknown): void => {
           res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
         }
+        res.write('retry: 3000\n\n') // EventSource 标准重连间隔；页面里的自定义重连保留作兜底
         write('ready', { ok: true })
         const off = onJobEvent((e) => write('action', e))
         const keep = setInterval(() => res.write(': keep-alive\n\n'), 25_000)

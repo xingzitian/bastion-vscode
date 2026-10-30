@@ -121,3 +121,87 @@ test('○ /ui/cancel 必须真的调到注入的 cancel（页面上的"取消"�
     h.close?.()
   }
 })
+test('★ /ui/status 必须读实时作业表，不能读账本（账本会有永远 working 的脏行）', async () => {
+  const { resetJobs, createJob, completeJob, markInputRequired } = await import('../execJobs')
+  resetJobs()
+  const a = createJob({ sessionId: 's-1', sessionNo: 1, command: 'sleep 100', cursorAtStart: 0 })
+  const b = createJob({ sessionId: 's-2', sessionNo: 2, command: 'read x', cursorAtStart: 0 })
+  markInputRequired(b, 'Password:', '让人输')
+  const c = createJob({ sessionId: 's-3', sessionNo: 3, command: 'true', cursorAtStart: 0 })
+  completeJob(c, { exitCode: 0, markerSeen: true })
+
+  // 账本里塞一条"还在跑"的脏行：如果实现读了账本，working 会变成 2
+  const h = await startMcpHttpServer({
+    api: api(),
+    token: TOKEN,
+    clients: [],
+    port: 0,
+    serverName: 'bastionshell',
+    serverVersion: '0.3.13',
+    ui: {
+      listActions: async () =>
+        [
+          rec({ actionId: 'stale', status: 'working', endedAt: undefined, command: 'ghost' }) as never
+        ] as never
+    }
+  })
+  try {
+    const r = await fetch(`http://127.0.0.1:${h.port}/ui/status?token=${TOKEN}`)
+    const j = (await r.json()) as { ok: boolean; working: number; inputRequired: number; checkedAt: number }
+    assert.equal(j.ok, true)
+    assert.equal(j.working, 1, '只算实时在跑的（c 已完成、b 是等输入）')
+    assert.equal(j.inputRequired, 1)
+    assert.ok(j.checkedAt > 0)
+    assert.equal((await fetch(`http://127.0.0.1:${h.port}/ui/status`)).status, 401)
+    assert.equal((await fetch(`http://127.0.0.1:${h.port}/ui/status?token=${TOKEN}`)).headers.get('cache-control'), 'no-store')
+    void a
+  } finally {
+    h.close?.()
+    resetJobs()
+  }
+})
+
+test('★ embed=1 不渲染标题/页脚；theme=light 用浅色；默认与之前一致', async () => {
+  const s = await start()
+  try {
+    const plain = await (await fetch(`${s.url}/ui/?token=${TOKEN}`)).text()
+    assert.match(plain, /<h1>/)
+    assert.match(plain, /<footer>/)
+    assert.match(plain, /--bg: #0d1117/)
+
+    const emb = await (await fetch(`${s.url}/ui/?embed=1&theme=light&token=${TOKEN}`)).text()
+    assert.doesNotMatch(emb, /<h1>/, 'embed 不能有标题')
+    assert.doesNotMatch(emb, /<footer>/, 'embed 不能有页脚')
+    assert.match(emb, /padding: 8px/)
+    assert.match(emb, /--bg: #ffffff/)
+    assert.match(emb, /color-scheme: light/)
+    // 其余照旧：SSE、取消、卡片都还在
+    assert.match(emb, /EventSource/)
+    assert.match(emb, /\/ui\/cancel/)
+    assert.match(emb, /部署新版本/)
+  } finally {
+    s.close()
+  }
+})
+
+test('○ /ui/actions 增加 groupsTotal（不改 groups 语义）；/ui/stream 首行 retry: 3000', async () => {
+  const s = await start()
+  try {
+    const j = (await (await fetch(`${s.url}/ui/actions?limit=1&token=${TOKEN}`)).json()) as {
+      total: number
+      groups: number
+      groupsTotal: number
+    }
+    assert.equal(j.groups, 1, 'limit=1 时切片后只有 1 组（旧字段语义不变）')
+    assert.equal(j.groupsTotal, 1, '全量分组数')
+
+    const res = await fetch(`${s.url}/ui/stream?token=${TOKEN}`)
+    const reader = res.body!.getReader()
+    const { value } = await reader.read()
+    const head = new TextDecoder().decode(value)
+    assert.match(head, /retry: 3000/)
+    await reader.cancel()
+  } finally {
+    s.close()
+  }
+})
