@@ -30,7 +30,7 @@
 
 ## 装 & 用（三步）
 
-1. 装：扩展商店搜 **BastionShell SSH**，或 `code --install-extension bastion-vscode-0.3.11.vsix`
+1. 装：扩展商店搜 **BastionShell SSH**，或 `code --install-extension bastion-vscode-0.3.12.vsix`
 2. 连：命令面板 → **`BastionShell: 连接`**（输密码 + 动态码；堡垒机则过菜单选目标机）
 3. 用：终端里照常敲命令；要传文件就 `rz`/`sz`；要部署就用「部署任务」；要让 AI 干活就跑一次
    `BastionShell: 让外部 AI 连上（MCP 端点 / 一键复制配置）`
