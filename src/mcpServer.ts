@@ -471,7 +471,20 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
         const live = allJobs()
         const working = live.filter((j) => j.state === 'working').length
         const inputRequired = live.filter((j) => j.state === 'input_required').length
-        send(200, { ok: true, working, inputRequired, checkedAt: Date.now() }, cors)
+        send(
+          200,
+          {
+            ok: true,
+            working,
+            inputRequired,
+            checkedAt: Date.now(),
+            // 版本握手：插件据此判断"这个扩展够不够新"，而不是让用户面对一个空白面板
+            version: opts.serverVersion,
+            // 这个端点支持的能力（插件按它降级；以后加新路由不用改握手格式）
+            capabilities: ['status', 'actions', 'stream', 'cancel', 'embed', 'theme']
+          },
+          cors
+        )
         return
       }
       if (bare === '/ui/actions') {

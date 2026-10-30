@@ -147,11 +147,21 @@ test('★ /ui/status 必须读实时作业表，不能读账本（账本会有�
   })
   try {
     const r = await fetch(`http://127.0.0.1:${h.port}/ui/status?token=${TOKEN}`)
-    const j = (await r.json()) as { ok: boolean; working: number; inputRequired: number; checkedAt: number }
+    const j = (await r.json()) as {
+      ok: boolean
+      working: number
+      inputRequired: number
+      checkedAt: number
+      version: string
+      capabilities: string[]
+    }
     assert.equal(j.ok, true)
     assert.equal(j.working, 1, '只算实时在跑的（c 已完成、b 是等输入）')
     assert.equal(j.inputRequired, 1)
     assert.ok(j.checkedAt > 0)
+    // 版本握手：插件靠它判断"扩展够不够新"，而不是给用户一个空白面板
+    assert.equal(j.version, '0.3.13')
+    assert.deepEqual(j.capabilities, ['status', 'actions', 'stream', 'cancel', 'embed', 'theme'])
     assert.equal((await fetch(`http://127.0.0.1:${h.port}/ui/status`)).status, 401)
     assert.equal((await fetch(`http://127.0.0.1:${h.port}/ui/status?token=${TOKEN}`)).headers.get('cache-control'), 'no-store')
     void a
