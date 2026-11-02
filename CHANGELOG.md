@@ -1,22 +1,5 @@
-## 未发布
+## 0.3.14
 
-> 这些改动在 main 上，**没有版本号**（0.3.14 是你手上要验的那个包）。攒到 0.3.15 一起发。
-
-### 多堡垒机：档案级资产策略 + 结构化提问（只改扩展，不加界面）
-
-- 档案新增三个可选字段：`vendor`（厂商画像，目前只用于文档/日志）、`userChoice`（选用户序号）、
-  `assetPolicy`（多资产策略：`ask` / `first` / `id:3` / `name:研发`）。
-- `decideAsset(assets, assetId, policy)`：**显式 assetId 永远优先**，其次档案策略，最后才问人。
-- **AI 那条路不再弹窗**：`bastion_connect` 现在传 `ask:'fail'`，遇到"多条资产"时**不弹 QuickPick**
-  （弹窗会卡在 VS Code 那侧等人点），而是返回结构化问题：
-  `{ status:'input_required', kind:'choose_asset', host, why, options:[{id,label,hint}], retry:{…} }`。
-  AI 照着把 `options` 念给用户，拿到编号后带 `assetId` 重试。
-- **人选的答案会被记住**：人通过 QuickPick 选完之后，若档案里没写过 `assetPolicy`，自动写 `id:<n>`
-  —— 下次不再问。写失败只记日志，不影响连接。
-
-### 验证
-
-- 新增 3 条测试（策略 first/id/name、显式 ID 优先、结构化 options 形状），全量见下。## 0.3.14
 
 > 内核抽取的第一阶段（M0/M1/M2）：**行为零变化**，但代码分成了 `src/core`（不依赖 vscode）+ 宿主适配。
 > 同时新增 **6 道静态检查**，并靠它们抓出并修掉一个真 bug。
@@ -51,9 +34,25 @@
   **真机上会在装载期崩**（`Cannot find module './log'`）。`check:requires` 一跑就露出来了。
   顺手把它那段"惰性 require 避免 vscode 依赖"的历史包袱删掉 —— ports 本身不碰 vscode，直接静态引用。
 
+### 多堡垒机：档案级资产策略 + 结构化提问（只改扩展，不加界面）
+
+- 档案新增三个可选字段：`vendor`（厂商画像，目前只用于文档/日志）、`userChoice`（选用户序号）、
+  `assetPolicy`（多资产策略：`ask` / `first` / `id:3` / `name:研发`）。
+- `decideAsset(assets, assetId, policy)`：**显式 assetId 永远优先**，其次档案策略，最后才问人。
+- **AI 那条路不再弹窗**：`bastion_connect` 现在传 `ask:'fail'`，遇到"多条资产"时**不弹 QuickPick**
+  （弹窗会卡在 VS Code 那侧等人点），而是返回结构化问题：
+  `{ status:'input_required', kind:'choose_asset', host, why, options:[{id,label,hint}], retry:{…} }`。
+  AI 照着把 `options` 念给用户，拿到编号后带 `assetId` 重试。
+- **人选的答案会被记住**：人通过 QuickPick 选完之后，若档案里没写过 `assetPolicy`，自动写 `id:<n>`
+  —— 下次不再问。写失败只记日志，不影响连接。
+
 ### 验证
 
-- 全量 **719 用例 / 694 通过 / 0 失败**；六道检查全绿（并逐条用"故意制造故障"验证过它们真会红）。## 0.3.13
+- 新增 3 条测试（策略 first/id/name、显式 ID 优先、结构化 options 形状），全量见下。
+- 全量 **722 用例 / 697 通过 / 0 失败**；六道检查全绿（并逐条用"故意制造故障"验证过它们真会红）。
+
+## 0.3.13
+
 
 > 新增**行动面板**：AI 在哪个会话、刚发了什么命令、**为了什么**、现在什么状态 —— 一屏看完。
 > 起因：AI 爱把一长串命令写在一次调用里，人看不出在干什么；后台任务和"它说我在跑构建"更是看不见。
