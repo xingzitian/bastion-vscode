@@ -18,13 +18,10 @@
 import * as http from 'http'
 import {
   ERR_INVALID_PARAMS,
-  ERR_METHOD_NOT_FOUND,
   headerMismatchError,
   httpStatusForError,
   LIST_TTL_MS,
-  MODERN_VERSION,
   SUPPORTED_PROTOCOL_VERSIONS as ALL_SUPPORTED_VERSIONS,
-  TASKS_EXTENSION,
   clientSupportsElicitation,
   clientSupportsTasks,
   createTaskResult,

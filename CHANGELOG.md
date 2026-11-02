@@ -1,4 +1,41 @@
-## 0.3.13
+## 0.3.14
+
+> 内核抽取的第一阶段（M0/M1/M2）：**行为零变化**，但代码分成了 `src/core`（不依赖 vscode）+ 宿主适配。
+> 同时新增 **6 道静态检查**，并靠它们抓出并修掉一个真 bug。
+
+### 重构：抽出内核
+
+- 新增 `src/core/`（35 个文件 / 7,147 行）：执行/作业、账本/摘要、MCP 协议层、`/ui` 渲染、菜单识别、
+  传输路径、zmodem、配置读写、危险命令、绑定……全部**不 import vscode**。
+- 新增 `core/ports.ts`：`Logger` / `CredentialStore` / `TerminalSink` / `HostEvents` / `Paths` 五个端口，
+  宿主在启动时 `configureCore()` 注入（扩展侧用 `wireCoreLogger()` 把 OutputChannel 接进去）。
+- `status.ts` 的 `fmtBytes/fmtDuration/fmtSpeed/progressBar` 拆到 `core/format.ts`，`status.ts` re-export。
+- `DeployTask` 带 `vscode.Uri`，**不整体下沉**；`core/types.ts` 只放报告需要的窄类型 `DeployReportTask`。
+- 完成度：`src/core` 0 处 vscode；宿主侧从 70 个文件 / 17.5k 行降到 37 个 / 10.6k 行。
+
+### 新增：六道静态检查（都接进了 `npm test`）
+
+| 检查 | 抓什么 |
+|---|---|
+`check:core` | core 里出现 `vscode` 或反向引用宿主 → 红 |
+`check:core-types` | `tsconfig.core.json` 不给 vscode 声明，`import 'vscode'` 在类型层直接失败 |
+`check:load` | 用假 vscode **require 每一个 out 模块**：捕获 `Cannot find module`、顶层崩溃、export 对不上 |
+`check:requires` | out 里 419 处相对 `require()` 必须解析到真实文件（tsc 不看这些） |
+`check:assets` | 源码里引用的仓库资源（图标/文档/语法）必须存在 |
+`check:cycles` | 新增循环依赖 → 红（已知遗留 5 个进基线，只允许变少） |
+`check:unused` | core 里未使用的变量/导入 → 红（宿主侧遗留 52 处记为债务，暂不阻塞） |
+
+外加 **激活冒烟测试**：不开 VS Code，用假 `vscode` 跑 `activate()`，断言命令都注册上、订阅都挂上。
+
+### 修复（被新检查抓出来的真 bug）
+
+- **`core/menuHintsFile` 还留着 `require('./log')`**：模块搬进 core 后这行没改，`log.ts` 依赖 vscode，
+  **真机上会在装载期崩**（`Cannot find module './log'`）。`check:requires` 一跑就露出来了。
+  顺手把它那段"惰性 require 避免 vscode 依赖"的历史包袱删掉 —— ports 本身不碰 vscode，直接静态引用。
+
+### 验证
+
+- 全量 **719 用例 / 694 通过 / 0 失败**；六道检查全绿（并逐条用"故意制造故障"验证过它们真会红）。## 0.3.13
 
 > 新增**行动面板**：AI 在哪个会话、刚发了什么命令、**为了什么**、现在什么状态 —— 一屏看完。
 > 起因：AI 爱把一长串命令写在一次调用里，人看不出在干什么；后台任务和"它说我在跑构建"更是看不见。

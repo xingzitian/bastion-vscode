@@ -37,6 +37,14 @@ export interface FakeStatusBarItem {
 /** 本次测试进程里创建过的所有状态栏项，按创建顺序 */
 export const statusBarItems: FakeStatusBarItem[] = []
 
+/** RelativePattern 在 activate 里用来监听工作区里的某类文件（这里只需可构造） */
+export class FakeRelativePattern {
+  constructor(
+    readonly base: unknown,
+    readonly pattern: string
+  ) {}
+}
+
 export class FakeThemeColor {
   constructor(public readonly id: string) {}
 }
@@ -96,6 +104,8 @@ export function setWorkspaceFolder(fsPath: string | undefined): void {
 
 /** showQuickPick 的调用记录与预设返回值（先进先出；队列空 → 返回 undefined，等同用户按 Esc） */
 export const quickPickCalls: Array<{ items: unknown[]; options: unknown }> = []
+/** 本次进程里注册过的命令 id（activate 冒烟测试用） */
+export const registeredCommands: string[] = []
 const quickPickResponses: unknown[] = []
 
 export function queueQuickPickResponse(value: unknown): void {
@@ -200,6 +210,7 @@ const fakeVscode = {
   MarkdownString: FakeMarkdownString,
   TreeItem: FakeTreeItem,
   EventEmitter: FakeEventEmitter,
+  RelativePattern: FakeRelativePattern,
   Uri: {
     file: (p: string) => ({ fsPath: p, scheme: 'file' }),
     // MCP 端点注册要用它（扩展把 http://127.0.0.1:port/mcp 包成 Uri 交给 VS Code）
@@ -213,6 +224,12 @@ const fakeVscode = {
       return workspaceFolders
     },
     // 配置变化监听：MCP 端点要靠它响应 bastion.mcpEnabled / mcpPort 的切换
+    createFileSystemWatcher: () => ({
+      onDidCreate: () => ({ dispose(): void {} }),
+      onDidChange: () => ({ dispose(): void {} }),
+      onDidDelete: () => ({ dispose(): void {} }),
+      dispose: (): void => {}
+    }),
     onDidChangeConfiguration: (listener: (e: { affectsConfiguration(section: string): boolean }) => void) => {
       configChangeListeners.push(listener)
       return { dispose(): void {} }
@@ -257,11 +274,45 @@ const fakeVscode = {
       // 只能等命令把 items 递进来再决定"用户勾了哪几个"。
       return typeof r === 'function' ? (r as (items: unknown[]) => unknown)(items) : r
     },
-    setStatusBarMessage: () => ({ dispose(): void {} })
+    setStatusBarMessage: () => ({ dispose(): void {} }),
+    registerWebviewViewProvider: () => ({ dispose(): void {} }),
+    registerTreeDataProvider: () => ({ dispose(): void {} }),
+    createTreeView: () => ({ dispose(): void {}, onDidChangeVisibility: () => ({ dispose(): void {} }) }),
+    registerUriHandler: () => ({ dispose(): void {} }),
+    showTextDocument: async () => undefined,
+    withProgress: async (_o: unknown, task: (p: unknown) => Promise<unknown>) =>
+      task({ report: () => undefined }),
+    createTerminal: () => ({
+      name: 'fake',
+      processId: Promise.resolve(1),
+      sendText: (): void => {},
+      show: (): void => {},
+      hide: (): void => {},
+      dispose: (): void => {},
+      state: { isInteractedWith: false },
+      exitStatus: undefined,
+      creationOptions: {},
+      shellIntegration: undefined
+    }),
+    onDidCloseTerminal: () => ({ dispose(): void {} }),
+    onDidChangeActiveTextEditor: () => ({ dispose(): void {} }),
+
+    onDidChangeTextEditorSelection: () => ({ dispose(): void {} }),
+    onDidChangeTerminalShellIntegration: () => ({ dispose(): void {} }),
+    onDidOpenTerminal: () => ({ dispose(): void {} }),
+    onDidStartTerminalShellExecution: () => ({ dispose(): void {} }),
+    activeTextEditor: undefined,
+    visibleTextEditors: [],
+    onDidChangeActiveTerminal: () => ({ dispose(): void {} }),
+    activeTerminal: undefined,
+    terminals: []
   },
   commands: {
     executeCommand: async () => undefined,
-    registerCommand: () => ({ dispose(): void {} })
+    registerCommand: (name: string) => {
+      registeredCommands.push(String(name))
+      return { dispose(): void {} }
+    }
   },
   // MCP 相关的两个 API：默认「不存在」（模拟 1.101 以下的 VS Code），测试可以赋值上来
   // 模拟新版本。
@@ -269,7 +320,13 @@ const fakeVscode = {
   // ⚠️ 为什么必须在这里先声明成 undefined：`import * as vscode from 'vscode'` 编译后是
   // `__importStar(require('vscode'))`，它只给**导入那一刻已存在的键**建 getter；
   // 事后再往这个对象上加 `lm`，被测模块是看不到的（踩过一次）。
-  lm: undefined as unknown,
+  // 语言模型工具/ MCP 注册：默认给一个最小实现（activate 冒烟需要它存在）。
+  // 想测"旧版 VS Code 没有 lm"的分支，测试里把它置回 undefined 即可。
+  lm: {
+    registerTool: () => ({ dispose(): void {} }),
+    registerMcpServerDefinitionProvider: () => ({ dispose(): void {} }),
+    tools: []
+  },
   McpHttpServerDefinition: undefined as unknown
 }
 

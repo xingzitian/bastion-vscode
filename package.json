@@ -2,7 +2,7 @@
   "name": "bastion-vscode",
   "displayName": "BastionShell SSH",
   "description": "SSH 堡垒机终端：一次 MFA + 连接复用，多开会话/批量部署/rz/sz 文件传输/端口转发/快捷命令，并提供 bastion.exec 让 VS Code 里的 AI 插件在服务器上执行命令",
-  "version": "0.3.13",
+  "version": "0.3.14",
   "publisher": "xingzitian",
   "author": "杏子甜",
   "license": "MIT",
@@ -1390,10 +1390,16 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "npm run check:core && tsc -p ./ && node --test \"out/test/*.test.js\"",
+    "test": "tsc -p ./ && npm run check && node --test \"out/test/*.test.js\"",
     "test:only": "node --test \"out/test/*.test.js\"",
     "package": "tsc -p ./ && npx --yes @vscode/vsce package --allow-missing-repository",
-    "check:core": "node scripts/check-core.mjs && tsc -p tsconfig.core.json"
+    "check:core": "node scripts/check-core.mjs && tsc -p tsconfig.core.json",
+    "check:load": "node scripts/check-load.mjs",
+    "check:requires": "node scripts/check-requires.mjs",
+    "check:assets": "node scripts/check-assets.mjs",
+    "check:cycles": "node scripts/check-cycles.mjs",
+    "check:unused": "tsc -p tsconfig.core.json --noUnusedLocals --noUnusedParameters",
+    "check": "npm run check:core && npm run check:load && npm run check:requires && npm run check:assets && npm run check:cycles && npm run check:unused"
   },
   "dependencies": {
     "jsonc-parser": "^3.3.1",

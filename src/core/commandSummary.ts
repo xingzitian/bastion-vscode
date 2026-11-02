@@ -33,8 +33,6 @@ export interface CommandSummary {
   truncated: boolean
 }
 
-/** 每段最多保留几个词（动词 + 目标，够看懂就行） */
-const MAX_WORDS_PER_STEP = 3
 /** brief 最多多少字符（面板一行） */
 const MAX_BRIEF = 120
 /** 最多列几步（再多的折叠成 `+N`） */
@@ -221,3 +219,4 @@ export function normalizeWhy(why: string | undefined, max = 60): string {
   if (!s) return ''
   return s.length > max ? s.slice(0, max - 1) + '…' : s
 }
+

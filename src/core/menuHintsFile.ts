@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 import * as os from 'os'
+import { coreLog } from './ports'
 import * as path from 'path'
 import { parse as parseJsonc, ParseError } from 'jsonc-parser'
 // 只 import 类型（编译后会被抹掉）→ 和 menu.ts 之间**没有运行时循环依赖**
@@ -45,10 +46,10 @@ function isOverride(v: unknown): v is MenuHintsOverride {
 /**
  * 共享规则目录：`~/.bastionshell/`（与 config.ts 同一个约定、同一个环境变量覆盖）。
  *
- * ⚠️ 这里**故意不走 config.ts**：那个模块会 import log.ts，而 log.ts import 了 vscode ——
- * menu.ts 这套识别逻辑的价值之一就是「纯函数、不碰 vscode、能直接在 node 里测」，
- * 拉进 vscode 依赖会把这条性质毁掉（测试得先塞 stub 才能加载）。
- * 所以这里只用 fs/path/os/jsonc-parser，出错时再**惰性**去 require log。
+ * 历史注记：以前这里刻意绕开 config.ts/log.ts，因为 log.ts 依赖 vscode，
+ * 会毁掉 menu 这套「纯函数、能在 node 里直接测」的性质。
+ * 内核抽取之后这个顾虑消失了 —— `core/ports` 本身不碰 vscode，
+ * 所以日志改成静态引用（惰性 require 一并删掉）。
  */
 function sharedDir(): string {
   const override = (process.env.BASTIONSHELL_SHARED_DIR ?? '').trim()
@@ -56,15 +57,9 @@ function sharedDir(): string {
   return path.join(os.homedir(), '.bastionshell')
 }
 
-/** 惰性日志：正常路径不加载 log.ts（它依赖 vscode），出错时才试着写一条 */
+/** 出错时才写一条日志；日志通道本身失败也不能把识别搞坏 */
 function logQuiet(msg: string): void {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { log } = require('./log') as { log: (m: string) => void }
-    log(msg)
-  } catch {
-    /* 没有 log 通道（例如单元测试里）就算了，不要因为日志把识别搞坏 */
-  }
+  coreLog(msg)
 }
 
 /**

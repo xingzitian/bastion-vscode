@@ -235,7 +235,7 @@ export async function pushPath(opts: {
     // 目录：远端解开
     if (isDir) {
       const tarRemote = at(sendName)
-      const extract = await session.exec(`tar -xzf ${shQuote(tarRemote)} -C ${shQuote(dirAbs || '.')} && rm -f ${shQuote(tarRemote)}`)
+      await session.exec(`tar -xzf ${shQuote(tarRemote)} -C ${shQuote(dirAbs || '.')} && rm -f ${shQuote(tarRemote)}`)
       if (session.exitCode() !== 0) {
         return fail(
           `❌ 文件传上去了，但远端解包失败（tar 退出码 ${session.exitCode() ?? '未知'}）—— ` +
