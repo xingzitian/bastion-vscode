@@ -23,7 +23,12 @@ import { stopForwardsOfConn } from './forward'
 import {
   HOST_STEP, SHELL_STEP, AFTER_HOST_TIMING, AFTER_HOST_ORDER,
   planAfterHost, shouldSelectUser, resolveMenuHints, hintsToRegexes, detectPrompt,
-  judgeAfterHost, parseAssetTable, decideAsset, describeAssets, assetPickCancelledMessage,
+  judgeAfterHost,
+  parseAssetTable,
+  decideAsset,
+  describeAssets,
+  assetOptions,
+  assetPickCancelledMessage,
   type AssetCandidate, type MenuHints, type MenuHintKey, type MenuStep
 } from './core/menu'
 import { log } from './log'
@@ -137,6 +142,25 @@ export function closeSessionsOfConn(conn: SharedConnection): void {
   }
   safeUi('刷新状态栏', updateStatusBar)
   safeUi('刷新总览面板', refreshOverview)
+}
+
+/**
+ * 把"用户选的资产"记进档案（`assetPolicy: id:<n>`），下次不再问。
+ *
+ * 只在档案里**没有** assetPolicy 时调用 —— 用户手写的策略优先级最高，不能被自动覆盖。
+ * 写失败不影响连接（记日志即可）。
+ */
+function rememberAssetChoice(profileName: string, assetId: string): void {
+  try {
+    const list = getProfiles(ctx)
+    const hit = list.find((p) => p.name === profileName)
+    if (!hit || hit.assetPolicy) return
+    hit.assetPolicy = `id:${assetId}`
+    void saveProfiles(ctx, list)
+    log(`已记住「${profileName}」的资产选择：assetPolicy=id:${assetId}（下次不再问）`)
+  } catch (e) {
+    log(`记住资产选择失败（不影响连接）：${(e as Error).message}`)
+  }
 }
 
 /** 断连时弹一次提示（带「重连」按钮），每个连接只挂一次避免多会话重复弹 */
@@ -372,12 +396,34 @@ function dumpScreenForHints(term: ScreenReader, hintKey: MenuHintKey, screen = t
  * @param assetId 明确指定用哪条资产（AI 传的 / 任务文件里写的）。
  *                不传时：只有一条候选就自动用；多条就问人（**绝不盲发数字**）。
  */
+/**
+ * 「需要人/AI 选一条资产」时抛这个 —— 带上**结构化选项**，而不是只有一段自然语言。
+ *
+ * 为什么要专门一个错误类型：AI 侧不能弹 QuickPick（它在另一个客户端里，弹窗会卡死在那台机器上），
+ * 所以要能把它作为"问题"返回给调用方：`{ options: [{id,label,hint}] }`，
+ * AI 照着念给用户，用户答 id，AI 带 `assetId` 重试。
+ */
+export class AssetChoiceError extends Error {
+  constructor(
+    readonly host: string,
+    readonly why: string,
+    readonly options: Array<{ id: string; label: string; hint: string }>
+  ) {
+    super(`需要选择资产（${why}）`)
+    this.name = 'AssetChoiceError'
+  }
+}
+
 export async function openSessionToHost(
   conn: SharedConnection,
   profile: ConnectionProfile,
   host: string,
   userChoice: string,
-  assetId?: string
+  assetId?: string,
+  /** 遇到"多资产要选"时：`ui` 弹窗（人点的命令）/ `fail` 抛 AssetChoiceError（AI 走的路径） */
+  ask: 'ui' | 'fail' = 'ui',
+  /** 档案级默认策略（`assetPolicy`：first / id:3 / name:研发 / ask） */
+  assetPolicy?: string
 ): Promise<{ term: BastionTerminal; vt: vscode.Terminal; asset?: AssetPicked }> {
   const { term, vt } = openTerminal(conn, profile, `${profile.username}@${host}`)
   vt.show()
@@ -417,12 +463,16 @@ export async function openSessionToHost(
 
     // 一个 IP 匹配到多条资产：先选出资产 ID 再继续
     const candidates = parseAssetTable(screen)
-    let pick = decideAsset(candidates, explicitAssetId)
+    let pick = decideAsset(candidates, explicitAssetId, assetPolicy)
     if (pick.kind === 'ask') {
+      // AI 那条路不能弹窗（它在别的客户端里，弹窗会把人卡在 VS Code 上）
+      if (ask === 'fail') throw new AssetChoiceError(host, pick.why, assetOptions(candidates))
       const chosen = await askAssetId(host, candidates, pick.why)
       if (!chosen) {
         throw new Error(assetPickCancelledMessage(host, candidates, pick.why))
       }
+      // 人选的答案记进档案（下次不再问）；只在档案没写过策略时写，避免覆盖用户手写的
+      if (!assetPolicy) rememberAssetChoice(profile.name, chosen)
       pick = { kind: 'use', id: chosen, candidate: candidates.find((c) => c.id === chosen), why: `${pick.why} → 选了 ${chosen}` }
     }
     log(`菜单导航「选资产」：${pick.why}`)

@@ -469,8 +469,29 @@ export type AssetDecision =
  *   3. 多条候选 / 没解析出表 → 问人。**绝不盲发一个数字** ——
  *      盲发可能登到错的机器上（这正是加这一步的原因）。
  */
-export function decideAsset(assets: AssetCandidate[], assetId?: string): AssetDecision {
-  const want = (assetId ?? '').trim()
+export function decideAsset(assets: AssetCandidate[], assetId?: string, policy?: string): AssetDecision {
+  // 档案级默认策略（`assetPolicy`）：`id:3` / `name:研发` / `first` / `ask`
+  // 只在调用方没显式给 assetId 时生效 —— 显式参数永远是最高优先级。
+  const pol = (policy ?? '').trim()
+  const explicit = (assetId ?? '').trim()
+  if (!explicit && pol && pol !== 'ask') {
+    if (pol === 'first' && assets.length > 0) {
+      return { kind: 'use', id: assets[0].id, candidate: assets[0], why: `档案策略 first：用第一条 ${describeAsset(assets[0])}` }
+    }
+    const byId = /^id[:：](.+)$/.exec(pol)
+    if (byId) {
+      const want = byId[1].trim()
+      const hit = assets.find((a) => a.id === want)
+      return { kind: 'use', id: want, candidate: hit, why: `档案策略 id:${want}（${hit ? describeAsset(hit) : '不在已解析的候选里'}）` }
+    }
+    const byName = /^name[:：](.+)$/.exec(pol)
+    if (byName) {
+      const q = byName[1].trim().toLowerCase()
+      const hit = assets.find((a) => `${a.name} ${a.address}`.toLowerCase().includes(q))
+      if (hit) return { kind: 'use', id: hit.id, candidate: hit, why: `档案策略 name:${byName[1]} → ${describeAsset(hit)}` }
+    }
+  }
+  const want = explicit
   if (want) {
     const hit = assets.find((a) => a.id === want)
     return {
@@ -595,4 +616,17 @@ function stripAnsiForMatch(s: string): string {
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
     .replace(/\x1b[()][A-Za-z0-9]/g, '')
     .replace(/\x1b[=>78]/g, '')
+}
+
+/**
+ * 把候选资产变成"可选项"（给 AI 转述、给面板渲染）。
+ *
+ * 这是**结构化提问**的核心：不要只给一段自然语言，而是给 `{id,label,hint}` ——
+ * AI 可以照抄给用户，面板可以直接画成按钮，用户点完把 `id` 当 `assetId` 重试。
+ */
+export function assetOptions(assets: AssetCandidate[]): Array<{ id: string; label: string; hint: string }> {
+  return assets.map((a) => {
+    const hint = [a.address, a.platform, a.org].filter((v, i, arr) => v && arr.indexOf(v) === i).join(' · ')
+    return { id: a.id, label: `${a.id} · ${a.name || a.address}`, hint }
+  })
 }

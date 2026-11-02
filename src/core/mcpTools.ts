@@ -106,7 +106,9 @@ export interface McpSessionApi {
     clientId?: string
     /** 连接时直接给会话起别名（省掉一次 bastion_use） */
     as?: string
-  }): Promise<string>
+    /** `fail` = 需要选资产时不弹窗，返回结构化问题（AI 走这条） */
+    ask?: 'ui' | 'fail'
+  }): Promise<string | { text: string; structured: Record<string, unknown> }>
   /** 把调用者绑定到某条会话（别名 A/B…）：让"我在哪条会话上"由服务端记住 */
   use(input: { session?: string; as?: string; unbind?: boolean; clientId?: string }): Promise<string>
   habits(input: { action?: string; profile?: string; habit?: string; privilege?: string }): Promise<string>
@@ -609,16 +611,17 @@ export function createToolDispatch(
         const host = typeof a.host === 'string' ? a.host : undefined
         const userChoice = typeof a.userChoice === 'string' ? a.userChoice : undefined
         const assetId = typeof a.assetId === 'string' ? a.assetId : undefined
-        return {
-          text: await api.connect({
-            profile,
-            host,
-            userChoice,
-            assetId,
-            clientId,
-            as: typeof a.as === 'string' ? a.as : undefined
-          })
-        }
+        const r = await api.connect({
+          profile,
+          host,
+          userChoice,
+          assetId,
+          clientId,
+          // AI 这条路**不能弹 QuickPick**：它在另一个客户端里，弹窗会卡在 VS Code 那侧等人点
+          ask: 'fail',
+          as: typeof a.as === 'string' ? a.as : undefined
+        })
+        return typeof r === 'string' ? { text: r } : { text: r.text, structured: r.structured }
       }
       case 'bastion_habits': {
         const action = typeof a.action === 'string' ? a.action : 'read'

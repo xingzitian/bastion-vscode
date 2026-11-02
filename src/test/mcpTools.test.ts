@@ -183,7 +183,17 @@ test('分发：connect 把 assetId 原样传给能力层（一个 IP 多条资�
     })
   )
   await dispatch('bastion_connect', { profile: '生产', host: '10.0.0.1', userChoice: '2', assetId: '2' })
-  assert.deepEqual(seen, { profile: '生产', host: '10.0.0.1', userChoice: '2', assetId: '2', clientId: undefined, as: undefined })
+  // 注意 `ask:'fail'`：AI 这条路不能弹窗（会在 VS Code 那侧卡住等人点），
+  // 遇到多条资产要返回结构化问题，让 AI 去问用户。
+  assert.deepEqual(seen, {
+    profile: '生产',
+    host: '10.0.0.1',
+    userChoice: '2',
+    assetId: '2',
+    clientId: undefined,
+    ask: 'fail',
+    as: undefined
+  })
 
   // 不传就是 undefined（决策层据此去问人，而不是瞎猜一条）
   await dispatch('bastion_connect', { profile: '生产', host: '10.0.0.1' })

@@ -20,6 +20,12 @@ export interface ConnectionProfile {
   aliases?: string[];
   /** 连接模式：direct = 直接 SSH（普通服务器）；bastion = 堡垒机（过菜单选机） */
   mode?: 'direct' | 'bastion';
+  /** 厂商画像（可选）：jumpserver / qizhi / 自定义；目前只用于文档与日志 */
+  vendor?: string;
+  /** 选用户序号（可选）：管理员账号常常没有这一步，留空 = 默认 1 / 自动跳过 */
+  userChoice?: string;
+  /** 多资产选择策略（可选）：ask（默认）/ first / id:3 / name:研发。答过一次可记在这里 */
+  assetPolicy?: string;
 }
 
 const KEY = 'bastion.profiles';
@@ -70,7 +76,10 @@ function normalizeProfile(p: ConnectionProfile): ConnectionProfile {
     authMethod: p.authMethod === 'key' ? 'key' : 'password',
     // 别名只留非空字符串（手写文件时很容易留空串/写错类型）
     aliases: Array.isArray(p.aliases) ? p.aliases.map((a) => String(a).trim()).filter(Boolean) : undefined,
-    mode: p.mode === 'direct' ? 'direct' : 'bastion'
+    mode: p.mode === 'direct' ? 'direct' : 'bastion',
+    vendor: typeof p.vendor === 'string' && p.vendor.trim() ? p.vendor.trim() : undefined,
+    userChoice: typeof p.userChoice === 'string' && p.userChoice.trim() ? p.userChoice.trim() : undefined,
+    assetPolicy: typeof p.assetPolicy === 'string' && p.assetPolicy.trim() ? p.assetPolicy.trim() : undefined
   };
 }
 

@@ -12,9 +12,11 @@ import {
   parseAssetTable,
   looksLikeAssetList,
   decideAsset,
+  assetOptions,
   describeAsset,
   describeAssets,
   assetPickCancelledMessage,
+  type AssetCandidate,
   classifySessionScreen,
   menuStuckMessage,
   DEFAULT_MENU_HINTS,
@@ -568,4 +570,37 @@ test('人工接手这件事要在工具说明里讲清楚（AI 才知道可以�
   assert.match(exec.description, /不会把命令发出去/)
   assert.match(MCP_INSTRUCTIONS, /人和 AI 共用/)
   assert.match(MCP_INSTRUCTIONS, /不需要重新认证/)
+})
+
+// ── 多堡垒机：档案级资产策略 + 结构化选项 ──────────────────────────
+
+const cands: AssetCandidate[] = [
+  { id: '1', name: '172.20.30.143', address: '172.20.30.143', platform: 'Linux', org: '默认', note: '' },
+  { id: '2', name: '研发网域172.20.30.143', address: '172.20.30.143', platform: 'Gateway', org: '默认', note: '' }
+]
+
+test('★ 档案策略：first / id:N / name:X 都能自动选，ask 才会问', () => {
+  assert.equal(decideAsset(cands, undefined, 'first').kind, 'use')
+  const byId = decideAsset(cands, undefined, 'id:2')
+  assert.equal(byId.kind, 'use')
+  if (byId.kind === 'use') assert.equal(byId.id, '2')
+  const byName = decideAsset(cands, undefined, 'name:研发')
+  assert.equal(byName.kind, 'use')
+  if (byName.kind === 'use') assert.equal(byName.id, '2')
+  assert.equal(decideAsset(cands, undefined, 'ask').kind, 'ask')
+  assert.equal(decideAsset(cands, undefined, undefined).kind, 'ask', '没有策略 + 多条 → 必须问')
+})
+
+test('精确 assetId 永远优先于档案策略', () => {
+  const d = decideAsset(cands, '1', 'id:2')
+  assert.equal(d.kind, 'use')
+  if (d.kind === 'use') assert.equal(d.id, '1', '显式传的 assetId 不能被策略覆盖')
+})
+
+test('★ 结构化选项：给 AI 转述、给面板画按钮（id/label/hint）', () => {
+  const opts = assetOptions(cands)
+  assert.equal(opts.length, 2)
+  assert.equal(opts[0].id, '1')
+  assert.match(opts[1].label, /^2 · 研发网域/)
+  assert.match(opts[1].hint, /Gateway/)
 })

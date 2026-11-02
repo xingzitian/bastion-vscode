@@ -452,7 +452,9 @@ export function activate(context: vscode.ExtensionContext): void {
       },
       invoke: async (options) => {
         const input = options.input as { profile?: string; host?: string; userChoice?: string; assetId?: string }
-        const output = await sessionApi.connect(input)
+        const r = await sessionApi.connect(input)
+        // connect 现在可能返回「需要选资产」的结构化问题：LM 工具只能给文本，所以取 text
+        const output = typeof r === 'string' ? r : r.text
         return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(output)])
       }
     }),

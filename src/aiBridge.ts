@@ -40,7 +40,7 @@ import {
 } from './core/execJobs'
 import { ctx, terminals, lastBastionTerminal, getMcpEndpointInfo, nextSessionId } from './state'
 import { defaultDownloadDir as defaultDownloadDirShared } from './downloadDir'
-import { ensureConnection, openTerminal, openSessionToHost, type AssetPicked } from './sessions'
+import { ensureConnection, openTerminal, openSessionToHost, AssetChoiceError, type AssetPicked } from './sessions'
 import { describeAsset, describeAssets, classifySessionScreen, menuStuckMessage, resolveMenuHints, type SessionScreenState } from './core/menu'
 import { pullPath, pushPath, type TransferSession } from './core/transferPath'
 import { fmtBytes } from './status'
@@ -651,11 +651,17 @@ export async function connectToTarget(input?: {
   host?: string
   userChoice?: string
   assetId?: string
+  /**
+   * 遇到"需要选一条资产"时怎么办：
+   *  - `ui`（默认）：弹 QuickPick 让用户选（人点的命令走这条）
+   *  - `fail`：**不弹窗**，直接返回结构化的问题（AI 走这条 —— 它在另一个客户端里，弹窗会卡住）
+   */
+  ask?: 'ui' | 'fail'
   /** 调用它的客户端（X-BastionShell-Client）；用来把新会话自动绑到它身上 */
   clientId?: string
   /** 连接时就给这条会话起别名（A/B… 或 db1/jump 这类自己好记的名字） */
   as?: string
-}): Promise<string> {
+}): Promise<string | { text: string; structured: Record<string, unknown> }> {
   const profileName = input?.profile ?? ''
   const host = input?.host ?? ''
   if (!profileName) {
@@ -685,10 +691,35 @@ export async function connectToTarget(input?: {
 
   let opened: Awaited<ReturnType<typeof openSessionToHost>>
   try {
-    opened = await openSessionToHost(conn, profile, host, input?.userChoice ?? '1', input?.assetId)
+    opened = await openSessionToHost(
+      conn,
+      profile,
+      host,
+      input?.userChoice ?? profile.userChoice ?? '1',
+      input?.assetId,
+      input?.ask ?? 'ui',
+      profile.assetPolicy
+    )
   } catch (e) {
-    // 失败也要**作为文本返回**（而不是抛出去）：里面对「多条资产」这种情况会带上候选列表，
-    // AI 读到之后可以带 assetId 再调一次，用户也能看懂发生了什么。
+    // 「需要选一条资产」不是失败，是**一个要回答的问题**：返回结构化选项，AI 照着念给用户。
+    if (e instanceof AssetChoiceError) {
+      const lines = e.options.map((o) => `  ${o.id}) ${o.label}${o.hint ? ` —— ${o.hint}` : ''}`).join('\n')
+      return {
+        text:
+          `连接 ${host} 需要先选一条资产（${e.why}）：\n${lines}\n\n` +
+          `把这几条转告用户，拿到编号后带 assetId 重新调用 bastion_connect；` +
+          `用户也可以让我记住：「以后这台都选 ${e.options[0]?.id ?? 'N'}」（写进档案的 assetPolicy）。`,
+        structured: {
+          status: 'input_required',
+          kind: 'choose_asset',
+          host: e.host,
+          why: e.why,
+          options: e.options,
+          retry: { tool: 'bastion_connect', params: { profile: profileName, host, assetId: '<选中的 id>' } }
+        }
+      }
+    }
+    // 其它失败也要**作为文本返回**（而不是抛出去），AI 能读到原因
     const msg = (e as Error).message
     log(`连接目标 ${host} 失败：${msg}`)
     return `连接 ${host} 失败：${msg}`
