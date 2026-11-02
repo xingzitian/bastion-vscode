@@ -22,7 +22,7 @@ import {
   httpStatusForError,
   withCache,
   withResultType
-} from '../mcpEra'
+} from '../core/mcpEra'
 
 const metaOf = (version: string, caps: Record<string, unknown> = {}) => ({
   _meta: {

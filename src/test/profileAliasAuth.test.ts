@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type * as vscode from 'vscode'
 import { queueWarningResponse, setInputBoxResult, warningMessages } from '../testkit/vscode-stub'
-import { isAuthFailure } from '../authError'
+import { isAuthFailure } from '../core/authError'
 import {
   hasSavedPassword,
   getPassphrase,   savePassphrase,   hasSavedPassphrase,   offerPassphraseReset,

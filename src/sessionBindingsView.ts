@@ -14,7 +14,7 @@
 import * as vscode from 'vscode'
 import { terminals } from './state'
 import { setSlot, clearSlot } from './status'
-import { aliasOfSession, bindingsOf, loadBindings, normalizeClientId, onBindingsChanged, ownerClients, saveBindings, unbind } from './sessionBindings'
+import { aliasOfSession, bindingsOf, loadBindings, normalizeClientId, onBindingsChanged, ownerClients, saveBindings, unbind } from './core/sessionBindings'
 
 function entries(): { id: string; name: string; term: import('./terminal').BastionTerminal }[] {
   return [...terminals.entries()].map(([vt, term]) => ({ id: term.sessionId, name: vt.name, term }))

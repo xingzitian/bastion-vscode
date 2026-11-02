@@ -1,7 +1,7 @@
 import * as vscode from 'vscode'
 import * as path from 'path'
-import { ZmodemEventPayload } from './zmodem'
-import { readJsonFile, writeJsonFile } from './config'
+import { ZmodemEventPayload } from './core/zmodem'
+import { readJsonFile, writeJsonFile } from './core/config'
 import { setSlot, flashSlot, clearSlot, fmtBytes, fmtDuration, fmtSpeed, progressBar } from './status'
 import { log } from './log'
 

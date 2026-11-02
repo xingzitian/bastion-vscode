@@ -4,7 +4,7 @@ import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import * as fs from 'fs'
 import { useTempHome, cleanupTempHome, cfgPath } from '../testkit/env'
-import { readJsonFile, writeJsonFile, ensureJsonFile, migrateJsonExtension, configFilePath, configDir } from '../config'
+import { readJsonFile, writeJsonFile, ensureJsonFile, migrateJsonExtension, configFilePath, configDir } from '../core/config'
 
 const home = useTempHome()
 after(() => cleanupTempHome(home))

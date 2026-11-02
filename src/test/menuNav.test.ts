@@ -19,7 +19,7 @@ import {
   detectPrompt,
   type MenuHintKey,
   type MenuStep
-} from '../menu'
+} from '../core/menu'
 
 /**
  * 假终端：按「段」往外吐输出，模拟堡垒机一屏一屏画。

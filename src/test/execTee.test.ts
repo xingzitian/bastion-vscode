@@ -1,7 +1,7 @@
 // tee 封装（纯函数）：拼出来的命令必须是 POSIX sh 能跑的，且**退出码来自命令本身**而不是 tee。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTeeCommand, shQuote, tailLogCommand, teePaths } from '../execTee'
+import { buildTeeCommand, shQuote, tailLogCommand, teePaths } from '../core/execTee'
 
 const P = teePaths('j-0001')
 

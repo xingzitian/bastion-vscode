@@ -1,8 +1,8 @@
 // 「自检执行协议」的断言逻辑（不碰真终端，纯逻辑测试）
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { SELF_TEST_STEPS, formatSelfTestTable, runSelfTest } from '../selfTest'
-import type { ExecResponse } from '../execResult'
+import { SELF_TEST_STEPS, formatSelfTestTable, runSelfTest } from '../core/selfTest'
+import type { ExecResponse } from '../core/execResult'
 
 const ok = (extra: Record<string, unknown> = {}, text = ''): ExecResponse => ({
   text,

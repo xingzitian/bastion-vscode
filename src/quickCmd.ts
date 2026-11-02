@@ -9,9 +9,9 @@ import {
   QuickCommandItem, getQuickCommands, saveQuickCommands, newQuickCommandId,
   resolveQuickCommand, ensureQuickCommandsFile, QUICK_COMMANDS_FILE
 } from './quickCommands'
-import { findDangerous, describeDanger } from './danger'
+import { findDangerous, describeDanger } from './core/danger'
 import { getDangerRules } from './dangerConfig'
-import { configDir } from './config'
+import { configDir } from './core/config'
 import { log } from './log'
 import { ctx, terminals, quickCommandsProvider } from './state'
 

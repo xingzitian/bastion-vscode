@@ -5,8 +5,8 @@
 import '../testkit/vscode-stub'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { startMcpHttpServer, newMcpToken, type McpHttpHandle } from '../mcpServer'
-import { type McpSessionApi, type ToolCallContext } from '../mcpTools'
+import { startMcpHttpServer, newMcpToken, type McpHttpHandle } from '../core/mcpServer'
+import { type McpSessionApi, type ToolCallContext } from '../core/mcpTools'
 
 const MAIN = newMcpToken()
 const OBS = newMcpToken()

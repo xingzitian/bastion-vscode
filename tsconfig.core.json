@@ -1,0 +1,15 @@
+{
+  // 「内核能不能脱离 vscode 编译」的硬护栏。
+  //
+  // 关键在 "types": ["node"] —— 它只加载 node 的类型，**不加载 @types/vscode**。
+  // 于是 src/core 里任何 `import ... from 'vscode'` 都会直接编译失败，
+  // 不需要靠人眼 review（这条比 lint 规则更硬：它连"声明文件"都不给）。
+  //
+  // 用法：npm run check:core-types
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["src/core/**/*.ts"]
+}

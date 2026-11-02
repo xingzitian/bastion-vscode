@@ -20,7 +20,7 @@ import '../testkit/vscode-stub'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Zmodem from 'zmodem.js'
-import { ZmodemSessionController, type ZmodemIo } from '../zmodem'
+import { ZmodemSessionController, type ZmodemIo } from '../core/zmodem'
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 

@@ -13,9 +13,9 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { exitCodeNote, listSessions, pullFile, pushFile, tailScreen } from '../aiBridge'
-import { judgeUpload, md5Hex } from '../uploadVerify'
+import { judgeUpload, md5Hex } from '../core/uploadVerify'
 import { healthReport } from '../aiSessionApi'
-import { classifySessionScreen } from '../menu'
+import { classifySessionScreen } from '../core/menu'
 import { setMcpEndpointInfo, terminals } from '../state'
 import type { BastionTerminal } from '../terminal'
 
@@ -245,9 +245,9 @@ test('md5Hex 和系统 md5 一致（回读比对用的就是它）', () => {
 })
 
 test('给 AI 的话里明确写了「不要再自己 ls/md5 验一遍」；mtime 的教训留在代码里', () => {
-  const transfer = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'transferPath.ts'), 'utf8')
+  const transfer = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'transferPath.ts'), 'utf8')
   assert.match(transfer, /不要再用 ls \/ md5sum 自己验一遍/)
-  const verify = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'uploadVerify.ts'), 'utf8')
+  const verify = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'uploadVerify.ts'), 'utf8')
   assert.match(verify, /绝对不要用 mtime 判断成功与否/, '这条教训要留在代码里')
 })
 
@@ -279,7 +279,7 @@ test('哈希读不出来时，必须说清"为什么"（读不了 / 没工具 �
 })
 
 test('回读命令不依赖 awk/cut（真机教训：md5sum | awk 什么都没吐出来）', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'uploadVerify.ts'), 'utf8')
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'uploadVerify.ts'), 'utf8')
   const cmdBlock = src.slice(src.indexOf('const cmd ='), src.indexOf('const out = await session.exec(cmd)'))
   assert.doesNotMatch(cmdBlock, /\bawk\b/, '回读命令里不能再出现 awk')
   assert.doesNotMatch(cmdBlock, /\bcut\b/)

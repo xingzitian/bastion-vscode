@@ -17,7 +17,7 @@ import {
   resolveUploadPromptChoice,
   UPLOAD_PROMPT_RUN,
   UPLOAD_PROMPT_UPLOAD
-} from '../localPath'
+} from '../core/localPath'
 
 /** 造一个假的文件系统：只认给定的几个文件 */
 const fsStub = (files: string[], dirs: string[] = []) => (p: string): 'file' | 'dir' | 'none' => {

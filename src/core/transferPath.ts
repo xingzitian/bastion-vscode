@@ -26,7 +26,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { spawnSync } from 'child_process'
 import { shQuote } from './shellQuote'
-import { fmtBytes } from './status'
+import { fmtBytes } from './format'
 import { globSafe, judgeUpload, md5Hex, remoteInfo, type ExecLike, type RemoteFileInfo } from './uploadVerify'
 import type { OverwriteMode } from './zmodem'
 

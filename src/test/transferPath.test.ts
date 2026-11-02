@@ -23,7 +23,7 @@ import {
   pushPath,
   type Capabilities,
   type TransferSession
-} from '../transferPath'
+} from '../core/transferPath'
 
 const caps = (over: Partial<Capabilities> = {}): Capabilities => ({
   rz: false,

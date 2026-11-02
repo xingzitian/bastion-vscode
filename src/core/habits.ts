@@ -1,7 +1,7 @@
 import * as fs from 'fs'
 import { parse as parseJsonc, modify, applyEdits, ParseError, FormattingOptions } from 'jsonc-parser'
 import { configFilePath, ensureJsonFile, readJsonFile, writeTextAtomic } from './config'
-import { log } from './log'
+import { coreLog } from './ports'
 
 /**
  * 个人习惯（habits.jsonc）
@@ -115,7 +115,7 @@ export function getHabits(): Habits {
     ensureJsonFile(HABITS_FILE, HABITS_HEADER, HABITS_TEMPLATE)
     return normalize(readJsonFile<Habits>(HABITS_FILE, HABITS_TEMPLATE, isHabitsObject))
   } catch (e) {
-    log(`读取个人习惯失败: ${(e as Error).message}`)
+    coreLog(`读取个人习惯失败: ${(e as Error).message}`)
     return { notes: [], profiles: {} }
   }
 }
@@ -139,13 +139,13 @@ function editHabitsFile(apply: (text: string) => string): boolean {
     const errors: ParseError[] = []
     parseJsonc(next, errors, { allowTrailingComma: true })
     if (errors.length > 0) {
-      log('习惯文件改完后解析不过，已放弃本次写入（原文件未动）')
+      coreLog('习惯文件改完后解析不过，已放弃本次写入（原文件未动）')
       return false
     }
     writeTextAtomic(fp, next)
     return true
   } catch (e) {
-    log(`写入习惯文件失败: ${(e as Error).message}`)
+    coreLog(`写入习惯文件失败: ${(e as Error).message}`)
     return false
   }
 }
@@ -214,14 +214,14 @@ export function appendHabit(profileName: string | undefined, text: string): bool
   const h = getHabits()
   const existing = key ? h.profiles?.[key]?.notes ?? [] : h.notes ?? []
   if (existing.includes(note)) {
-    log(`习惯已存在，跳过：${note}`)
+    coreLog(`习惯已存在，跳过：${note}`)
     return false
   }
   const jsonPath: (string | number)[] = key
     ? ['profiles', key, 'notes', existing.length]
     : ['notes', existing.length]
   const ok = editHabitsFile((t) => setPath(t, jsonPath, note))
-  if (ok) log(`已记录习惯${key ? `（${key}）` : '（全局）'}：${note}`)
+  if (ok) coreLog(`已记录习惯${key ? `（${key}）` : '（全局）'}：${note}`)
   return ok
 }
 
@@ -230,7 +230,7 @@ export function setPrivilege(profileName: string | undefined, mode: PrivilegeMod
   const key = normProfile(profileName)
   const jsonPath: (string | number)[] = key ? ['profiles', key, 'privilege'] : ['privilege']
   const ok = editHabitsFile((t) => setPath(t, jsonPath, mode))
-  if (ok) log(`已设置提权习惯${key ? `（${key}）` : '（全局）'}：${mode}`)
+  if (ok) coreLog(`已设置提权习惯${key ? `（${key}）` : '（全局）'}：${mode}`)
   return ok
 }
 
@@ -239,6 +239,6 @@ export function setWorkdir(profileName: string | undefined, dir: string): boolea
   const key = normProfile(profileName)
   const jsonPath: (string | number)[] = key ? ['profiles', key, 'workdir'] : ['workdir']
   const ok = editHabitsFile((t) => setPath(t, jsonPath, dir.trim()))
-  if (ok) log(`已设置工作目录${key ? `（${key}）` : '（全局）'}：${dir}`)
+  if (ok) coreLog(`已设置工作目录${key ? `（${key}）` : '（全局）'}：${dir}`)
   return ok
 }

@@ -6,7 +6,7 @@
 import '../testkit/vscode-stub'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { describeConnectError, shouldOfferRetry, MAX_AUTH_ATTEMPTS } from '../authError'
+import { describeConnectError, shouldOfferRetry, MAX_AUTH_ATTEMPTS } from '../core/authError'
 
 /** 造一个 ssh2 风格的认证失败错误 */
 const authErr = (msg = 'All configured authentication methods failed'): Error & { level: string } =>

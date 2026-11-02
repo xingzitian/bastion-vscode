@@ -31,7 +31,7 @@ test('health：声明了 tasks/elicitation 时应显示 ✓', async () => {
 })
 
 test('★ health 要报动作声明率（intentId / why），低于 80% 给出提醒', async () => {
-  const { resetJobs, createJob } = await import('../execJobs')
+  const { resetJobs, createJob } = await import('../core/execJobs')
   setMcpEndpointInfo({ url: 'http://127.0.0.1:39311/mcp', port: 39311, portFallback: false, version: '0.3.13' })
   resetJobs()
   createJob({ sessionId: 's-a', sessionNo: 1, command: 'ls', cursorAtStart: 0, intentId: 'i-1', why: '看目录' })
@@ -42,7 +42,7 @@ test('★ health 要报动作声明率（intentId / why），低于 80% 给出�
   resetJobs()
 })
 test('★ 有作业在跑时，health 不能说"停在菜单上"（屏幕没提示符是正常的）', async () => {
-  const { resetJobs, createJob } = await import('../execJobs')
+  const { resetJobs, createJob } = await import('../core/execJobs')
   const { terminals } = await import('../state')
   const { BastionTerminal } = await import('../terminal')
   const st = await import('../state')

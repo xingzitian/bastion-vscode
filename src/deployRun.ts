@@ -21,16 +21,16 @@ import {
   resolveTerminalPolicy,
   type TerminalPolicy
 } from './deploy'
-import { findDangerousIn, describeDanger } from './danger'
+import { findDangerousIn, describeDanger } from './core/danger'
 import { getDangerRules } from './dangerConfig'
-import { getHabits, resolvePrivilege } from './habits'
-import { SHELL_STEP, resolveMenuHints, detectPrompt } from './menu'
+import { getHabits, resolvePrivilege } from './core/habits'
+import { SHELL_STEP, resolveMenuHints, detectPrompt } from './core/menu'
 import { setSlot, flashSlot, clearSlot, fmtDuration } from './status'
 import { log } from './log'
 import { sleep, ctx, terminals, activeIsBastion, deployProvider } from './state'
 import { updateStatusBar, updateKeepTerminalSlot } from './slots'
 import { ensureConnection, openSessionToHost, openTerminal } from './sessions'
-import { HostResult, DeployRun, renderDeployReport, capForAi, type StepResult } from './deployReport'
+import { HostResult, DeployRun, renderDeployReport, capForAi, type StepResult } from './core/deployReport'
 import { sendTextToAIChat } from './aiChat'
 import { toReportView, showReportPanel, type ReportView } from './deployReportView'
 import {
@@ -656,7 +656,11 @@ export async function finishDeployReport(runs: DeployRun[]): Promise<void> {
   try {
     const paths = sidecarPaths(file.fsPath)
     lastReportPaths = paths
-    lastView = toReportView(runs, runs.length === 1 ? runs[0].task.uri?.toString() : undefined)
+    // 报告视图只依赖窄类型（DeployReportTask）；要 uri 时显式回到宿主类型（它带 vscode.Uri）
+    lastView = toReportView(
+      runs,
+      runs.length === 1 ? (runs[0].task as DeployTask).uri?.toString() : undefined
+    )
     fs.writeFileSync(paths.json, JSON.stringify(lastView, null, 2), 'utf8')
     const ptr = vscode.Uri.joinPath(ctx.globalStorageUri, 'reports', 'last.json')
     fs.writeFileSync(

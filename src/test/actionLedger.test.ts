@@ -10,9 +10,9 @@ import {
   toJsonl,
   upsertRecord,
   type ActionRecord
-} from '../actionLedger'
-import { renderActionsHtml } from '../actionPanelHtml'
-import { completeJob, createJob, failJob, resetJobs } from '../execJobs'
+} from '../core/actionLedger'
+import { renderActionsHtml } from '../core/actionPanelHtml'
+import { completeJob, createJob, failJob, resetJobs } from '../core/execJobs'
 
 function rec(over: Partial<ActionRecord> = {}): ActionRecord {
   return {

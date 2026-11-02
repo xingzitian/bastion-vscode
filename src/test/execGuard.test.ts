@@ -4,8 +4,8 @@
 import '../testkit/vscode-stub'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { expectCursorProblem } from '../sessionBindings'
-import { cachedNote, createExecMemo } from '../execIdempotency'
+import { expectCursorProblem } from '../core/sessionBindings'
+import { cachedNote, createExecMemo } from '../core/execIdempotency'
 
 // ───────────────── P2-a：cursor ─────────────────
 

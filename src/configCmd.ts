@@ -3,8 +3,8 @@
 
 import * as vscode from 'vscode'
 import * as path from 'path'
-import { configDir, ensureJsonFile } from './config'
-import { HABITS_FILE, HABITS_HEADER, HABITS_TEMPLATE } from './habits'
+import { configDir, ensureJsonFile } from './core/config'
+import { HABITS_FILE, HABITS_HEADER, HABITS_TEMPLATE } from './core/habits'
 import { ensureQuickCommandsFile, QUICK_COMMANDS_FILE } from './quickCommands'
 import { openDangerRulesFile } from './dangerConfig'
 import { log, outChannel } from './log'

@@ -10,8 +10,8 @@
 //   Authorization: Bearer <token>
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { startMcpHttpServer, newMcpToken, type McpHttpHandle } from '../mcpServer'
-import { MCP_TOOL_DEFS, type McpSessionApi } from '../mcpTools'
+import { startMcpHttpServer, newMcpToken, type McpHttpHandle } from '../core/mcpServer'
+import { MCP_TOOL_DEFS, type McpSessionApi } from '../core/mcpTools'
 
 const TOKEN = newMcpToken()
 

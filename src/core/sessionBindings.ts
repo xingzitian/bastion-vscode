@@ -10,7 +10,7 @@
  * 会话列表由调用方（aiBridge）传进来。契约见 docs/session-identity.md。
  */
 import { readJsonFile, writeJsonFile } from './config'
-import { log } from './log'
+import { coreLog } from './ports'
 
 export const BINDINGS_FILE = 'mcp-bindings.json'
 
@@ -179,7 +179,7 @@ function notifyBindingsChanged(): void {
     try {
       cb()
     } catch (e) {
-      log(`绑定变更通知的处理函数抛错（忽略）: ${(e as Error).message}`)
+      coreLog(`绑定变更通知的处理函数抛错（忽略）: ${(e as Error).message}`)
     }
   }
 }
@@ -190,7 +190,7 @@ export function saveBindings(f: BindingsFile): void {
     notifyBindingsChanged()
   } catch (e) {
     // 绑定写不进去不该让工具调用整体失败：内存里的绑定这次仍然有效（下次启动重新来）
-    log(`保存会话绑定失败: ${(e as Error).message}`)
+    coreLog(`保存会话绑定失败: ${(e as Error).message}`)
   }
 }
 

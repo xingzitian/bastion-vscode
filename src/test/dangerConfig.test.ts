@@ -8,7 +8,7 @@ import { useTempHome, cleanupTempHome, cfgPath } from '../testkit/env'
 const home = useTempHome()
 after(() => cleanupTempHome(home))
 
-import { buildDangerRules, findDangerous, isDangerous, BUILTIN_DANGER_RULES } from '../danger'
+import { buildDangerRules, findDangerous, isDangerous, BUILTIN_DANGER_RULES } from '../core/danger'
 import { getDangerRules, getDangerOverride, DANGER_RULES_FILE, DANGER_RULES_TEMPLATE } from '../dangerConfig'
 
 const file = cfgPath(home, DANGER_RULES_FILE)

@@ -5,8 +5,8 @@
 // 顺序或形状不对，客户端表现为「这个服务器没有工具」，而不是报错。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { LATEST_PROTOCOL_VERSION, createMcpServer, toMcpTool } from '../mcpServer'
-import { MCP_TOOL_DEFS, type McpSessionApi } from '../mcpTools'
+import { LATEST_PROTOCOL_VERSION, createMcpServer, toMcpTool } from '../core/mcpServer'
+import { MCP_TOOL_DEFS, type McpSessionApi } from '../core/mcpTools'
 
 function api(over: Partial<McpSessionApi> = {}): McpSessionApi {
   return {

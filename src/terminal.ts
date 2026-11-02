@@ -4,18 +4,18 @@ import type { ConnectionProfile } from './profiles';
 import { SharedConnection } from './connection';
 import { stopMfaCountdown } from './connection';
 import { log } from './log'
-import { appendJobOutput, completeJob, detectPrompt as detectInputPrompt, failJob, markInputRequired, type ExecJob } from './execJobs'
-import { buildTeeCommand } from './execTee';
-import { rememberClosedSession } from './closedSessions';
-import { ZmodemSessionController, ZmodemEventPayload, OverwriteMode } from './zmodem';
-import { NodeFsZmodemIo } from './zmodemIo';
+import { appendJobOutput, completeJob, detectPrompt as detectInputPrompt, failJob, markInputRequired, type ExecJob } from './core/execJobs'
+import { buildTeeCommand } from './core/execTee';
+import { rememberClosedSession } from './core/closedSessions';
+import { ZmodemSessionController, ZmodemEventPayload, OverwriteMode } from './core/zmodem';
+import { NodeFsZmodemIo } from './core/zmodemIo';
 import { resolveDownloadDir } from './downloadDir';
 import { trackTransfer, beginUpload } from './transfer';
 import { fmtBytes as formatBytes } from './status';
-import { pushPath, type TransferSession } from './transferPath';
+import { pushPath, type TransferSession } from './core/transferPath';
 // 单向依赖：menu.ts 不 import terminal.ts，所以这里可以放心用它的提示符识别
-import { classifySessionScreen, resolveMenuHints, detectPrompt } from './menu';
-import { describeConnectError, isAuthFailure, MAX_AUTH_ATTEMPTS, shouldOfferRetry } from './authError';
+import { classifySessionScreen, resolveMenuHints, detectPrompt } from './core/menu';
+import { describeConnectError, isAuthFailure, MAX_AUTH_ATTEMPTS, shouldOfferRetry } from './core/authError';
 import { hasSavedPassphrase, hasSavedPassword, offerPassphraseReset, offerPasswordReset } from './profiles';
 import {
   broadcastPayload,
@@ -31,7 +31,7 @@ import {
   shouldHoldLocalPathInput,
   UPLOAD_PROMPT_RUN,
   UPLOAD_PROMPT_UPLOAD
-} from './localPath';
+} from './core/localPath';
 import * as fs from 'fs';
 import * as path from 'path';
 

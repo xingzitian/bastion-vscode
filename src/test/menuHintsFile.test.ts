@@ -8,8 +8,8 @@ import assert from 'node:assert/strict'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { DEFAULT_MENU_HINTS, detectPrompt, resolveMenuHints } from '../menu'
-import { mergeMenuHints, readMenuHintsOverride, resetMenuHintsCache, MENU_HINTS_FILE } from '../menuHintsFile'
+import { DEFAULT_MENU_HINTS, detectPrompt, resolveMenuHints } from '../core/menu'
+import { mergeMenuHints, readMenuHintsOverride, resetMenuHintsCache, MENU_HINTS_FILE } from '../core/menuHintsFile'
 
 /** 用户真机原文（和 menu.test.ts 里那份一致） */
 const REAL_HOST_MENU = [

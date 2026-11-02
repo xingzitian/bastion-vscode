@@ -5,8 +5,8 @@
 // 提示词、用户心智都会分叉，所以用测试钉死。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MCP_INSTRUCTIONS, MCP_TOOL_DEFS, UnknownToolError, createToolDispatch, type McpSessionApi } from '../mcpTools'
-import { toMcpTool } from '../mcpServer'
+import { MCP_INSTRUCTIONS, MCP_TOOL_DEFS, UnknownToolError, createToolDispatch, type McpSessionApi } from '../core/mcpTools'
+import { toMcpTool } from '../core/mcpServer'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkg = require('../../package.json') as {

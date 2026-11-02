@@ -6,8 +6,8 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { tailText, isMarkerSafe, stripAnsi, safeReadStart } from '../terminal'
-import { NodeFsZmodemIo, uploadModeOf } from '../zmodemIo'
-import { buildOfferParams } from '../zmodem'
+import { NodeFsZmodemIo, uploadModeOf } from '../core/zmodemIo'
+import { buildOfferParams } from '../core/zmodem'
 
 // ---------------------------------------------------------------------------
 // ANSI 分块：这是真实咬过的 bug —— 菜单明明在屏幕上、dump 出来也干净，就是认不出来。
@@ -253,7 +253,7 @@ test('ZFILE offer：多文件时带上 files_remaining / bytes_remaining', () =>
 })
 
 test('sendOne 必须用 buildOfferParams（不许再手写 offer 把 mode 写死）', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'zmodem.ts'), 'utf8')
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'zmodem.ts'), 'utf8')
   assert.match(src, /const offer = buildOfferParams\(f, counters\)/)
   // 只看代码，不看注释 —— 注释里正在解释这个坑，会误伤
   const code = src

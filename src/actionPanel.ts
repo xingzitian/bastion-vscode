@@ -10,10 +10,10 @@
  */
 
 import * as vscode from 'vscode'
-import { groupByIntent, type ActionRecord, type IntentGroup } from './actionLedger'
-import { renderActionsHtml, sessionNameOf } from './actionPanelHtml'
-import { allJobs, getJob, onJobEvent } from './execJobs'
-import { recordFromJob } from './actionLedger'
+import { groupByIntent, type ActionRecord, type IntentGroup } from './core/actionLedger'
+import { renderActionsHtml, sessionNameOf } from './core/actionPanelHtml'
+import { allJobs, getJob, onJobEvent } from './core/execJobs'
+import { recordFromJob } from './core/actionLedger'
 import { terminals } from './state'
 import { log } from './log'
 import { cancelExecJob } from './aiBridge'

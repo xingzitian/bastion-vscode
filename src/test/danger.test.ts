@@ -1,7 +1,7 @@
 // 高危命令识别：该报的要报，不该报的绝不能报（误报会让人无脑点确认）
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { findDangerous, isDangerous, describeDanger, findDangerousIn, BUILTIN_DANGER_RULES } from '../danger'
+import { findDangerous, isDangerous, describeDanger, findDangerousIn, BUILTIN_DANGER_RULES } from '../core/danger'
 
 test('必须拦下的：真正会毁机器的写法', () => {
   const mustBlock = [

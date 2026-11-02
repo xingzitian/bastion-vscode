@@ -1,7 +1,7 @@
 // 命令摘要与叙事（why）：面板/账本的"人能看懂"这一层，必须先钉死语义
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeWhy, redactSecrets, splitCommand, summarizeCommand } from '../commandSummary'
+import { normalizeWhy, redactSecrets, splitCommand, summarizeCommand } from '../core/commandSummary'
 
 test('拆段：尊重引号，不把 echo "a && b" 拆成两段', () => {
   assert.deepEqual(splitCommand('echo "a && b"'), ['echo "a && b"'])

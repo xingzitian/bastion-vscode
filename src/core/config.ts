@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { parse as parseJsonc, ParseError } from 'jsonc-parser'
-import { log } from './log'
+import { coreLog } from './ports'
 
 /**
  * 配置文件目录：`~/.bastionshell/`
@@ -32,9 +32,9 @@ function filePath(name: string): string {
 function backupCorrupt(fp: string): void {
   try {
     fs.copyFileSync(fp, fp + '.bak')
-    log(`配置文件损坏，已备份为 ${path.basename(fp)}.bak`)
+    coreLog(`配置文件损坏，已备份为 ${path.basename(fp)}.bak`)
   } catch (e) {
-    log(`配置文件损坏且备份失败: ${(e as Error).message}`)
+    coreLog(`配置文件损坏且备份失败: ${(e as Error).message}`)
   }
 }
 
@@ -59,7 +59,7 @@ export function readJsonFile<T>(name: string, fallback: T, validate: (v: unknown
     }
     return parsed
   } catch (e) {
-    log(`读取配置 ${name} 失败: ${(e as Error).message}`)
+    coreLog(`读取配置 ${name} 失败: ${(e as Error).message}`)
     backupCorrupt(fp)
     return fallback
   }
@@ -80,7 +80,7 @@ export function writeJsonFile(name: string, data: unknown, headerComment?: strin
     const text = headerComment ? `${headerComment}\n${json}\n` : `${json}\n`
     writeTextAtomic(fp, text)
   } catch (e) {
-    log(`写入配置 ${name} 失败: ${(e as Error).message}`)
+    coreLog(`写入配置 ${name} 失败: ${(e as Error).message}`)
     throw e
   }
 }
@@ -152,7 +152,7 @@ export function migrateJsonExtension(newName: string, oldName: string, header: s
     const errors: ParseError[] = []
     const data = parseJsonc(fs.readFileSync(oldFp, 'utf8'), errors, { allowTrailingComma: true })
     if (errors.length > 0) {
-      log(`旧配置 ${oldName} 解析失败，无法自动迁移，请手动处理（已保留原文件）`)
+      coreLog(`旧配置 ${oldName} 解析失败，无法自动迁移，请手动处理（已保留原文件）`)
       return
     }
     writeJsonFile(newName, data, header)
@@ -161,8 +161,8 @@ export function migrateJsonExtension(newName: string, oldName: string, header: s
     } catch {
       /* ignore */
     }
-    log(`已把配置 ${oldName} 迁移为 ${newName}`)
+    coreLog(`已把配置 ${oldName} 迁移为 ${newName}`)
   } catch (e) {
-    log(`迁移 ${oldName} → ${newName} 失败: ${(e as Error).message}`)
+    coreLog(`迁移 ${oldName} → ${newName} 失败: ${(e as Error).message}`)
   }
 }

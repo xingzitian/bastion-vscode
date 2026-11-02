@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { readJsonFile, writeJsonFile, migrateJsonExtension } from './config';
+import { readJsonFile, writeJsonFile, migrateJsonExtension } from './core/config';
 import { log } from './log';
 
 export interface ConnectionProfile {

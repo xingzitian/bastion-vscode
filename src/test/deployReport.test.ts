@@ -3,7 +3,7 @@
 import '../testkit/vscode-stub'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { renderDeployReport, capTextForAi, capForAi, type DeployRun, type HostResult } from '../deployReport'
+import { renderDeployReport, capTextForAi, capForAi, type DeployRun, type HostResult } from '../core/deployReport'
 import type { DeployTask } from '../deploy'
 
 function task(over: Partial<DeployTask> = {}): DeployTask {

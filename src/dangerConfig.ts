@@ -1,6 +1,6 @@
 import * as vscode from 'vscode'
-import { readJsonFile, ensureJsonFile, configFilePath } from './config'
-import { buildDangerRules, type DangerRule, type DangerRulesOverride } from './danger'
+import { readJsonFile, ensureJsonFile, configFilePath } from './core/config'
+import { buildDangerRules, type DangerRule, type DangerRulesOverride } from './core/danger'
 import { log } from './log'
 
 /**

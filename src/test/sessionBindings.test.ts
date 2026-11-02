@@ -21,7 +21,7 @@ import {
   unbind,
   type ClientBindings,
   type SessionRef
-} from '../sessionBindings'
+} from '../core/sessionBindings'
 
 const S1: SessionRef = { id: 's-7f3a', name: '#3 deploy@10.0.0.1', no: 3, state: 'shell', cursor: 0 }
 const S2: SessionRef = { id: 's-9c21', name: '#1 deploy@10.0.0.2', no: 1, state: 'shell', cursor: 0 }
@@ -207,7 +207,7 @@ test('绑定文件：真的落盘、能读回来（用临时共享目录，不�
 })
 
 test('别名命名：26 个字母用完之后接着 AA/AB（上限抬到 32 也不撞名）', async () => {
-  const { aliasName } = await import('../sessionBindings')
+  const { aliasName } = await import('../core/sessionBindings')
   assert.equal(aliasName(0), 'A')
   assert.equal(aliasName(7), 'H')
   assert.equal(aliasName(25), 'Z')
@@ -217,7 +217,7 @@ test('别名命名：26 个字母用完之后接着 AA/AB（上限抬到 32 也�
 })
 
 test('★ 绑定上限 32：第 9 条不再撞墙（以前只有 A..H 8 个）', async () => {
-  const { bindSession } = await import('../sessionBindings')
+  const { bindSession } = await import('../core/sessionBindings')
   const f = { version: 1, clients: {} } as unknown as Parameters<typeof bindSession>[0]
   const seen: string[] = []
   for (let i = 0; i < 32; i++) {
@@ -236,7 +236,7 @@ test('★ 绑定上限 32：第 9 条不再撞墙（以前只有 A..H 8 个）',
   assert.match((over as { error: string }).error, /32/)
 })
 test('★ 清扫：指向已不存在会话的绑定会被摘掉（死会话不能长期占别名）', async () => {
-  const { sweepDeadBindings } = await import('../sessionBindings')
+  const { sweepDeadBindings } = await import('../core/sessionBindings')
   const f = {
     version: 1,
     clients: {
@@ -261,7 +261,7 @@ test('★ 清扫：指向已不存在会话的绑定会被摘掉（死会话不�
 })
 
 test('最近关闭的会话：能记住、能查、可复位', async () => {
-  const { rememberClosedSession, isRecentlyClosedSession, resetClosedSessions, recentClosedSessions } = await import('../closedSessions')
+  const { rememberClosedSession, isRecentlyClosedSession, resetClosedSessions, recentClosedSessions } = await import('../core/closedSessions')
   resetClosedSessions()
   assert.equal(isRecentlyClosedSession('s-1111'), false)
   rememberClosedSession('s-1111')

@@ -4,8 +4,8 @@
 // 那"你的 A / 我的 A"就退化成同一个集合 —— 正是这次要修的问题。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { startMcpHttpServer, newMcpToken, type McpHttpHandle } from '../mcpServer'
-import { type McpSessionApi, type ToolCallContext } from '../mcpTools'
+import { startMcpHttpServer, newMcpToken, type McpHttpHandle } from '../core/mcpServer'
+import { type McpSessionApi, type ToolCallContext } from '../core/mcpTools'
 
 const TOKEN = newMcpToken()
 

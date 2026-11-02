@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import { basename } from 'path';
 import Zmodem from 'zmodem.js';
-import { log, logVerbose } from './log';
+import { coreLog, coreLogVerbose } from './ports';
 
 export interface ZmodemEventPayload {
   sessionId: string;
@@ -264,7 +264,7 @@ export class ZmodemSessionController extends EventEmitter {
     // 只在详细日志模式下打（bastion.verboseLog）—— 平时打会把几百字节十六进制
     // 刷进日志，把真正有用的行挤没。
     if (!this.zsession && data.includes(0x18)) {
-      logVerbose(`[zmodem] 握手帧 ${data.length} 字节: ${data.toString('hex').slice(0, 200)}`);
+      coreLogVerbose(`[zmodem] 握手帧 ${data.length} 字节: ${data.toString('hex').slice(0, 200)}`);
     }
     const payload: Buffer = this.filterZack ? stripZackHexFrames(data) : data;
     try {
@@ -285,7 +285,7 @@ export class ZmodemSessionController extends EventEmitter {
         if (!this.receiveStarted) {
           this.sendZrinit();
         } else {
-          logVerbose('[zmodem] 忽略一帧迟到的 ZRQINIT（文件已在接收中）');
+          coreLogVerbose('[zmodem] 忽略一帧迟到的 ZRQINIT（文件已在接收中）');
         }
         return;
       }
@@ -311,7 +311,7 @@ export class ZmodemSessionController extends EventEmitter {
       const octets = Zmodem.Header.build('ZRINIT', ['CANFDX', 'CANOVIO', 'CANFC32']).to_hex();
       this.writeToSession(Buffer.from(octets));
       this.zrinitCount += 1;
-      logVerbose(`[zmodem] 已回应 ZRQINIT（第 ${this.zrinitCount} 次发 ZRINIT）`);
+      coreLogVerbose(`[zmodem] 已回应 ZRQINIT（第 ${this.zrinitCount} 次发 ZRINIT）`);
     } catch (err) {
       this.emitEvent('error', {
         message: `补发 ZRINIT 失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -440,7 +440,7 @@ export class ZmodemSessionController extends EventEmitter {
       // 把**实际要发的命令**和它对应的模式打进日志。
       // 覆盖模式以前只有状态栏一个显示，用户没法验证「我设的覆盖，到底发出去了什么」——
       // 出问题时只能猜。现在日志里能直接看到。
-      log(`[zmodem] 启动上传：\`${rzCmd}\`（覆盖模式=${overwrite}，来自设置 bastion.uploadOverwrite）`);
+      coreLog(`[zmodem] 启动上传：\`${rzCmd}\`（覆盖模式=${overwrite}，来自设置 bastion.uploadOverwrite）`);
       this.writeToSession(Buffer.from(`${rzCmd}\r`, 'utf8'));
       const ok = await this.waitForRole('send', this.opts.rzTimeoutMs ?? 10000);
       if (!ok) {

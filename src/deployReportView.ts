@@ -14,7 +14,7 @@
 import * as vscode from 'vscode'
 import { log } from './log'
 import { sendTextToAIChat } from './aiChat'
-import { renderDeployReport, capForAi, type DeployRun } from './deployReport'
+import { renderDeployReport, capForAi, type DeployRun } from './core/deployReport'
 
 /** 面板用的「一台机器」视图数据（只保留要显示的字段，且能 JSON 序列化） */
 export interface ReportHostView {

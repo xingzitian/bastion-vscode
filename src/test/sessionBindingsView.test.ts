@@ -8,7 +8,7 @@ import * as path from 'node:path'
 import type * as vscode from 'vscode'
 import { terminals } from '../state'
 import { resetStatusBarItems, slotItem } from '../testkit/vscode-stub'
-import { bindSession, loadBindings, saveBindings, type SessionRef } from '../sessionBindings'
+import { bindSession, loadBindings, saveBindings, type SessionRef } from '../core/sessionBindings'
 import { updateAiBindingSlot } from '../sessionBindingsView'
 
 function putTerminal(name: string, id: string): vscode.Terminal {

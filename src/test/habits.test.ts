@@ -8,7 +8,7 @@ import { useTempHome, cleanupTempHome, cfgPath } from '../testkit/env'
 const home = useTempHome()
 after(() => cleanupTempHome(home))
 
-import { getHabits, resolvePrivilege, resolveWorkdir, appendHabit, setPrivilege, setWorkdir, habitsForAI, isPrivilegeMode, HABITS_FILE } from '../habits'
+import { getHabits, resolvePrivilege, resolveWorkdir, appendHabit, setPrivilege, setWorkdir, habitsForAI, isPrivilegeMode, HABITS_FILE } from '../core/habits'
 
 test('首次读取会自动按模板建文件（带中文说明）', () => {
   const h = getHabits()

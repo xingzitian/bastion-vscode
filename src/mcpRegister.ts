@@ -18,17 +18,17 @@
 
 import * as fs from 'fs'
 import * as vscode from 'vscode'
-import { configFilePath, readJsonFile, writeJsonFile } from './config'
+import { configFilePath, readJsonFile, writeJsonFile } from './core/config'
 import { log } from './log'
 import { sessionApi } from './aiSessionApi'
-import { MCP_TOOL_DEFS } from './mcpTools'
-import { newMcpToken, startMcpHttpServer, toMcpTool, type McpHttpHandle } from './mcpServer'
+import { MCP_TOOL_DEFS } from './core/mcpTools'
+import { newMcpToken, startMcpHttpServer, toMcpTool, type McpHttpHandle } from './core/mcpServer'
 import { setMcpEndpointInfo, terminals } from './state'
-import { loadActionRecords } from './actionLedgerIo'
+import { loadActionRecords } from './core/actionLedgerIo'
 import { cancelExecJob } from './aiBridge'
-import { normalizeClientId } from './sessionBindings'
+import { normalizeClientId } from './core/sessionBindings'
 import { normalizeAiScope, SCOPE_INFO } from './aiAccess'
-import type { McpClientToken, McpScope } from './mcpServer'
+import type { McpClientToken, McpScope } from './core/mcpServer'
 
 /** 必须和 package.json 里 `contributes.mcpServerDefinitionProviders[0].id` 一致 */
 export const MCP_PROVIDER_ID = 'bastion'

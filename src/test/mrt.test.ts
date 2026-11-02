@@ -2,10 +2,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as http from 'node:http'
-import { decodeRequestState, encodeRequestState, firstInputValue, inputRequestsFor, isSecretPrompt } from '../mrt'
-import { startMcpHttpServer } from '../mcpServer'
-import type { McpSessionApi } from '../mcpTools'
-import { appendJobOutput, createJob, resetJobs } from '../execJobs'
+import { decodeRequestState, encodeRequestState, firstInputValue, inputRequestsFor, isSecretPrompt } from '../core/mrt'
+import { startMcpHttpServer } from '../core/mcpServer'
+import type { McpSessionApi } from '../core/mcpTools'
+import { appendJobOutput, createJob, resetJobs } from '../core/execJobs'
 
 test('requestState 编解码：能带着 jobId 往返，坏数据不抛异常', () => {
   const s = encodeRequestState({ jobId: 'j-0007' })

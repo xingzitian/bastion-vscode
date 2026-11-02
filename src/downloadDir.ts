@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
-import { configDir } from './config';
+import { configDir } from './core/config';
 
 /**
  * 「下载存到哪儿」的唯一出处。

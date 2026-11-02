@@ -12,7 +12,7 @@
  */
 import * as vscode from 'vscode'
 import { terminals } from './state'
-import { bindingsOf, loadBindingsSwept, onBindingsChanged } from './sessionBindings'
+import { bindingsOf, loadBindingsSwept, onBindingsChanged } from './core/sessionBindings'
 import { mcpClientTokens, mcpMainToken } from './mcpRegister'
 import { buildAiModel, ownersSummary, scopeDetail, scopeInfoOf, type AiClientRow, type AiSessionRow } from './aiAccess'
 

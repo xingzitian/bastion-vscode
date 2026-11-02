@@ -27,7 +27,7 @@ import {
   waitJob,
   clampWaitMs,
   WAIT_BUDGET_MS
-} from '../execJobs'
+} from '../core/execJobs'
 
 function job(sessionId = 's-1', cursorAtStart = 3) {
   return createJob({ sessionId, sessionNo: 1, command: 'make', cursorAtStart })
@@ -262,7 +262,7 @@ test('★ 静默本身不算完成（sleep 45 不能被误判）；必须靠"提
   assert.equal(j.markerSeen, false)
 })
 test('★ 自定义提示规则：先于内置匹配，坏正则被跳过（陌生提示不用等发版）', async () => {
-  const m = await import('../execJobs')
+  const m = await import('../core/execJobs')
   m.configurePromptRules([
     { pattern: '===PICK==>', hint: '在等菜单选择 —— 让用户在终端里选' },
     { pattern: '([', hint: '坏正则' }
@@ -278,7 +278,7 @@ test('★ 自定义提示规则：先于内置匹配，坏正则被跳过（陌�
   assert.equal(m.detectPrompt('  ===PICK==> '), undefined, '清空后不该再命中')
 })
 test('★ 叙事：作业带上 why / 步骤摘要 / 脱敏标记，事件里也带（面板靠它画卡片）', async () => {
-  const m = await import('../execJobs')
+  const m = await import('../core/execJobs')
   m.resetJobs()
   const seen: Array<Record<string, unknown>> = []
   const off = m.onJobEvent((e) => seen.push(e as unknown as Record<string, unknown>))
@@ -308,7 +308,7 @@ test('★ 叙事：作业带上 why / 步骤摘要 / 脱敏标记，事件里也
   assert.equal(ev.sessionNo, 7)
 })
 test('★ 创建作业就广播一次（否则"在跑"的作业对面板/账本完全不可见）', async () => {
-  const m = await import('../execJobs')
+  const m = await import('../core/execJobs')
   m.resetJobs()
   const got: Array<{ jobId?: string; status?: string }> = []
   const off = m.onJobEvent((e) => got.push(e as unknown as { jobId: string; status: string }))

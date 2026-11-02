@@ -11,7 +11,7 @@ import { updateStatusBar } from './slots'
 import { log, outChannel } from './log'
 import { buildAiModel } from './aiAccess'
 import { mcpClientTokens, mcpMainToken } from './mcpRegister'
-import { loadBindings } from './sessionBindings'
+import { loadBindings } from './core/sessionBindings'
 
 /**
  * 「总览与进度」面板 —— 停在右侧辅助侧边栏里的一个固定小窗。

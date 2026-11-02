@@ -1,8 +1,8 @@
 // 网页版行动面板的 HTTP 面（GET /ui/*）：给 DSH 侧复用前，先钉住契约
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { startMcpHttpServer } from '../mcpServer'
-import type { McpSessionApi } from '../mcpTools'
+import { startMcpHttpServer } from '../core/mcpServer'
+import type { McpSessionApi } from '../core/mcpTools'
 
 const TOKEN = 'token-0123456789abcdef'
 const api = (): McpSessionApi =>
@@ -122,7 +122,7 @@ test('○ /ui/cancel 必须真的调到注入的 cancel（页面上的"取消"�
   }
 })
 test('★ /ui/status 必须读实时作业表，不能读账本（账本会有永远 working 的脏行）', async () => {
-  const { resetJobs, createJob, completeJob, markInputRequired } = await import('../execJobs')
+  const { resetJobs, createJob, completeJob, markInputRequired } = await import('../core/execJobs')
   resetJobs()
   const a = createJob({ sessionId: 's-1', sessionNo: 1, command: 'sleep 100', cursorAtStart: 0 })
   const b = createJob({ sessionId: 's-2', sessionNo: 2, command: 'read x', cursorAtStart: 0 })

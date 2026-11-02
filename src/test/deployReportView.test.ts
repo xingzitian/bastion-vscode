@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as vm from 'node:vm'
 import { toReportView, sortHostsForPanel, buildReportHtml, type ReportHostView } from '../deployReportView'
-import type { DeployRun } from '../deployReport'
+import type { DeployRun } from '../core/deployReport'
 import type { DeployTask } from '../deploy'
 
 const host = (over: Partial<ReportHostView>): ReportHostView => ({

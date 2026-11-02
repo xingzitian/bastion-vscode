@@ -4,7 +4,7 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import { TransferItem, getTransferHistory, clearTransferHistory } from './transfer'
-import { pushPath } from './transferPath'
+import { pushPath } from './core/transferPath'
 import { transferSessionOf } from './aiBridge'
 import { log } from './log'
 import { terminals, activeIsBastion, lastBastionTerminal, activeSession, transferProvider } from './state'

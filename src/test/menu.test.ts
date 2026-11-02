@@ -1,7 +1,7 @@
 // 菜单提示识别：认得出来要认，认不出来要老实说认不出来（不能抢跑）
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MCP_INSTRUCTIONS, MCP_TOOL_DEFS } from '../mcpTools'
+import { MCP_INSTRUCTIONS, MCP_TOOL_DEFS } from '../core/mcpTools'
 import {
   detectPrompt,
   hintsToRegexes,
@@ -23,7 +23,7 @@ import {
   AFTER_HOST_ORDER,
   AFTER_HOST_TIMING,
   type MenuHintKey
-} from '../menu'
+} from '../core/menu'
 
 // —— 下面这几条来自**真实抓到的菜单原文**（用户贴回来的日志），不是编的样例 ——
 // ⚠️ 已经脱敏：真实主机名 / 账号 / 人名 / 环境名一律换成了示例值。

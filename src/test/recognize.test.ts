@@ -6,7 +6,7 @@ import {
   isWaitingForPassword,
   resolvePasswordPrompts,
   DEFAULT_PASSWORD_PROMPTS
-} from '../recognize'
+} from '../core/recognize'
 
 test('常见文案都认：中 / 英 / 日 / 韩 / 繁体', () => {
   const cases = [

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
-import { readJsonFile, writeJsonFile, migrateJsonExtension, configFilePath, ensureJsonFile } from './config'
+import { readJsonFile, writeJsonFile, migrateJsonExtension, configFilePath, ensureJsonFile } from './core/config'
 import { log } from './log'
 
 /**

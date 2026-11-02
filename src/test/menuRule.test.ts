@@ -10,8 +10,8 @@ import {
   buildMenuRuleSuggestions,
   appendMenuRule,
   HINT_KEY_LABEL
-} from '../menuRule'
-import { hintsToRegexes, DEFAULT_MENU_HINTS } from '../menu'
+} from '../core/menuRule'
+import { hintsToRegexes, DEFAULT_MENU_HINTS } from '../core/menu'
 
 test('转义：正则元字符都当普通字符处理', () => {
   assert.equal(escapeRegex('1) 输入IP(如果唯一).'), '1\\) 输入IP\\(如果唯一\\)\\.')

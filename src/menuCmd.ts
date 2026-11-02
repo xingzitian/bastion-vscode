@@ -15,8 +15,8 @@ import {
   appendMenuRule,
   HINT_KEY_LABEL,
   type MenuRuleSuggestion
-} from './menuRule'
-import type { MenuHintKey } from './menu'
+} from './core/menuRule'
+import type { MenuHintKey } from './core/menu'
 
 const ALL_KEYS: MenuHintKey[] = ['hostPrompt', 'hostPromptLoose', 'userPrompt', 'shellPrompt']
 

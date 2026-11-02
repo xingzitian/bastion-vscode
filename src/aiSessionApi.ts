@@ -32,18 +32,18 @@ import {
   resolveSessionRef,
   saveBindings,
   unbind
-} from './sessionBindings'
-import { describeDanger, findDangerous } from './danger'
+} from './core/sessionBindings'
+import { describeDanger, findDangerous } from './core/danger'
 import { getDangerRules } from './dangerConfig'
-import { appendHabit, habitsForAI, isPrivilegeMode, setPrivilege } from './habits'
+import { appendHabit, habitsForAI, isPrivilegeMode, setPrivilege } from './core/habits'
 import { log } from './log'
-import { lastSweepCountOf } from './sessionBindings'
-import { allJobs, promptRuleCount } from './execJobs'
-import { cachedNote, createExecMemo } from './execIdempotency'
+import { lastSweepCountOf } from './core/sessionBindings'
+import { allJobs, promptRuleCount } from './core/execJobs'
+import { cachedNote, createExecMemo } from './core/execIdempotency'
 import type { ExecResponse } from './aiBridge'
 import { getMcpEndpointInfo } from './state'
-import { MCP_TOOL_DEFS } from './mcpTools'
-import type { McpSessionApi } from './mcpTools'
+import { MCP_TOOL_DEFS } from './core/mcpTools'
+import type { McpSessionApi } from './core/mcpTools'
 
 /**
  * 执行远端命令前先过一遍高危规则。

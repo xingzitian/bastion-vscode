@@ -25,7 +25,7 @@ import {
   planAfterHost, shouldSelectUser, resolveMenuHints, hintsToRegexes, detectPrompt,
   judgeAfterHost, parseAssetTable, decideAsset, describeAssets, assetPickCancelledMessage,
   type AssetCandidate, type MenuHints, type MenuHintKey, type MenuStep
-} from './menu'
+} from './core/menu'
 import { log } from './log'
 import { sleep, nextSessionId, nextSessionNo, setLastBastionTerminal, setLastBastionProfile, setLastUnrecognizedScreen } from './state'
 import {

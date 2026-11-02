@@ -25,10 +25,10 @@ import {
 } from './transfer'
 import { deletePassphrase, deletePassword, getProfiles, initProfiles, PROFILES_FILE, PROFILES_HEADER } from './profiles'
 import { listDeployTasks, migrateLegacyDeployTasks, migrateTaskFiles, exportDeployTasks } from './deploy'
-import { HABITS_FILE } from './habits'
-import { configDir } from './config'
+import { HABITS_FILE } from './core/habits'
+import { configDir } from './core/config'
 import { disposeSlots } from './status'
-import { log, setVerboseLogging } from './log'
+import { log, setVerboseLogging, wireCoreLogger } from './log'
 import {
   ctx,
   manager,
@@ -71,9 +71,9 @@ import { execRemote, runProtocolSelfTest } from './aiBridge'
 import { currentMcpToken } from './mcpRegister'
 import { getMcpEndpointInfo } from './state'
 import { showActionPanel } from './actionPanel'
-import { appendActionRecord, loadActionRecords } from './actionLedgerIo'
-import { getJob, onJobEvent } from './execJobs'
-import { recordFromJob } from './actionLedger'
+import { appendActionRecord, loadActionRecords } from './core/actionLedgerIo'
+import { getJob, onJobEvent } from './core/execJobs'
+import { recordFromJob } from './core/actionLedger'
 // 会话能力的唯一实现：语言模型工具和 MCP 工具都走它（这样两条路的行为不会分叉）
 import { sessionApi } from './aiSessionApi'
 import { registerMcp, showMcpInfo, stopMcp } from './mcpRegister'
@@ -99,9 +99,9 @@ import { setDownloadDir, clearDownloadDir } from './downloadDir'
 import { registerSessionBindingsView, showAiBindings } from './sessionBindingsView'
 import { changeTokenScopeFlow, issueTokenFlow, manageAiTokens, revokeTokenFlow } from './mcpRegister'
 import { focusAiSession, registerAiAccess } from './aiAccessTree'
-import { setLiveSessionIds } from './sessionBindings'
-import { configurePromptRules, customPromptRuleCount, promptRuleCount } from './execJobs'
-import { loadBindings, saveBindings, unbind as unbindBinding } from './sessionBindings'
+import { setLiveSessionIds } from './core/sessionBindings'
+import { configurePromptRules, customPromptRuleCount, promptRuleCount } from './core/execJobs'
+import { loadBindings, saveBindings, unbind as unbindBinding } from './core/sessionBindings'
 import { openConfigFile, openHabitsFile, showLog, pickOverwriteMode, openDangerRules } from './configCmd'
 import { generateMenuRule } from './menuCmd'
 import { toggleBroadcast, toggleBroadcastMode } from './broadcastCmd'
@@ -148,6 +148,8 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   // 绑定清扫要知道「现在有哪些会话还活着」：避免死会话长期占着别名（压测里 A 被僵尸会话占着）
+  // 组合根：先把 core 的 Logger 端口接到扩展的输出通道（core 自己不能 import vscode）
+  wireCoreLogger()
   setLiveSessionIds(() => [...terminals.values()].map((t) => t.sessionId))
 
   const aiAccessProvider = registerAiAccess(context)

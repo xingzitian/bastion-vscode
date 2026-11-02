@@ -4,8 +4,8 @@ import '../testkit/vscode-stub'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readMarkerLine } from '../terminal'
-import { appendJobOutput, createJob, quietExpired, resetJobs, viewOf } from '../execJobs'
-import { detectPrompt } from '../execJobs'
+import { appendJobOutput, createJob, quietExpired, resetJobs, viewOf } from '../core/execJobs'
+import { detectPrompt } from '../core/execJobs'
 
 const M = '__BASTION_DONE_abc__'
 

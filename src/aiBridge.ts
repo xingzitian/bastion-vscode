@@ -13,13 +13,13 @@ import * as os from 'os'
 import * as crypto from 'crypto'
 import { BastionTerminal, stripAnsi } from './terminal'
 import { getProfiles } from './profiles'
-import { getHabits, resolvePrivilege, habitsForAI } from './habits'
-import { isWaitingForPassword, resolvePasswordPrompts } from './recognize'
+import { getHabits, resolvePrivilege, habitsForAI } from './core/habits'
+import { isWaitingForPassword, resolvePasswordPrompts } from './core/recognize'
 import { log } from './log'
-import { firstInputValue, isSecretPrompt } from './mrt'
-import { formatSelfTestTable, runSelfTest } from './selfTest'
-import { isRecentlyClosedSession, rememberClosedSession } from './closedSessions'
-import { teePaths } from './execTee'
+import { firstInputValue, isSecretPrompt } from './core/mrt'
+import { formatSelfTestTable, runSelfTest } from './core/selfTest'
+import { isRecentlyClosedSession, rememberClosedSession } from './core/closedSessions'
+import { teePaths } from './core/execTee'
 import {
   activeJobOf,
   allJobs,
@@ -37,12 +37,12 @@ import {
   waitJob,
   viewOf,
   WAIT_BUDGET_MS
-} from './execJobs'
+} from './core/execJobs'
 import { ctx, terminals, lastBastionTerminal, getMcpEndpointInfo, nextSessionId } from './state'
 import { defaultDownloadDir as defaultDownloadDirShared } from './downloadDir'
 import { ensureConnection, openTerminal, openSessionToHost, type AssetPicked } from './sessions'
-import { describeAsset, describeAssets, classifySessionScreen, menuStuckMessage, resolveMenuHints, type SessionScreenState } from './menu'
-import { pullPath, pushPath, type TransferSession } from './transferPath'
+import { describeAsset, describeAssets, classifySessionScreen, menuStuckMessage, resolveMenuHints, type SessionScreenState } from './core/menu'
+import { pullPath, pushPath, type TransferSession } from './core/transferPath'
 import { fmtBytes } from './status'
 import {
   bindSession,
@@ -57,7 +57,7 @@ import {
   saveBindings,
   aliasOfSession,
   type SessionRef
-} from './sessionBindings'
+} from './core/sessionBindings'
 
 export function workspaceRoot(): string | undefined {
   const folders = vscode.workspace.workspaceFolders
@@ -252,8 +252,8 @@ export function autoBind(
   return r
 }
 
-export type { ExecResponse } from './execResult'
-import type { ExecResponse } from './execResult'
+export type { ExecResponse } from './core/execResult'
+import type { ExecResponse } from './core/execResult'
 
 /** 找会话 id 对应的终端（作业相关工具按 jobId 回溯会话用） */
 function termOfSessionId(sessionId: string): { term: BastionTerminal; name: string } | undefined {

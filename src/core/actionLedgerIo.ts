@@ -11,7 +11,7 @@
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import { configDir } from './config'
-import { log } from './log'
+import { coreLog } from './ports'
 import { parseLedger, pruneRecords, toJsonl, type ActionRecord } from './actionLedger'
 
 const FILE = 'action-ledger.jsonl'
@@ -29,7 +29,7 @@ export async function appendActionRecord(rec: ActionRecord): Promise<void> {
     await fs.mkdir(path.dirname(p), { recursive: true })
     await fs.appendFile(p, toJsonl(rec) + '\n', 'utf8')
   } catch (e) {
-    log(`账本写入失败（不影响执行）：${(e as Error).message}`)
+    coreLog(`账本写入失败（不影响执行）：${(e as Error).message}`)
     return
   }
   void pruneIfBig(p)
@@ -44,9 +44,9 @@ async function pruneIfBig(p: string): Promise<void> {
     const tmp = `${p}.tmp`
     await fs.writeFile(tmp, kept.map((r) => toJsonl(r)).join('\n') + '\n', 'utf8')
     await fs.rename(tmp, p) // 原子替换：不会留下半截文件
-    log(`账本已裁剪：${kept.length} 条（原 ${Math.round(st.size / 1024)}KB）`)
+    coreLog(`账本已裁剪：${kept.length} 条（原 ${Math.round(st.size / 1024)}KB）`)
   } catch (e) {
-    log(`账本裁剪失败（不影响使用）：${(e as Error).message}`)
+    coreLog(`账本裁剪失败（不影响使用）：${(e as Error).message}`)
   }
 }
 
@@ -59,7 +59,7 @@ export async function loadActionRecords(max = 300): Promise<ActionRecord[]> {
     return all.slice(Math.max(0, all.length - max))
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code
-    if (code !== 'ENOENT') log(`账本读取失败：${(e as Error).message}`)
+    if (code !== 'ENOENT') coreLog(`账本读取失败：${(e as Error).message}`)
     return []
   }
 }

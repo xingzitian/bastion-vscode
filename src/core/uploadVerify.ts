@@ -19,7 +19,7 @@
  */
 
 import * as crypto from 'crypto'
-import { fmtBytes } from './status'
+import { fmtBytes } from './format'
 
 /** 只要能跑命令就行 —— 真实实现是 BastionTerminal，测试里可以是假的 */
 export interface ExecLike {

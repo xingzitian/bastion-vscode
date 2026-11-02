@@ -16,7 +16,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { KEY, REMOTE_BASE, SSH, connectRig, q, type Rig } from './rsyncE2Ekit'
-import { clearCapabilities, probeCapabilities, pullPath, pushPath, type TransferSession } from '../transferPath'
+import { clearCapabilities, probeCapabilities, pullPath, pushPath, type TransferSession } from '../core/transferPath'
 
 const CAN_RUN = Boolean(SSH && KEY && fs.existsSync(KEY as string))
 const SKIP = CAN_RUN ? false : '没搭测试台（见 tools/rsync-e2e/setup-wsl.sh）'

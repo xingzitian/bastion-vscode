@@ -4,7 +4,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { connectRig, REMOTE_BASE, q } from './rsyncE2Ekit'
-import { clearCapabilities, pushPath, type TransferSession } from '../transferPath'
+import { clearCapabilities, pushPath, type TransferSession } from '../core/transferPath'
 
 async function main(): Promise<void> {
   const rig = await connectRig()

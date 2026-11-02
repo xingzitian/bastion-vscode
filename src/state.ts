@@ -18,7 +18,7 @@ import { QuickCommandsProvider } from './quickCommands'
 import { ForwardRulesProvider } from './forward'
 import { TransferHistoryProvider } from './transfer'
 import { fmtDuration } from './status'
-import type { FedLine } from './localPath'
+import type { FedLine } from './core/localPath'
 
 export let ctx: vscode.ExtensionContext
 

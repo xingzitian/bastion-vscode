@@ -6,7 +6,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { loadOrCreateState, mcpClientTokens, removeClientToken, writeClientToken, writeState } from '../mcpRegister'
-import { readJsonFile } from '../config'
+import { readJsonFile } from '../core/config'
 
 function withTempShared(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bastion-tokens-'))

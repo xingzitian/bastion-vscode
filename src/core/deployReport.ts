@@ -6,8 +6,8 @@
  */
 
 import * as path from 'path'
-import { fmtDuration } from './status'
-import type { DeployTask } from './deploy'
+import { fmtDuration } from './format'
+import type { DeployReportTask } from './types'
 
 /** 单台部署的结果 */
 export interface HostResult {
@@ -45,7 +45,7 @@ export interface StepResult {
 
 /** 一次任务的执行汇总 */
 export interface DeployRun {
-  task: DeployTask
+  task: DeployReportTask
   results: HostResult[]
   ms: number
 }

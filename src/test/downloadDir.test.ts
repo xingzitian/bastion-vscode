@@ -12,7 +12,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { configValues, setWorkspaceFolder } from '../testkit/vscode-stub'
 import { defaultDownloadDir, expandHome, resolveDownloadDir, setDownloadDir } from '../downloadDir'
-import { NodeFsZmodemIo } from '../zmodemIo'
+import { NodeFsZmodemIo } from '../core/zmodemIo'
 
 function withConfig(value: unknown, fn: () => void): void {
   const had = configValues.has('bastion.downloadDir')

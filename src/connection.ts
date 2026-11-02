@@ -4,8 +4,8 @@ import { Client, ClientChannel, ConnectConfig } from 'ssh2';
 import type { ConnectionProfile } from './profiles';
 import { log } from './log';
 import { setSlot, clearSlot, progressBar } from './status';
-import { isPasswordPrompt, resolvePasswordPrompts } from './recognize';
-import { isAuthFailure } from './authError';
+import { isPasswordPrompt, resolvePasswordPrompts } from './core/recognize';
+import { isAuthFailure } from './core/authError';
 
 /** MFA 倒计时：显示在状态栏 mfa 槽位（右下角），提示 TOTP 动态码剩余有效期 */
 let mfaTimer: NodeJS.Timeout | null = null;
