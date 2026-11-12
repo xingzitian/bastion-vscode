@@ -12,16 +12,35 @@ import '../testkit/vscode-stub'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { configValues, registeredCommands } from '../testkit/vscode-stub'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import type * as vscode from 'vscode'
 
-function fakeContext(): vscode.ExtensionContext {
+/**
+ * 假 context。
+ *
+ * ⚠️ 路径必须是**真实存在且可写**的：activate 会往 globalStorageUri 里 mkdir（任务/日志目录）。
+ * 之前这里写死 `/fake/storage`，Windows 下等价于 `C:\fake\storage`（管理员能建），
+ * 而 Linux CI 上就是根目录 `/fake/storage` → `EACCES: mkdir`，CI 直接红。
+ * 教训：测试里的"假路径"要跨平台 —— 一律用 os.tmpdir()。
+ */
+function fakeContext(storageDir: string): vscode.ExtensionContext {
   const state = new Map<string, unknown>()
+  // extensionUri 指仓库根：activate 可能会读仓库里的真实资源（文档/图标）
+  const extRoot = path.resolve(__dirname, '..', '..')
+  const uri = (fsPath: string): { fsPath: string; path: string; scheme: string; toString(): string } => ({
+    fsPath,
+    path: fsPath,
+    scheme: 'file',
+    toString: () => `file://${fsPath.replace(/\\/g, '/')}`
+  })
   return {
     subscriptions: [],
-    extensionUri: { fsPath: '/fake/ext', path: '/fake/ext', scheme: 'file', toString: () => 'file:///fake/ext' },
-    extensionPath: '/fake/ext',
-    globalStorageUri: { fsPath: '/fake/storage', path: '/fake/storage', scheme: 'file' },
-    storageUri: { fsPath: '/fake/ws', path: '/fake/ws', scheme: 'file' },
+    extensionUri: uri(extRoot),
+    extensionPath: extRoot,
+    globalStorageUri: uri(storageDir),
+    storageUri: uri(storageDir),
     globalState: {
       get: (k: string, d?: unknown) => (state.has(k) ? state.get(k) : d),
       update: async (k: string, v: unknown) => {
@@ -42,8 +61,8 @@ function fakeContext(): vscode.ExtensionContext {
     },
     environmentVariableCollection: {},
     extensionMode: 3,
-    logUri: { fsPath: '/fake/log', path: '/fake/log', scheme: 'file' },
-    asAbsolutePath: (p: string) => `/fake/ext/${p}`
+    logUri: uri(path.join(storageDir, 'log')),
+    asAbsolutePath: (p: string) => path.join(extRoot, p)
   } as unknown as vscode.ExtensionContext
 }
 
@@ -56,7 +75,8 @@ test('★ activate() 不抛错，并注册了全部命令（搬家后的接线�
   // 关键：别真的起 MCP 端点 —— 它会监听端口、挂定时器，测试进程永远不退出。
   // 冒烟测试验的是"接线"，不是网络。
   configValues.set('bastion.mcpEnabled', false)
-  const ctx = fakeContext()
+  const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bastion-activate-'))
+  const ctx = fakeContext(storageDir)
   // activate 不抛错就是通过（它本来就不要求返回对外 API）
   await ext.activate(ctx)
 
@@ -75,4 +95,5 @@ test('★ activate() 不抛错，并注册了全部命令（搬家后的接线�
   // 收尾：让 activate 里挂的定时器/监听退掉，否则 node --test 会挂住
   const anyExt = ext as unknown as { deactivate?: () => unknown }
   if (typeof anyExt.deactivate === 'function') await anyExt.deactivate()
+  fs.rmSync(storageDir, { recursive: true, force: true })
 })
