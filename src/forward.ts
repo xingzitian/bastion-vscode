@@ -1,4 +1,5 @@
 import * as vscode from 'vscode'
+import * as net from 'net'
 import { SharedConnection } from './connection'
 import { readJsonFile, writeJsonFile, migrateJsonExtension } from './core/config'
 import { log } from './log'
@@ -27,9 +28,14 @@ export const FORWARD_HEADER = [
   '//   profileId  所属档案名（对应 profiles.jsonc 里的 name）',
   '//   label      显示标签（如 "MySQL"）',
   '//   localHost  本地监听地址，一般填 127.0.0.1',
-  '//   localPort  本地监听端口（如 13306）',
-  '//   remoteHost 远端主机（目标机可达的地址，常填 127.0.0.1）',
-  '//   remotePort 远端端口（如 3306）',
+  '//   localPort  本地监听端口（如 13306）—— **本机**这个端口必须空着',
+  '//   remoteHost 转发目标（由 SSH 那一侧能访问到的地址）。直连时 127.0.0.1 就是这台机器；',
+  '//              堡垒机模式下 127.0.0.1 指的是**堡垒机自己**，要访问目标机请填目标机 IP',
+  '//   remotePort 目标端口（如 3306）',
+  '//',
+  '// 语义 = ssh -L localPort:remoteHost:remotePort（**本地转发**）：',
+  '//   浏览器/客户端连本机 localPort → 经 SSH 转给 remoteHost:remotePort。',
+  '//   所以「本地和远端同端口」是允许的（如 8006 → 8006），只要本机 8006 没被占用。',
   '// ============================================================'
 ].join('\n');
 
@@ -86,55 +92,86 @@ export function newForwardRuleId(): string {
   return `fw-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-/** 运行中的转发：id -> {连接, 规则}（规则也留着，状态栏 tooltip 要显示端口映射） */
-const active = new Map<string, { conn: SharedConnection; rule: ForwardRule }>()
-
-/** 每个连接一个转发上下文：单 listener 按 destPort 路由到对应规则 */
-interface ConnFwdCtx {
-  rules: Map<number, ForwardRule>
-  listener: (details: { srcIP: string; srcPort: number; destIP: string; destPort: number }, accept: () => import('ssh2').ClientChannel) => void
+/** 运行中的转发：id -> { 连接, 规则, 本地 listener } */
+interface ActiveForward {
+  conn: SharedConnection
+  rule: ForwardRule
+  /** 本地监听（`net.Server`）。**这是本地转发**：本机 bind，收到连接再 forwardOut 到远端 */
+  server: net.Server
 }
 
-const connContexts = new Map<SharedConnection, ConnFwdCtx>()
+const active = new Map<string, ActiveForward>()
 
-function ensureContext(conn: SharedConnection): ConnFwdCtx {
-  let c = connContexts.get(conn)
-  if (c) return c
-  c = {
-    rules: new Map(),
-    listener: (details, accept) => {
-      const rule = c!.rules.get(details.destPort)
-      if (!rule) {
-        const s = accept()
-        s.end()
-        return
-      }
-      const localStream = accept()
-      conn.rawClient.forwardOut(details.srcIP, details.srcPort, rule.remoteHost, rule.remotePort, (err, remoteStream) => {
-        if (err) {
-          log(`转发连接失败（${rule.label} → ${rule.remoteHost}:${rule.remotePort}）: ${err.message}`)
-          localStream.end()
-          return
-        }
-        localStream.pipe(remoteStream).pipe(localStream)
-      })
-    }
+/**
+ * 把 bind 失败翻译成人能看懂的原因。
+ *
+ * 这里有历史教训：早期版本用了 `forwardIn`（远端 bind，等于 `ssh -R`），
+ * 于是"本地和远端同端口"时必然失败（远端那个端口正是你要访问的服务），
+ * 而且成功也没有本地监听 —— 浏览器当然打不开。错误信息还只说 "Unable to bind"，
+ * 让人以为是远端问题。现在把它说清楚：**是本机端口被占用**。
+ */
+export function bindErrorText(err: NodeJS.ErrnoException, host: string, port: number): string {
+  if (err.code === 'EADDRINUSE') {
+    return (
+      `本地 ${host}:${port} 已被占用（不是远端问题）。端口转发是「本机监听 → 连远端」，` +
+      `本机这个端口必须是空的；把 localPort 换成别的（例如 18006）再启动即可。`
+    )
   }
-  conn.rawClient.on('tcp connection', c.listener)
-  connContexts.set(conn, c)
-  return c
+  if (err.code === 'EACCES') {
+    return `本地 ${host}:${port} 没有权限监听（1024 以下的端口需要管理员权限）`
+  }
+  return `本地 ${host}:${port} 监听失败：${err.message}`
 }
 
+/**
+ * 启动一条**本地**端口转发（等价 `ssh -L localPort:remoteHost:remotePort`）。
+ *
+ * 本地监听 → 每来一个连接，就在这条 SSH 连接上 forwardOut 到 `remoteHost:remotePort`。
+ *
+ * ⚠️ 堡垒机模式下的语义：`forwardOut` 的目标是**堡垒机视角**能访问到的地址。
+ * 所以 `remoteHost = 127.0.0.1` 指的是「堡垒机自己」，不是目标机；
+ * 要访问目标机上的服务，请填目标机的 IP（或任何堡垒机能路由到的地址）。
+ */
 export function startForward(conn: SharedConnection, rule: ForwardRule): Promise<void> {
   return new Promise((resolve, reject) => {
-    const c = ensureContext(conn)
-    conn.rawClient.forwardIn(rule.localHost, rule.localPort, (err) => {
-      if (err) {
-        reject(err)
-        return
-      }
-      c.rules.set(rule.localPort, rule)
-      active.set(rule.id, { conn, rule })
+    // 幂等：同一条规则重复启动不算错（树视图单击可能连点两下）
+    if (active.has(rule.id)) {
+      resolve()
+      return
+    }
+    const host = (rule.localHost || '127.0.0.1').trim()
+    const server = net.createServer((sock) => {
+      sock.on('error', (e) => log(`转发连接出错（${rule.label}）：${(e as Error).message}`))
+      conn.rawClient.forwardOut(
+        sock.remoteAddress ?? '127.0.0.1',
+        sock.remotePort ?? 0,
+        rule.remoteHost,
+        rule.remotePort,
+        (err, chan) => {
+          if (err) {
+            log(`转发连接失败（${rule.label} → ${rule.remoteHost}:${rule.remotePort}）: ${err.message}`)
+            sock.destroy()
+            return
+          }
+          chan.on('error', (e: Error) => {
+            log(`转发通道出错（${rule.label}）：${(e as Error).message}`)
+            sock.destroy()
+          })
+          sock.on('close', () => chan.destroy())
+          sock.pipe(chan).pipe(sock)
+        }
+      )
+    })
+    const onBindError = (err: NodeJS.ErrnoException) => {
+      server.close()
+      reject(new Error(bindErrorText(err, host, rule.localPort)))
+    }
+    server.once('error', onBindError)
+    server.listen(rule.localPort, host, () => {
+      server.removeListener('error', onBindError)
+      server.on('error', (e) => log(`转发监听出错（${rule.label}）：${e.message}`))
+      active.set(rule.id, { conn, rule, server })
+      log(`转发已启动（本地）：${host}:${rule.localPort} → ${rule.remoteHost}:${rule.remotePort}（${rule.label}）`)
       resolve()
     })
   })
@@ -143,19 +180,19 @@ export function startForward(conn: SharedConnection, rule: ForwardRule): Promise
 export function stopForward(id: string): void {
   const e = active.get(id)
   if (!e) return
-  e.conn.rawClient.unforwardIn(e.rule.localHost, e.rule.localPort, () => {})
-  connContexts.get(e.conn)?.rules.delete(e.rule.localPort)
+  try {
+    e.server.close()
+  } catch {
+    /* 已经关了就算了 */
+  }
   active.delete(id)
+  log(`转发已停止：${e.rule.localHost}:${e.rule.localPort} → ${e.rule.remoteHost}:${e.rule.remotePort}（${e.rule.label}）`)
 }
 
 export function stopForwardsOfConn(conn: SharedConnection): void {
   for (const [id, e] of active) {
-    if (e.conn === conn) {
-      e.conn.rawClient.unforwardIn(e.rule.localHost, e.rule.localPort, () => {})
-      active.delete(id)
-    }
+    if (e.conn === conn) stopForward(id)
   }
-  connContexts.delete(conn)
 }
 
 /** 当前运行中的转发规则（状态栏要用） */
