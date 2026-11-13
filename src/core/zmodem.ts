@@ -44,6 +44,14 @@ export type OverwriteMode = 'skip' | 'overwrite' | 'rename';
 export interface ZmodemSendOptions {
   overwrite?: OverwriteMode;
   skipUnchanged?: boolean;
+  /**
+   * 取「远端屏幕最后几行」。
+   *
+   * 只在对端**拒绝**文件时用：rz 自己会把原因打在终端上
+   * （`rz: invalid option -- 'y'` / `Permission denied` / `exists, skipping`），
+   * 把它附在拒绝原因里，就不用再靠猜"是不是不支持 -y"。
+   */
+  screenTail?: () => string;
 }
 
 /** 文件 I/O 抽象：扩展用真实 fs */
@@ -190,6 +198,14 @@ export class ZmodemSessionController extends EventEmitter {
   private roleWaiters: Array<() => void> = [];
   private destroyed = false;
   private filterZack = false;
+  /**
+   * 拒绝上传时用来取"远端屏幕最后几行"（由宿主注入）。
+   *
+   * 为什么需要：对端 `rz` 拒绝 offer 时，它自己会把原因打在终端上
+   * （`rz: invalid option -- 'y'` / `can't open ...: Permission denied` / `exists, skipping`）。
+   * 以前我们只回一句"对端可能不支持 -y"——那是猜的，会把排错方向带偏。
+   */
+  private rejectTail?: () => string;
   /** 接收（sz）会话里是否已经有文件开始收了 —— 决定迟到的 ZRQINIT 要不要补发 ZRINIT */
   private receiveStarted = false;
   /** 这次接收会话里我们回过几次 ZRINIT（排障用：日志能一眼看出握手到底答上没有） */
@@ -419,6 +435,7 @@ export class ZmodemSessionController extends EventEmitter {
     if (this.destroyed) throw new Error('会话已关闭');
     const overwrite: OverwriteMode = options.overwrite ?? 'skip';
     const skipUnchanged = options.skipUnchanged ?? false;
+    this.rejectTail = options.screenTail;
     const files = await this.io.statFiles(paths);
     if (files.length === 0) throw new Error('没有可发送的文件');
 
@@ -545,13 +562,23 @@ export class ZmodemSessionController extends EventEmitter {
     const xfer: any = await zsession.send_offer(offer);
     if (!xfer) {
       // 远端拒绝了这次传输。原因分两种情况，**必须说清是哪一种** ——
-      // 以前这条消息写死「覆盖模式=跳过」，于是设了「覆盖」却仍被拒时，
-      // 日志会骗人（说成是跳过模式造成的），排错方向直接跑偏。
+      // 拒绝分两种，而且**必须给证据**：
+      //   skip  → 我们知道原因（远端已存在 + 我们没要求覆盖）
+      //   其它  → 我们只知道"对端没接受 offer"，具体原因要看 rz 自己打印了什么。
+      // 以前这里直接断言"对端 rz 可能不支持 -y" —— 那是猜的，会把排错带偏
+      // （真机 2026-11-13：同一条命令手动上传成功，部署里被拒，实际是远端文件不可写）。
+      let tail = ''
+      try {
+        tail = (this.rejectTail?.() ?? '').trim()
+      } catch {
+        tail = ''
+      }
       const why =
         overwrite === 'skip'
           ? `覆盖模式=skip：远端已存在同名文件，按设置跳过`
-          : `覆盖模式=${overwrite}：我方已发出覆盖请求（rz${RZ_FLAG[overwrite]}），但**对端拒绝了**` +
-            `（对端 rz 可能不支持该参数，或堡垒机在中间拦了文件传输）`;
+          : `覆盖模式=${overwrite}：我方发出的是 \`rz${RZ_FLAG[overwrite]}\`，对端没有接受这次 offer` +
+            `（原因见下方远端输出；常见三种：文件不可写/属主不同、该端 rz 不认这个参数、堡垒机拦了传输）` +
+            (tail ? `\n── 远端最后输出 ──\n${tail.split('\n').slice(-8).join('\n')}` : '');
       this.emitEvent('skip', {
         direction: 'send',
         name: f.name,

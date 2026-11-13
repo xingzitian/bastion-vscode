@@ -444,7 +444,7 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     };
   }
 
-  async upload(paths: string[]): Promise<{ skipped: string[]; mode: OverwriteMode }> {
+  async upload(paths: string[]): Promise<{ skipped: string[]; mode: OverwriteMode; error?: string }> {
     this.lastUploadError = undefined;
     if (!this.zmodem) {
       this.lastUploadError = '会话未就绪（ZMODEM 传输层还没初始化）';
@@ -458,7 +458,7 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     beginUpload(paths); // 登记本地路径，进度器和失败重试都要用
     this.recentSkips = []; // 本次上传的跳过记录，由 zmodem 的 skip 事件填充
     try {
-      await this.zmodem.sendFiles(paths, { overwrite: mode });
+      await this.zmodem.sendFiles(paths, { overwrite: mode, screenTail: () => this.getTail(12) });
     } catch (e) {
       const msg = `上传失败: ${(e as Error).message}`;
       this.lastUploadError = (e as Error).message;
@@ -472,7 +472,7 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     // 是 exec 的 3 秒静止兜底），而提示符就是「shell 又接管了」的信号。
     // 等不到也不报错 —— 只是慢一点，跟以前一样。
     await this.waitShellBackAfterTransfer();
-    return { skipped: this.recentSkips.slice(), mode };
+    return { skipped: this.recentSkips.slice(), mode, error: this.lastUploadError };
   }
 
   /** 最近一次 exec 有没有等到结束标记（false = 命令很可能没执行） */

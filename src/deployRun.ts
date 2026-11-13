@@ -192,21 +192,23 @@ async function runTaskOnTerminal(
     }
     if (task.uploads.length > 0) {
       const up0 = Date.now()
-      const { skipped, mode } = await term.upload(task.uploads)
+      const { skipped, mode, error: uploadError } = await term.upload(task.uploads)
       // 上报要诚实：以前只写「上传文件 README.md · 0.3s」，跳过时看起来像传成功了；
       // 而且不写实际模式，用户分不清「设置没生效」和「对端拒绝了覆盖」。
       const names = task.uploads.map((p) => path.basename(p))
       const uploaded = names.filter((n) => !skipped.includes(n))
       const modeLabel = { skip: '跳过', overwrite: '覆盖', rename: '改名' }[mode]
       const lines: string[] = [`覆盖模式：${mode}（${modeLabel}${mode === 'skip' ? '' : `，rz${mode === 'overwrite' ? ' -y' : ' -E'}`}）`]
+      if (uploadError) lines.push(`→ 上传报错：${uploadError}`)
       if (uploaded.length > 0) lines.push(`已上传：${uploaded.join('、')}`)
       if (skipped.length > 0) {
-        lines.push(`未上传（远端拒绝了本次传输）：${skipped.join('、')}`)
+        lines.push(`未上传（对端没接受这次传输）：${skipped.join('、')}`)
         if (mode === 'skip') {
           lines.push('→ 远端已存在同名文件，按当前设置跳过。想覆盖就把 bastion.uploadOverwrite 设为 overwrite。')
         } else {
           lines.push(
-            `→ **不是设置没生效**：已按 ${mode} 发出请求，但对端拒绝了（对端 rz 可能不支持 ${mode === 'overwrite' ? '-y' : '-E'}，或堡垒机在中间拦了文件传输）。`
+            `→ 我方发出的是 \`rz${mode === 'overwrite' ? ' -y' : ' -E'}\`（覆盖模式=${mode}），对端没有接受。` +
+              `具体原因看下面的远端输出 —— rz 自己会写「不可写 / 参数不认 / 被打断」，这三种处理方式完全不同。`
           )
         }
       }
