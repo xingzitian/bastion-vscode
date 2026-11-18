@@ -12,7 +12,11 @@
 - 两种例外放行：屏幕明确停在**登录菜单**（否则堡垒机登录死锁）；屏幕已回 shell 且已锁 >60s
   （说明宿主的探测/校验卡住，需要人接手）。
 - **广播输入跳过**正在传输的会话（广播走 `writeToSession`，本来就绕过只读判断）。
-- 逻辑抽在 `src/core/transferLock.ts`（纯函数）+ 8 条单测；宿主侧只做提示与只读切换。
+- 逻辑抽在 `src/core/transferLock.ts`（纯函数）+ **三层验证**：
+  纯判定 8 条（`transferLock.test.ts`）、真实 `BastionTerminal` 行为 5 条
+  （`transferLockTerminal.test.ts`：锁住时 handleInput 一个字节都不写进 stream）、
+  接线守卫 6 条（`transferLockWiring.test.ts`：handleInput 顺序、finally、广播过滤、所有入口、关闭清理、screenTail）。
+- 自检报告：`docs/self-check-0.3.16.md`（含变异测试结果与"未验证清单"）。
 
 ### 修复：上传被拒时给出**证据**（而不是猜"对端不支持 -y"）
 
