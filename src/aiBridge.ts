@@ -872,11 +872,13 @@ export async function pushFile(input: {
   if ('error' in found) return found.error
   const guard = menuGuard(found.name, found.term)
   if (guard) return guard
-  const out = await pushPath({
-    localPath,
-    remoteDir: input.remoteDir,
-    session: transferSessionOf(found.term, found.name)
-  })
+  const out = await found.term.withTransferLock('上传', () =>
+    pushPath({
+      localPath,
+      remoteDir: input.remoteDir,
+      session: transferSessionOf(found.term, found.name)
+    })
+  )
   return out.message
 }
 
@@ -907,7 +909,9 @@ export async function pullFile(input: {
   const guard = menuGuard(found.name, found.term)
   if (guard) return guard
   const dir = (input.localDir ?? '').trim() || defaultDownloadDir()
-  const out = await pullPath({ remotePath, localDir: dir, session: transferSessionOf(found.term, found.name) })
+  const out = await found.term.withTransferLock('下载', () =>
+    pullPath({ remotePath, localDir: dir, session: transferSessionOf(found.term, found.name) })
+  )
   return out.message
 }
 

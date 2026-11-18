@@ -14,6 +14,7 @@ import { trackTransfer, beginUpload } from './transfer';
 import { fmtBytes as formatBytes } from './status';
 import { pushPath, type TransferSession } from './core/transferPath';
 // 单向依赖：menu.ts 不 import terminal.ts，所以这里可以放心用它的提示符识别
+import { TransferLock } from './core/transferLock'
 import { classifySessionScreen, resolveMenuHints, detectPrompt } from './core/menu';
 import { describeConnectError, isAuthFailure, MAX_AUTH_ATTEMPTS, shouldOfferRetry } from './core/authError';
 import { hasSavedPassphrase, hasSavedPassword, offerPassphraseReset, offerPasswordReset } from './profiles';
@@ -111,6 +112,22 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   private readOnly = false;
   private lastReadOnlyHint = 0;
 
+  /**
+   * 传输期间的键盘锁。
+   *
+   * 传输三阶段（前提探测 → rz/sz 传输 → 上传后校验）里，人工按键会被原样写进 pty，
+   * 而 **ESC 是 ZMODEM 的转义字符** —— 用户按一下 ↑ 发出去 `ESC [ A`，
+   * 正在跑的 rz 会把它当协议数据吃掉：传输被打断、数据其实已落盘，我们却判失败。
+   * 所以锁的这一段时间里人工输入一律丢弃（不缓存重放：重放会在解锁瞬间把 ↑ 灌进 shell）。
+   *
+   * 判定逻辑在 `core/transferLock.ts`（纯函数、可单测），这里只负责宿主侧的提示与只读切换。
+   */
+  private readonly tlock = new TransferLock();
+  private transferLockTimer?: ReturnType<typeof setTimeout>;
+  private transferLockStatus?: { dispose(): void };
+  private lastTransferLockHint = 0;
+
+
   /** 会话号（#1、#2…），由 extension.ts 在创建时分配，仅用于显示和区分 */
   sessionNo = 0;
   /** 不可变会话 id（AI 绑定用它精确指认；重连 = 新会话 = 新 id） */
@@ -160,6 +177,8 @@ export class BastionTerminal implements vscode.Pseudoterminal {
    * 表现就是「点了关闭没反应」。所以这里**无条件再发一次** close 事件。
    */
   close(): void {
+    // 会话没了就别留着锁和状态栏（否则硬超时前状态栏会一直挂着"上传中"）
+    this.forceUnlockTransfer('会话关闭');
     const alreadyFired = this.closeFired;
     this.finish(0);
     if (!alreadyFired) return;
@@ -191,9 +210,23 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     if (this.mfaResolve) {
       // MFA 输入永远放行，否则只读模式下连认证都过不去
       this.handleMfaInput(data);
-    } else if (this.readOnly) {
+      return;
+    }
+    if (this.tlock.active) {
+      // 传输中：rz/sz 正在读同一个 pty，人工按键（尤其 ↑ 的 ESC）会打断传输。
+      // 只有两种情况放行：屏幕明确是登录菜单，或屏幕已回 shell 且锁太久（宿主的探测/校验卡住了）。
+      const screen = classifySessionScreen(this.getTail(8));
+      if (this.tlock.shouldDrop(screen)) {
+        this.notifyTransferLock();
+        return;
+      }
+    }
+    if (this.readOnly) {
       this.notifyReadOnly();
-    } else if (this.stream) {
+      return;
+    }
+    if (!this.stream) return;
+    {
       // 「把本地文件路径粘/拖进来」的识别：先攒出「当前这一行」，回车那一刻再看它是不是本地文件。
       // **每一块输入都要喂给攒行器** —— 只在带回车的那一块才喂的话，
       // 「粘一行、再单独按回车」永远攒不出内容，识别永远不触发。
@@ -351,7 +384,9 @@ export class BastionTerminal implements vscode.Pseudoterminal {
           log(`识别到本地文件路径，改为上传：${local}`);
           // 上传不该广播：每台机器都要各传一次，悄悄替别人传是危险行为。
           // 走**标准传输工具**：能力探测 + rz / base64 降级 + 传完回读校验（和右键、AI 那条路同一套）。
-          const out = await pushPath({ localPath: local, session: this.transferSession() });
+          const out = await this.withTransferLock('上传', () =>
+            pushPath({ localPath: local, session: this.transferSession() })
+          );
           if (!out.ok) vscode.window.showErrorMessage(out.message);
           return;
         }
@@ -373,6 +408,105 @@ export class BastionTerminal implements vscode.Pseudoterminal {
       });
     // 提示里也说明一下，避免用户以为卡住了
     this.emitOutput(`\r\n\x1b[33m[检测到本地文件「${name}」，正在问你要不要上传（不想上传就选「${UPLOAD_PROMPT_RUN}」；关掉询问框＝把这一行放回命令行，不会执行）]\x1b[0m\r\n`);
+  }
+
+  // ── 传输期间键盘锁（宿主侧） ────────────────────────────────────────────────
+  //
+  // 判定在 core/transferLock.ts（可单测），这里只做：提示、状态栏、硬超时兜底。
+  // 不跟 readOnly 抢同一个开关 —— 锁是独立的门，解锁时不需要"恢复"用户设置。
+
+  /** 当前会话是否处在传输锁定状态（广播要据此跳过它） */
+  get isTransferLocked(): boolean {
+    return this.tlock.active
+  }
+
+  /**
+   * 进入传输锁。`reason` 会显示给用户（上传 / 下载）。
+   * 嵌套调用安全：只有最外层会打提示。
+   */
+  enterTransferLock(reason: string): void {
+    const outer = this.tlock.enter(this.readOnly)
+    if (!outer) return
+    this.lastTransferLockHint = 0
+    this.emitOutput(
+      `\r\n\x1b[36m[${reason}中：键盘已锁定 —— 传输期间按键会被丢弃（避免打断 rz/sz），结束后自动恢复]\x1b[0m\r\n`
+    )
+    log(`#${this.sessionNo}${this.nameOf()} 进入传输锁（${reason}）`)
+    try {
+      this.transferLockStatus?.dispose()
+      this.transferLockStatus = vscode.window.setStatusBarMessage(`$(lock) ${reason}中：键盘已锁定`, undefined as never)
+    } catch {
+      /* 状态栏失败不影响传输 */
+    }
+    if (this.transferLockTimer) clearTimeout(this.transferLockTimer)
+    // 硬超时兜底：会话/对端异常时不能让键盘永远锁着
+    this.transferLockTimer = setTimeout(() => {
+      if (!this.tlock.active) return
+      if (!this.tlock.isHardTimedOut()) return
+      log(`#${this.sessionNo}${this.nameOf()} 传输锁硬超时，强制解锁`)
+      this.forceUnlockTransfer(`超时 ${Math.round(this.tlock.heldForMs / 1000)}s`)
+    }, 10 * 60_000)
+    this.transferLockTimer.unref?.()
+  }
+
+  /** 退出传输锁（嵌套时只有最外层生效） */
+  exitTransferLock(): void {
+    const out = this.tlock.exit()
+    if (!out.released) return
+    if (this.transferLockTimer) {
+      clearTimeout(this.transferLockTimer)
+      this.transferLockTimer = undefined
+    }
+    try {
+      this.transferLockStatus?.dispose()
+    } catch {
+      /* ignore */
+    }
+    this.transferLockStatus = undefined
+    const dropped = out.dropped > 0 ? `，期间丢弃了 ${out.dropped} 次按键（含 ↑ 之类会打断传输的键）` : ''
+    this.emitOutput(`\r\n\x1b[36m[传输结束：键盘已恢复${dropped}]\x1b[0m\r\n`)
+    log(`#${this.sessionNo}${this.nameOf()} 退出传输锁（dropped=${out.dropped}）`)
+  }
+
+  /**
+   * 在一次传输的**完整流程**里锁键盘（探测 + 传输 + 校验）。
+   *
+   * 为什么要包住整个流程而不是只包 rz：三步里任何一步的按键都会坏事 ——
+   * 探测/校验阶段人会以为"传完了"，按 ↑ 发 ESC，可能把上一条命令的输出打断或污染校验。
+   */
+  async withTransferLock<T>(reason: string, fn: () => Promise<T>): Promise<T> {
+    this.enterTransferLock(reason)
+    try {
+      return await fn()
+    } finally {
+      this.exitTransferLock()
+    }
+  }
+
+  /** 硬超时/异常时的强制解锁（会清空嵌套层数） */
+  forceUnlockTransfer(why: string): void {
+    const out = this.tlock.exitAll()
+    if (this.transferLockTimer) {
+      clearTimeout(this.transferLockTimer)
+      this.transferLockTimer = undefined
+    }
+    try {
+      this.transferLockStatus?.dispose()
+    } catch {
+      /* ignore */
+    }
+    this.transferLockStatus = undefined
+    if (!out.released) return
+    this.emitOutput(`\r\n\x1b[33m[传输锁已强制解除（${why}）—— 键盘恢复；如果传输其实还在跑，可能已经失败]\x1b[0m\r\n`)
+    log(`#${this.sessionNo}${this.nameOf()} 强制解除传输锁（${why}）`)
+  }
+
+  /** 被传输锁拦住时的提示：限流，避免按住 ↑ 刷满屏 */
+  private notifyTransferLock(): void {
+    const now = Date.now()
+    if (now - this.lastTransferLockHint < 2000) return
+    this.lastTransferLockHint = now
+    this.emitOutput('\r\n\x1b[36m[传输中：键盘已锁定，按键被丢弃；传输结束会自动恢复]\x1b[0m\r\n')
   }
 
   /** 只读模式开关（生产环境防手滑）。返回设置后的状态 */
@@ -445,6 +579,9 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   }
 
   async upload(paths: string[]): Promise<{ skipped: string[]; mode: OverwriteMode; error?: string }> {
+    // 传输三阶段全程锁键盘：rz 运行期间 ESC（↑ 的第一字节）会打断传输
+    this.enterTransferLock('上传')
+    try {
     this.lastUploadError = undefined;
     if (!this.zmodem) {
       this.lastUploadError = '会话未就绪（ZMODEM 传输层还没初始化）';
@@ -473,6 +610,9 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     // 等不到也不报错 —— 只是慢一点，跟以前一样。
     await this.waitShellBackAfterTransfer();
     return { skipped: this.recentSkips.slice(), mode, error: this.lastUploadError };
+    } finally {
+      this.exitTransferLock()
+    }
   }
 
   /** 最近一次 exec 有没有等到结束标记（false = 命令很可能没执行） */
@@ -517,6 +657,9 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     if (this.closed || !this.stream) return { ok: false, message: '会话已关闭' };
     if (!remotePath.trim()) return { ok: false, message: '错误：需要 remotePath（远端文件路径）' };
     await this.shellReady;
+    // 下载同样锁键盘：sz 跑的时候按键（ESC）会打断传输
+    this.enterTransferLock('下载')
+    try {
     try {
       fs.mkdirSync(localDir, { recursive: true });
     } catch (e) {
@@ -548,6 +691,9 @@ export class BastionTerminal implements vscode.Pseudoterminal {
       if (tail) return { ...result, message: `${result.message ?? '下载失败'}\n—— 屏幕最后几行 ——\n${tail}` };
     }
     return result;
+    } finally {
+      this.exitTransferLock()
+    }
   }
 
   /**

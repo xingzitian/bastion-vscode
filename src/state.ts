@@ -193,7 +193,9 @@ export function removeBroadcastTarget(t: BastionTerminal): void {
  */
 export function broadcastReceivers(current: BastionTerminal, targets: BastionTerminal[]): BastionTerminal[] {
   if (targets.length === 0) return []
-  return targets.filter((t) => t !== current && !t.isReadOnly && !t.isClosed)
+  // 传输中（键盘锁着）的会话也要跳过：广播走的是 writeToSession，**绕过只读判断**，
+  // 不显式拦的话，在别的会话按 ↑ 照样会把 ESC 灌进它正在跑的 rz。
+  return targets.filter((t) => t !== current && !t.isReadOnly && !t.isTransferLocked && !t.isClosed)
 }
 
 /**

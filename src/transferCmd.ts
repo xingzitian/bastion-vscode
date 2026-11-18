@@ -40,7 +40,9 @@ export async function retryTransfer(item?: TransferItem): Promise<void> {
   transferProvider.refresh()
   // 走**标准传输工具**：能力探测 + rz / base64 降级 + 传完回读校验（和 AI 那条路同一套）
   for (const p of paths) {
-    const out = await pushPath({ localPath: p, session: transferSessionOf(s.term, s.vt.name) })
+    const out = await s.term.withTransferLock('上传', () =>
+      pushPath({ localPath: p, session: transferSessionOf(s.term, s.vt.name) })
+    )
     if (!out.ok) vscode.window.showErrorMessage(out.message)
   }
 }
@@ -98,7 +100,9 @@ export async function uploadToSession(uri?: vscode.Uri): Promise<void> {
   }
   if (paths.length === 0) return
   for (const p of paths) {
-    const out = await pushPath({ localPath: p, session: transferSessionOf(term, vt?.name ?? term.profile.name) })
+    const out = await term.withTransferLock('上传', () =>
+      pushPath({ localPath: p, session: transferSessionOf(term, vt?.name ?? term.profile.name) })
+    )
     if (!out.ok) vscode.window.showErrorMessage(out.message)
   }
 }
