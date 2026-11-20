@@ -1,3 +1,40 @@
+## 0.3.18
+
+### 修复：SFTP 通道三个真机问题（0.3.17 一上线就撞到）
+
+真机日志（`bastion_push` → cana/xzt）：
+
+1. **`remoteDir` 被忽略，文件落到 `/root`** —— `pushPath` 仍用 shell 的 `cd && pwd` 解析目录，
+   那次 exec 返回空 → 目录被当成空 → 宿主**悄悄回退 `realpath('.')`**（= home），报告还写"成功"。
+2. **7.4KB 就超时、随后 ECONNRESET** —— sftp 通道被**缓存**；通道一旦被对端关掉，ssh2 的后续调用
+   **既不报错也不回调**，整条上传挂到工具超时。
+3. **走 SFTP 时仍然锁键盘、仍然跑能力探测** —— 那两件事只跟 `rz`/`base64` 有关，sftp 根本不需要。
+
+修法（SFTP 现在是一条**独立的上传路径**：不碰 shell、不锁会话、不缓存通道）：
+
+- **目录解析严格化**：`resolveRemoteDir()` 用 sftp 自己的 `realpath` + `stat(isDirectory)`；
+  不存在/不是目录**直接报错**（`远端目录不存在：/opt/xxx`），**绝不回退 home**。
+- **通道即用即关**：每次传输新开 sftp，`finally` 里 `end()`；打开有 15s 超时，对端不响应立刻报错。
+- **sftp 分支提到所有 shell 探测之前**：`pushPath`/`pullPath` 先问宿主能不能 sftp，
+  能就直接传 —— 不跑 `cd && pwd`、不跑 `which rz`、不进 `probeCapabilities`。
+- **不再锁键盘**：`withTransferLock()` 在 sftp 可用时直接放行（sftp 不占 pty，不会被 ↑ 打断）。
+- **用库自带的 `fastPut`/`fastGet`**（ssh2 的多并发实现，默认 64 并发 / 32KB 块）：
+  新文件走它，只有断点续传才用手写流（`fastPut` 不支持偏移）。这是成熟项目（ssh2-sftp-client /
+  vscode-sftp）走的路，比手写 pipe 更快更稳。
+
+### 真机验证（新增工具 `tools/sftp-e2e.mjs`，用 xzt 档案的真实服务器跑编译后的代码）
+
+```
+✓ resolveRemoteDir(/tmp) → /tmp
+✓ resolveRemoteDir(/opt/不存在) → 明确报错（不再落 home）
+✓ 760B  → /tmp（1.2s）
+✓ 7.4KB → /tmp（1.2s，原来超时）
+✓ 7.4KB 再传一次 → 跳过（0.14s）
+✓ 5MB   → /tmp（3.3s，fastPut 并发）
+✓ 5MB 下载回来（11s）
+7 通过 / 0 失败
+```
+
 ## 0.3.17
 
 ### 新增：SFTP 传输通道（直连档案首选）

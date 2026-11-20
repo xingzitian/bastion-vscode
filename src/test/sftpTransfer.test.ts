@@ -8,7 +8,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
-import { getFile, putFile, remoteDirOf, remoteJoin, canResumeBySize, shouldUseSftp, type SftpLike } from '../core/sftpTransfer'
+import { getFile, putFile, remoteDirOf, remoteJoin, canResumeBySize, resolveRemoteDir, shouldUseSftp, type SftpLike } from '../core/sftpTransfer'
 
 interface Written {
   /** 每次写入的起点（0 = 新建） */
@@ -188,4 +188,43 @@ test('★ 该不该用 SFTP：直连用、堡垒机不用（auto）；设置可�
   assert.equal(shouldUseSftp('direct', 'rz'), false, '明确要 rz 就不试 sftp')
   assert.equal(shouldUseSftp('direct', 'base64'), false)
   assert.equal(shouldUseSftp(undefined, 'auto'), false, 'mode 缺省按堡垒机处理')
+})
+test('★ 目标目录不存在 → 必须报错，绝不悄悄退回 home（0.3.17 真实事故）', async () => {
+  const { sftp } = makeSftp()
+  const bad: SftpLike = { ...sftp, realpath: async () => { throw new Error('SSH_FX_NO_SUCH_FILE') } }
+  await assert.rejects(() => resolveRemoteDir(bad, '/opt/relay-panel'), /远端目录不存在或不可访问/)
+})
+
+test('★ 给了目录但不是目录（是文件）→ 报错', async () => {
+  const files = new Map([['/data/a.txt', Buffer.from('x')]])
+  const { sftp } = makeSftp(files)
+  const asFile: SftpLike = {
+    ...sftp,
+    realpath: async () => '/data/a.txt',
+    stat: async () => ({ size: 1, isDirectory: () => false })
+  }
+  await assert.rejects(() => resolveRemoteDir(asFile, '/data/a.txt'), /不是目录/)
+})
+
+test('目录能解析时返回绝对路径（不吞掉用户给的 remoteDir）', async () => {
+  const { sftp } = makeSftp()
+  const ok: SftpLike = { ...sftp, realpath: async (p) => (p === '/tmp' ? '/tmp' : p), stat: async () => ({ size: 0, isDirectory: () => true }) }
+  assert.equal(await resolveRemoteDir(ok, '/tmp'), '/tmp')
+})
+
+test('★ 有 fastPut 时新文件走 fastPut（库自带多并发），不走手写流', async () => {
+  const { sftp, files } = makeSftp()
+  let fastCalls = 0
+  const withFast: SftpLike = {
+    ...sftp,
+    fastPut: async (local, remote) => {
+      fastCalls++
+      files.set(remote, fs.readFileSync(local))
+    }
+  }
+  const local = tmpFile(Buffer.from('fast put path'))
+  const r = await putFile(withFast, local, '/data')
+  assert.equal(r.ok, true)
+  assert.equal(fastCalls, 1, '新文件应当走 fastPut')
+  assert.equal(files.get('/data/payload.bin')?.toString(), 'fast put path')
 })

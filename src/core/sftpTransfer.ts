@@ -18,7 +18,7 @@ import * as path from 'path'
 
 /** ssh2 的 SFTPWrapper 够用的一小部分（包成 Promise，便于测试与替换） */
 export interface SftpLike {
-  stat(remotePath: string): Promise<{ size: number; mtime?: number; mode?: number }>
+  stat(remotePath: string): Promise<{ size: number; mtime?: number; mode?: number; isDirectory?: () => boolean }>
   createReadStream(remotePath: string, opts?: { start?: number }): NodeJS.ReadableStream
   createWriteStream(
     remotePath: string,
@@ -28,6 +28,14 @@ export interface SftpLike {
   realpath(remotePath: string): Promise<string>
   unlink(remotePath: string): Promise<void>
   rename(from: string, to: string): Promise<void>
+  /**
+   * ssh2 自带的多并发上传/下载（默认 64 并发、32KB 块）——
+   * 这是 `ssh2-sftp-client` / vscode-sftp 这些成熟项目走的路，比手写 pipe 快且稳。
+   * 没有提供时自动退回流实现（测试里的假 sftp 就是这种情况）。
+   * **注意：不支持偏移**，所以只有"从 0 开始"才用它；续传走流。
+   */
+  fastPut?(localPath: string, remotePath: string, opts?: { step?: (total: number, chunk: number, total2: number) => void }): Promise<void>
+  fastGet?(remotePath: string, localPath: string, opts?: { step?: (total: number, chunk: number, total2: number) => void }): Promise<void>
 }
 
 export interface ProgressInfo {
@@ -197,6 +205,33 @@ export async function putFile(
     return { ok: true, remotePath, bytes: localSize, skipped: true, resumed: false }
   }
 
+  // 新建（不从中间接着传）优先用 ssh2 自带的 fastPut：它是库自己的多并发实现，
+  // 比手写 readStream→writeStream 更快、处理窗口/背压更稳（成熟项目都走这条）。
+  if (start === 0 && sftp.fastPut) {
+    const reporterFast = makeReporter(localSize, 0, false, opts)
+    try {
+      await sftp.fastPut(localPath, remotePath, {
+        step: (transferred: number) => reporterFast.report(transferred)
+      })
+    } catch (e) {
+      return { ok: false, remotePath, bytes: 0, skipped: false, resumed: false, error: `上传失败：${humanError(e)}` }
+    }
+    const st = await statOrUndefined(sftp, remotePath)
+    if (!st) return { ok: false, remotePath, bytes: 0, skipped: false, resumed: false, error: '上传后远端找不到文件' }
+    if (st.size !== localSize) {
+      return {
+        ok: false,
+        remotePath,
+        bytes: st.size,
+        skipped: false,
+        resumed: false,
+        error: `大小不一致：本地 ${localSize} 字节，远端 ${st.size} 字节`
+      }
+    }
+    reporterFast.finish()
+    return { ok: true, remotePath, bytes: localSize, skipped: false, resumed: false }
+  }
+
   const reporter = makeReporter(localSize, start, start > 0, opts)
   const readable = fs.createReadStream(localPath, start > 0 ? { start } : undefined)
   const writable = start > 0
@@ -291,6 +326,29 @@ export async function getFile(
   }
   if (resume && localSize > 0 && localSize < remoteSize) start = localSize
 
+  if (start === 0 && sftp.fastGet) {
+    const reporterFast = makeReporter(remoteSize, 0, false, opts)
+    try {
+      await sftp.fastGet(remotePath, localPath, {
+        step: (transferred: number) => reporterFast.report(transferred)
+      })
+    } catch (e) {
+      return { ok: false, localPath, bytes: 0, resumed: false, error: `下载失败：${humanError(e)}` }
+    }
+    const size = fs.existsSync(localPath) ? fs.statSync(localPath).size : -1
+    if (size !== remoteSize) {
+      return {
+        ok: false,
+        localPath,
+        bytes: size,
+        resumed: false,
+        error: `大小不一致：远端 ${remoteSize} 字节，本地 ${size} 字节`
+      }
+    }
+    reporterFast.finish()
+    return { ok: true, localPath, bytes: remoteSize, resumed: false }
+  }
+
   const reporter = makeReporter(remoteSize, start, start > 0, opts)
   const readable = sftp.createReadStream(remotePath, start > 0 ? { start } : undefined)
   const writable = fs.createWriteStream(localPath, start > 0 ? { flags: 'a' } : { flags: 'w' })
@@ -362,4 +420,35 @@ export function shouldUseSftp(profileMode: string | undefined, channel: string |
   if (ch === 'rz' || ch === 'base64') return false
   if (ch === 'sftp') return true
   return profileMode === 'direct'
+}
+/**
+ * 把"要传到哪个远端目录"解析成**确定存在**的绝对路径。
+ *
+ * ⚠️ 这是 0.3.17 真实事故的修复点：以前宿主拿不到目录时（shell 探测返回空）
+ * 会**悄悄退回 `realpath('.')`**（= 登录用户的 home），于是 `remoteDir: "/tmp"`
+ * 变成了 `/root/config.json` —— 报告还写"成功"。宁可失败，也不能传错地方。
+ *
+ * 规则：
+ *   - 给了 remoteDir → 必须是已存在的**目录**；不存在/不可访问/不是目录 → 抛错
+ *   - 没给 → 用 sftp 的当前目录（realpath('.')）；连这个都失败 → 抛错
+ */
+export async function resolveRemoteDir(sftp: SftpLike, requested?: string): Promise<string> {
+  const want = (requested ?? '').trim()
+  let abs: string
+  try {
+    abs = await sftp.realpath(want || '.')
+  } catch (e) {
+    throw new Error(`远端目录不存在或不可访问：${want || '(当前目录)'}（${humanError(e)}）`)
+  }
+  if (!abs || abs === '.') throw new Error(`远端目录解析失败：${want || '(当前目录)'}`)
+  let st: { isDirectory?: () => boolean } | undefined
+  try {
+    st = await sftp.stat(abs)
+  } catch (e) {
+    throw new Error(`远端目录不可访问：${abs}（${humanError(e)}）`)
+  }
+  if (st && typeof st.isDirectory === 'function' && !st.isDirectory()) {
+    throw new Error(`远端路径不是目录：${abs}`)
+  }
+  return abs
 }

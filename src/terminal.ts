@@ -15,7 +15,7 @@ import { fmtBytes as formatBytes } from './status';
 import { pushPath, type TransferSession } from './core/transferPath';
 // 单向依赖：menu.ts 不 import terminal.ts，所以这里可以放心用它的提示符识别
 import { TransferLock } from './core/transferLock';
-import { putFile, getFile, shouldUseSftp, type SftpLike } from './core/sftpTransfer';
+import { putFile, getFile, resolveRemoteDir, shouldUseSftp, type SftpLike } from './core/sftpTransfer';
 import { fmtBytes } from './core/format';
 import { classifySessionScreen, resolveMenuHints, detectPrompt } from './core/menu';
 import { describeConnectError, isAuthFailure, MAX_AUTH_ATTEMPTS, shouldOfferRetry } from './core/authError';
@@ -60,6 +60,27 @@ export interface ScreenMark {
 
 /** exec 单次捕获的文本上限（避免超大输出撑爆内存；作业日志另有 8MB 滚动缓冲） */
 const MAX_CAPTURE = 2 * 1024 * 1024;
+
+/** 打开 sftp 子系统的超时：对端不响应时要能报错，不能挂死 */
+const SFTP_OPEN_TIMEOUT_MS = 15000;
+
+/** 超时保护：ssh2 在通道已死时**既不报错也不回调**，没有它就等于永久挂起 */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${what}超时（${Math.round(ms / 1000)}s）`)), ms);
+    timer.unref?.();
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
 /** execDetailed 的选项 */
 export interface ExecOpts {
   /** 输出静止多久算"没输出了"（默认 3000；AI 那条路显式传 15000） */
@@ -477,6 +498,9 @@ export class BastionTerminal implements vscode.Pseudoterminal {
    * 探测/校验阶段人会以为"传完了"，按 ↑ 发 ESC，可能把上一条命令的输出打断或污染校验。
    */
   async withTransferLock<T>(reason: string, fn: () => Promise<T>): Promise<T> {
+    // SFTP 不占 pty —— 既不需要锁键盘，也不会被 ↑ 打断。
+    // 2026-11-20 真机：sftp 上传时仍然锁会话，用户以为卡住；锁还让整条 push 多等了一段。
+    if (await this.sftpAvailable()) return fn()
     this.enterTransferLock(reason)
     try {
       return await fn()
@@ -597,24 +621,43 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     return shouldUseSftp(this.profile.mode, ch);
   }
 
-  /** 打开（并缓存）这条连接上的 sftp 客户端。失败会缓存失败吗？不会 —— 允许下次重试 */
-  async sftpClient(): Promise<SftpLike> {
-    if (!this.sftpPromise) {
-      const raw = this.conn.rawClient as unknown as {
-        sftp(cb: (err: Error | undefined, sftp: unknown) => void): void;
-      };
-      this.sftpPromise = new Promise<SftpLike>((resolve, reject) => {
+  /**
+   * 打开一条 sftp 通道 —— **每次都新开、用完就关**。
+   *
+   * 为什么不再缓存：真机事故（2026-11-20）—— 缓存下来的通道一旦被对端关掉，
+   * ssh2 的后续调用**不报错也不回调**，整个上传就挂住直到工具超时，随后连接 ECONNRESET。
+   * 每次新开 + 超时保护，任何失败都能立刻变成一条可读的错误。
+   */
+  private async openSftp(): Promise<{ sftp: SftpLike; close: () => void }> {
+    const raw = this.conn.rawClient as unknown as {
+      sftp(cb: (err: Error | undefined, sftp: unknown) => void): void;
+    };
+    const opened = await withTimeout(
+      new Promise<unknown>((resolve, reject) => {
         raw.sftp((err, sftp) => {
-          if (err || !sftp) {
-            this.sftpPromise = undefined;
-            reject(new Error(`打不开 SFTP 子系统：${err?.message ?? '未知原因'}`));
-            return;
-          }
-          resolve(wrapSftp(sftp));
+          if (err || !sftp) reject(new Error(`打不开 SFTP 子系统：${err?.message ?? '未知原因'}`));
+          else resolve(sftp);
         });
-      });
-    }
-    return this.sftpPromise;
+      }),
+      SFTP_OPEN_TIMEOUT_MS,
+      '打开 SFTP 子系统'
+    );
+    const handle = opened as { end?: () => void };
+    return {
+      sftp: wrapSftp(opened),
+      close: () => {
+        try {
+          handle.end?.();
+        } catch {
+          /* 关不掉就算了 */
+        }
+      }
+    };
+  }
+
+  /** 兼容旧调用点 */
+  async sftpClient(): Promise<SftpLike> {
+    return (await this.openSftp()).sftp;
   }
 
   /** 宿主给 core 的能力回答：能不能走 sftp */
@@ -639,14 +682,19 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   }
 
   /** sftp 上传（单文件）。不占 pty，所以**不锁键盘** */
+  /**
+   * sftp 上传（单文件）。**不占 pty、不碰 shell**，所以既不需要锁键盘，也不需要能力探测。
+   * 目标目录必须是确定存在的绝对路径；不存在就报错，绝不悄悄退回 home。
+   */
   async sftpPut(
     localPath: string,
     remoteDir?: string
   ): Promise<{ ok: boolean; remotePath?: string; message: string; bytes?: number; skipped?: boolean; resumed?: boolean }> {
+    let handle: { sftp: SftpLike; close: () => void } | undefined;
     try {
-      const sftp = await this.sftpClient();
-      const dir = (remoteDir ?? '').trim() || (await this.sftpCwd(sftp));
-      const r = await putFile(sftp, localPath, dir, {
+      handle = await this.openSftp();
+      const dir = await resolveRemoteDir(handle.sftp, remoteDir);
+      const r = await putFile(handle.sftp, localPath, dir, {
         onProgress: (p) => {
           if (p.ratio >= 1) return;
           log(`SFTP 上传 ${path.basename(localPath)}：${Math.round(p.ratio * 100)}%（${fmtBytes(p.transferred)} / ${fmtBytes(p.total)}）`);
@@ -656,19 +704,24 @@ export class BastionTerminal implements vscode.Pseudoterminal {
       log(`SFTP 上传完成：${r.remotePath}（${r.bytes} 字节${r.resumed ? '，断点续传' : ''}${r.skipped ? '，已存在同大小文件' : ''}）`);
       return { ok: true, remotePath: r.remotePath, message: 'ok', bytes: r.bytes, skipped: r.skipped, resumed: r.resumed };
     } catch (e) {
-      return { ok: false, message: (e as Error).message };
+      const msg = (e as Error).message;
+      log(`SFTP 上传失败（${path.basename(localPath)}）：${msg}`);
+      return { ok: false, message: msg };
+    } finally {
+      handle?.close();
     }
   }
 
-  /** sftp 下载（单文件）。不占 pty，所以不锁键盘 */
+  /** sftp 下载（单文件）。不占 pty，不锁键盘 */
   async sftpGet(
     remotePath: string,
     localDir: string
   ): Promise<{ ok: boolean; localPath?: string; message: string; bytes?: number; resumed?: boolean }> {
+    let handle: { sftp: SftpLike; close: () => void } | undefined;
     try {
-      const sftp = await this.sftpClient();
+      handle = await this.openSftp();
       fs.mkdirSync(localDir, { recursive: true });
-      const r = await getFile(sftp, remotePath, localDir, {
+      const r = await getFile(handle.sftp, remotePath, localDir, {
         onProgress: (p) => {
           if (p.ratio >= 1) return;
           log(`SFTP 下载 ${path.basename(remotePath)}：${Math.round(p.ratio * 100)}%`);
@@ -679,6 +732,8 @@ export class BastionTerminal implements vscode.Pseudoterminal {
       return { ok: true, localPath: r.localPath, message: 'ok', bytes: r.bytes, resumed: r.resumed };
     } catch (e) {
       return { ok: false, message: (e as Error).message };
+    } finally {
+      handle?.close();
     }
   }
   async upload(paths: string[]): Promise<{ skipped: string[]; mode: OverwriteMode; error?: string }> {
@@ -1510,6 +1565,10 @@ function wrapSftp(raw: unknown): SftpLike {
         else resolve(v as T);
       });
     });
+  const s2 = s as unknown as {
+    fastPut(l: string, r: string, o: { step?: (a: number, b: number, c: number) => void }, cb: (e?: Error | null) => void): void;
+    fastGet(r: string, l: string, o: { step?: (a: number, b: number, c: number) => void }, cb: (e?: Error | null) => void): void;
+  };
   return {
     stat: (p) => call((cb) => s.stat(p, cb)),
     createReadStream: (p, opts) => s.createReadStream(p, opts),
@@ -1517,6 +1576,15 @@ function wrapSftp(raw: unknown): SftpLike {
     mkdir: (p) => call((cb) => s.mkdir(p, cb)),
     realpath: (p) => call((cb) => s.realpath(p, cb)),
     unlink: (p) => call((cb) => s.unlink(p, cb)),
-    rename: (a, b) => call((cb) => s.rename(a, b, cb))
+    rename: (a, b) => call((cb) => s.rename(a, b, cb)),
+    // ssh2 自带的多并发实现（默认 64 并发 / 32KB 块）：新文件走它，续传才用流
+    fastPut: (local, remote, opts) =>
+      new Promise<void>((resolve, reject) => {
+        s2.fastPut(local, remote, { step: opts?.step }, (e) => (e ? reject(e) : resolve()));
+      }),
+    fastGet: (remote, local, opts) =>
+      new Promise<void>((resolve, reject) => {
+        s2.fastGet(remote, local, { step: opts?.step }, (e) => (e ? reject(e) : resolve()));
+      })
   };
 }

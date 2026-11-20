@@ -200,6 +200,34 @@ export async function pushPath(opts: {
   const isDir = st.isDirectory()
   const name = path.basename(localPath)
 
+  // ── SFTP 优先，并且**完全不碰 shell** ─────────────────────────────────
+  //
+  // 2026-11-20 真机事故：sftp 挂在原来的链路上，导致 ①仍然先跑 `cd && pwd` 探测
+  //   （那次 exec 返回空 → 目录被当成空 → 退回 home，`remoteDir: /tmp` 传成了 /root）；
+  // ②仍然跑能力探测；③仍然锁键盘。而 sftp 根本不需要这些 ——
+  // 目录用 sftp 自己的 realpath 解析，能力探测只跟 rz/base64 有关。
+  const sftpPut = session.sftpPut;
+  const sftpOK = !isDir && !opts.forceMethod && !!sftpPut && (await session.sftpAvailable?.() ?? false);
+  if (sftpOK && sftpPut) {
+    const wantDir = (opts.remoteDir ?? '').trim();
+    const r = await sftpPut(localPath, wantDir || undefined);
+    if (!r.ok) return fail(`❌ SFTP 上传失败：${r.message}`, 'sftp')
+    const flags = [r.resumed ? '断点续传' : '', r.skipped ? '远端已有同大小文件，跳过' : ''].filter(Boolean).join('，')
+    return {
+      ok: true,
+      method: 'sftp',
+      localPath,
+      remotePath: r.remotePath,
+      bytes: r.bytes ?? st.size,
+      mode,
+      skipped: r.skipped,
+      message:
+        `✅ 已上传：${name} → ${r.remotePath ?? '?'}（${fmtBytes(r.bytes ?? st.size)}）\n` +
+        `通道：${methodLabel('sftp')}${flags ? `（${flags}）` : ''}`
+    }
+  }
+
+
   // 目标目录：**必须在同一条命令里 `cd` + `pwd`**。
   //
   // ⚠️ 不能分成两条（2026-09-14 由端到端测试抓到的真 bug）：每条远端命令都可能是**独立的 shell**
@@ -234,24 +262,6 @@ export async function pushPath(opts: {
   // ── SFTP：直连档案的首选 ──────────────────────────────────────────────
   // 不占 pty（不会打断终端里正在跑的东西）、复用已认证连接（不再输 MFA）、
   // 支持断点续传；大小校验在 sftpPut 内部完成（远端 stat 是最终事实）。
-  if (method === 'sftp') {
-    if (!session.sftpPut) return fail('❌ 这个宿主没有 SFTP 通道（正常不该发生）', method)
-    const r = await session.sftpPut(localPath, dirAbs || undefined)
-    if (!r.ok) return fail(`❌ SFTP 上传失败：${r.message}`, method)
-    const flags = [r.resumed ? '断点续传' : '', r.skipped ? '远端已有同大小文件，跳过' : ''].filter(Boolean).join('，')
-    return {
-      ok: true,
-      method,
-      localPath,
-      remotePath: r.remotePath ?? at(path.basename(localPath)),
-      bytes: r.bytes ?? st.size,
-      mode,
-      skipped: r.skipped,
-      message:
-        `✅ 已上传：${name} → ${r.remotePath ?? at(name)}（${fmtBytes(r.bytes ?? st.size)}）\n` +
-        `通道：${methodLabel(method)}${flags ? `（${flags}）` : ''}`
-    }
-  }
 
   // 目录：先本地打包（Windows 10+ 自带 tar.exe，Linux/macOS 也有）
   let toSend = localPath
@@ -450,6 +460,23 @@ export async function pullPath(opts: {
   if (!remotePath) return { ok: false, method: 'sz', message: '错误：需要 remotePath（远端文件路径）' }
   const localDir = opts.localDir.trim()
   if (!localDir) return { ok: false, method: 'sz', message: '错误：需要 localDir（本机落盘目录）' }
+
+  // SFTP 优先，且**不需要 shell 能力探测**（它跟 lrzsz/base64 无关）
+  const sftpGet = session.sftpGet
+  if (!opts.forceMethod && sftpGet && (await session.sftpAvailable?.() ?? false)) {
+    const r = await sftpGet(remotePath, localDir)
+    if (!r.ok) return { ok: false, method: 'sftp', message: `❌ SFTP 下载失败：${r.message}` }
+    return {
+      ok: true,
+      method: 'sftp',
+      localPath: r.localPath,
+      bytes: r.bytes,
+      message:
+        `✅ 已下载 ${path.basename(remotePath)}${r.bytes === undefined ? '' : `（${fmtBytes(r.bytes)}）`} → ${r.localPath ?? localDir}\n` +
+        `通道：${methodLabel('sftp')}${r.resumed ? '（断点续传）' : ''}`
+    }
+  }
+
   const caps = await probeCapabilities(session)
   const method = opts.forceMethod ?? choosePullMethod(caps)
   if (!method) {
@@ -461,21 +488,8 @@ export async function pullPath(opts: {
         '请让用户装一下 lrzsz，或者让他 `cat` 出来给你看。'
     }
   }
-
-  // ── SFTP：直连档案的首选 ──────────────────────────────────────────────
   if (method === 'sftp') {
-    if (!session.sftpGet) return { ok: false, method: 'sftp', message: '❌ 这个宿主没有 SFTP 通道（正常不该发生）' }
-    const r = await session.sftpGet(remotePath, localDir)
-    if (!r.ok) return { ok: false, method: 'sftp', message: `❌ SFTP 下载失败：${r.message}` }
-    return {
-      ok: true,
-      method: 'sftp',
-      localPath: r.localPath,
-      bytes: r.bytes,
-      message:
-        `✅ 已下载 ${path.basename(remotePath)}${r.bytes === undefined ? '' : `（${fmtBytes(r.bytes)}）`} → ${r.localPath ?? localDir}\n` +
-        `通道：${methodLabel('sftp')}${r.resumed ? '（断点续传）' : ''}`
-    }
+    return { ok: false, method: 'sftp', message: '❌ SFTP 未就绪（正常不该发生）' }
   }
 
   if (method === 'sz') {
