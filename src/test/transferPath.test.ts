@@ -236,3 +236,25 @@ test('拉一个有大小但回不出内容的文件：不能当成「空文件�
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('★ 能力探测：输出被 ANSI 糊住（pty 的 ESC[?2004l）也要能解析出 rz', async () => {
+  const exec = async (cmd: string) => {
+    if (cmd.includes('__BS_PROBE_BEGIN__')) {
+      // 真机形态：第一行前面粘着括号粘贴控制序列
+      return '\u001b[?2004l__BS_PROBE_BEGIN__\r\nrz=1\r\nsz=0\r\nbase64=1\r\ntar=1\r\nmd5sum=1\r\n__BS_PROBE_END__\r\n'
+    }
+    return ''
+  }
+  const session: TransferSession = {
+    name: `ansi-probe-${Date.now()}`,
+    exec,
+    exitCode: () => 0,
+    sftpAvailable: async () => false,
+    overwriteMode: () => 'skip',
+    log: () => undefined
+  }
+  const c = await probeCapabilities(session, true)
+  assert.equal(c.rz, true, 'ANSI 前缀不该让 rz 被误判为"无"')
+  assert.equal(c.sz, false)
+  assert.equal(c.base64, true)
+})

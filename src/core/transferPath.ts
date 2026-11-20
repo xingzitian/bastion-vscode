@@ -109,16 +109,55 @@ export async function probeCapabilities(session: TransferSession, refresh = fals
   // sftp 是连接层能力，可能因为设置/档案变化，所以缓存命中时也用最新值覆盖
   if (cached && !refresh) return { ...cached, sftp }
   const caps: Capabilities = { sftp, rz: false, sz: false, base64: false, tar: false, md5sum: false }
-  try {
-    // 一条命令问全：`command -v` 不输出就说明没有
+  /**
+   * 能力探测：**走 PATH（`command -v`，等价于 `where`）+ 哨兵 + 就绪握手 + 失败重试一次**。
+   *
+   * 真机教训（2026-11-20）：
+   *   - 裸 `command -v` 输出会被 pty 的 ESC 序列糊住（第一行常带 `ESC[?2004l`），
+   *     于是 `rz=` 那行解析不到 → 明明装了 `rz` 却报"无"；
+   *   - 冷启动会话里 shell 还没画完提示符就发命令，输出直接是空的。
+   *
+   * 注意：**不写死 `/usr/bin/rz`** —— 工具可能装在 `/usr/local/bin`、`/opt/...`，
+   * 甚至在 `~/.local/bin`。所以判断用 `command -v`（PATH 查找），这也是 `where` 的语义。
+   */
+  const probeOnce = async (): Promise<Record<string, boolean> | null> => {
     const out = await session.exec(
-      'for c in rz sz base64 tar md5sum; do printf "%s=" "$c"; command -v "$c" >/dev/null 2>&1 && echo yes || echo no; done'
+      [
+        'echo __BS_PROBE_BEGIN__',
+        'for c in rz sz base64 tar md5sum; do',
+        '  if command -v "$c" >/dev/null 2>&1; then echo "$c=1"; else echo "$c=0"; fi',
+        'done',
+        'echo __BS_PROBE_END__'
+      ].join('\n')
     )
-    for (const line of out.split('\n')) {
-      const m = /^(rz|sz|base64|tar|md5sum)=(yes|no)/.exec(line.trim())
-      if (m && (m[1] === 'rz' || m[1] === 'sz' || m[1] === 'base64' || m[1] === 'tar' || m[1] === 'md5sum')) {
-        caps[m[1]] = m[2] === 'yes'
-      }
+    const lines = out.split('\n').map((l) => l.trim())
+    const b = lines.findIndex((l) => l.includes('__BS_PROBE_BEGIN__'))
+    const e = lines.findIndex((l) => l.includes('__BS_PROBE_END__'))
+    // 只认哨兵之间的行；拿不到哨兵就退回全量（老式 shell / 输出被截断时的兜底）
+    const body = b >= 0 && e > b ? lines.slice(b + 1, e) : lines
+    const found: Record<string, boolean> = {}
+    for (const line of body) {
+      const m = /(rz|sz|base64|tar|md5sum)=(1|0|yes|no)/.exec(line)
+      if (m) found[m[1]] = m[2] === '1' || m[2] === 'yes'
+    }
+    return Object.keys(found).length > 0 ? found : null
+  }
+
+  try {
+    let found: Record<string, boolean> | null = null
+    for (let attempt = 0; attempt < 2 && !found; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 800))
+      found = await probeOnce()
+      if (!found) session.log(`[transfer] 能力探测第 ${attempt + 1} 次没拿到结果（shell 可能还没就绪），重试`)
+    }
+    if (found) {
+      caps.rz = found.rz === true
+      caps.sz = found.sz === true
+      caps.base64 = found.base64 === true
+      caps.tar = found.tar === true
+      caps.md5sum = found.md5sum === true
+    } else {
+      caps.note = '探测两次都没拿到结果（shell 可能还没就绪）——按"没有"处理并降级'
     }
   } catch (e) {
     caps.note = `探测失败：${(e as Error).message}`

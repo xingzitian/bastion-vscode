@@ -1029,7 +1029,14 @@ export class BastionTerminal implements vscode.Pseudoterminal {
    * - 到 maxMs 还在跑 → `timedOut: true`（**作业继续**，不是失败）。
    */
   async execDetailed(command: string, opts: ExecOpts = {}): Promise<ExecResult> {
-    await this.shellReady;
+    await this.shellReady
+    // 冷启动的"命令比界面先到"：会话刚打开时 `shellReady` 可能已经 resolve，
+    // 但终端还没画出第一屏。等一小段（最多 2.5s）让用户先看到终端，再往里写命令。
+    if (this.lastDataAt === 0) {
+      for (let i = 0; i < 25 && this.lastDataAt === 0 && !this.closed; i++) {
+        await sleep(100)
+      }
+    };
     const cursorAtStart = this.screenCursor;
     if (this.closed || !this.stream) {
       return {
@@ -1115,7 +1122,10 @@ export class BastionTerminal implements vscode.Pseudoterminal {
           }
         }
         resolve({
-          text: safe ? stripMarker(buf, marker) : buf,
+          // 统一在这里剥 ANSI：能力探测、md5/大小解析、部署报告都吃这份干净文本。
+          // 真机（2026-11-20）：pty 输出第一行常带 ESC[?2004l，会把 `rz=...` 糊住，
+          // 导致“rz 明明有却被判定没有”。
+          text: stripAnsi(safe ? stripMarker(buf, marker) : buf),
           exitCode,
           markerSeen: !safe || markerSeen,
           elapsedMs: Date.now() - startedAt,
