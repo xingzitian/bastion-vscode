@@ -1166,9 +1166,30 @@ export class BastionTerminal implements vscode.Pseudoterminal {
             return;
           }
         }
-        // 有新输出 → 重置「静止」计时
-        if (quietTimer) clearTimeout(quietTimer);
-        quietTimer = setTimeout(() => finish(false), quietMs);
+        // 有新输出 → 重置「静止」计时。
+        //
+        // ⚠️ 只对**打不出哨兵**的命令用"静默"兜底（交互式 / 后台 / 换 shell）。
+        // 哨兵安全（单行非交互）时**绝不能**因为静默就判完成：
+        // 2026-11-20 真机 —— 部署里 `sleep 10; echo waited-10s` 静默 10 秒，
+        // 3 秒兜底直接判"完成（markerSeen=false）"，报告写"很可能没执行"，
+        // 而它其实正在跑；下一条命令还会在这个 sleep 期间被塞进终端。
+        // 哨兵一定会来（挂在同一条命令行尾），所以等它 —— 只有 close / maxMs 能提前结束。
+        if (!safe) {
+          if (quietTimer) clearTimeout(quietTimer);
+          quietTimer = setTimeout(() => finish(false), quietMs);
+        } else {
+          // 哨兵安全的命令：静默期间只写一行日志（**不改判定**），
+          // 让日志能看出"它在等哨兵"，而不是让人以为卡死、或以为已经完成。
+          if (quietTimer) clearTimeout(quietTimer);
+          quietTimer = setTimeout(() => {
+            if (settled) return;
+            log(
+              `命令仍在跑（已静默 ${Math.round(quietMs / 1000)}s，还没等到结束哨兵）` +
+                `—— sleep/构建/脚本内部等待都属正常，继续等，不判完成`
+            );
+            quietTimer = null;
+          }, quietMs);
+        }
       };
       const onClose = (): void => {
         if (job) failJob(job, 'session_lost');
@@ -1179,6 +1200,12 @@ export class BastionTerminal implements vscode.Pseudoterminal {
       stream.on('data', onData);
       stream.on('close', onClose);
       stream.write(cmd.replace(/\r\n/g, '\n') + '\r');
+
+      // 挂不了哨兵的命令（`sudo -i` / 交互式）：**从写出去那一刻就开始**静默计时。
+      // 只在 onData 里起始的话，遇到"一个字节都不回"的交互提示会一直等到 maxMs。
+      if (!safe) {
+        quietTimer = setTimeout(() => finish(false), quietMs);
+      }
 
       // 兜底最大超时
       maxTimer = setTimeout(() => finish(true), maxMs);

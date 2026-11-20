@@ -90,10 +90,26 @@ export async function runCommandLines(
     if (isMarkerSafe(cmd, allowPlainSudo)) {
       // 捕获到的原始输出带 ANSI/括号粘贴等控制序列（报告里会出现 `[?2004hroot@...` 这种），
       // 报告是给人看的，先清干净再存。
-      const output = stripAnsi(await term.exec(cmd))
-      // 没等到结束标记 → 命令很可能没执行（典型场景：上一步上传后 rz 还占着终端）。
-      // 如实标出来并说明原因，别让人去怀疑自己的脚本。
-      out.push({ label, command: cmd, output, captured: true, pending: !term.lastExecMarkerSeen, ms: Date.now() - t0 })
+      //
+      // maxMs：哨兵安全的命令**只靠哨兵判定完成**（静默不再算完成，见 terminal.execDetailed），
+      // 所以给足时间；15 分钟还没等到就当它卡住，别再把下一条命令塞进去。
+      const output = stripAnsi(await term.exec(cmd, { maxMs: 15 * 60_000 }))
+      const done = term.lastExecMarkerSeen
+      out.push({ label, command: cmd, output, captured: true, pending: !done, ms: Date.now() - t0 })
+      if (!done) {
+        // 这条没确认完成 → 后面的命令绝不能继续发：会把新输入搅进还在跑的命令里
+        // （真机：`sleep 10` 期间下一条命令被塞进去，报告还写"很可能没执行"）。
+        out.push({
+          label,
+          command: '（已中止后续步骤）',
+          output: '上一条命令没有确认完成（15 分钟没等到结束标记）。后面的步骤没有执行 —— 免得把命令塞进还在运行的进程里。',
+          captured: true,
+          pending: true,
+          ms: 0
+        })
+        log(`「${label}」命令未确认完成，中止本机后续步骤：${cmd}`)
+        break
+      }
     } else {
       // 交互式命令（sudo -i / su）、后台任务、exec 换 shell：哨兵打不出来，
       // 只能写进去等一会。输出无法可靠归属，报告里会标出来让人自己去看窗口。
