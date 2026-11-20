@@ -192,7 +192,7 @@ test('★ 该不该用 SFTP：直连用、堡垒机不用（auto）；设置可�
 test('★ 目标目录不存在 → 必须报错，绝不悄悄退回 home（0.3.17 真实事故）', async () => {
   const { sftp } = makeSftp()
   const bad: SftpLike = { ...sftp, realpath: async () => { throw new Error('SSH_FX_NO_SUCH_FILE') } }
-  await assert.rejects(() => resolveRemoteDir(bad, '/opt/relay-panel'), /远端目录不存在或不可访问/)
+  await assert.rejects(() => resolveRemoteDir(bad, '/opt/relay-panel'), /目录不存在|不存在或不可访问/)
 })
 
 test('★ 给了目录但不是目录（是文件）→ 报错', async () => {

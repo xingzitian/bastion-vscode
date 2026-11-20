@@ -445,7 +445,9 @@ export async function resolveRemoteDir(sftp: SftpLike, requested?: string): Prom
   try {
     st = await sftp.stat(abs)
   } catch (e) {
-    throw new Error(`远端目录不可访问：${abs}（${humanError(e)}）`)
+    // 真机观察（2026-11-20，OpenSSH）：对**不存在**的路径调 realpath 也可能"成功"返回同一路径，
+    // 真正的 ENOENT 要到 stat 才出现。所以统一按"不存在"报，而不是含糊的"不可访问"。
+    throw new Error(`远端目录不存在：${abs}（${humanError(e)}）`)
   }
   if (st && typeof st.isDirectory === 'function' && !st.isDirectory()) {
     throw new Error(`远端路径不是目录：${abs}`)
