@@ -37,14 +37,30 @@ export interface TransferSession extends ExecLike {
   /** 走 rz/sz 的通道；宿主没有 zmodem 就可以不提供（那就会自动只用 base64） */
   rzUpload?(paths: string[]): Promise<{ skipped: string[]; mode: OverwriteMode; error?: string }>
   szDownload?(remotePath: string, localDir: string): Promise<{ ok: boolean; localPath?: string; message?: string }>
+  /**
+   * SFTP 通道（可选）。**直连档案优先用它**：复用同一条已认证连接（不再输 MFA）、
+   * 零配置、不占 pty（不会打断终端里正在跑的东西）、支持断点续传。
+   * 堡垒机档案默认不提供（sftp 可能落在堡垒机自己身上，见文件头注释）。
+   */
+  sftpAvailable?(): Promise<boolean>
+  sftpPut?(
+    localPath: string,
+    remoteDir?: string
+  ): Promise<{ ok: boolean; remotePath?: string; message: string; bytes?: number; skipped?: boolean; resumed?: boolean }>
+  sftpGet?(
+    remotePath: string,
+    localDir: string
+  ): Promise<{ ok: boolean; localPath?: string; message: string; bytes?: number; resumed?: boolean }>
   /** 当前生效的覆盖方式（来自 `bastion.uploadOverwrite`） */
   overwriteMode(): OverwriteMode
   log(msg: string): void
 }
 
-export type TransferMethod = 'rz' | 'sz' | 'base64' | 'tar+rz' | 'tar+base64'
+export type TransferMethod = 'sftp' | 'rz' | 'sz' | 'base64' | 'tar+rz' | 'tar+base64'
 
 export interface Capabilities {
+  /** 直连档案优先走它：复用已认证连接、不占 pty、可续传 */
+  sftp: boolean
   rz: boolean
   sz: boolean
   base64: boolean
@@ -79,9 +95,20 @@ export interface PullOutcome {
 const capsCache = new Map<string, Capabilities>()
 
 export async function probeCapabilities(session: TransferSession, refresh = false): Promise<Capabilities> {
+  // SFTP 不靠远端命令探测（它是连接层能力）：由宿主回答"能不能开"。
+  // 直连档案优先走它，所以这一步要放在最前面 —— 省掉 rz/base64 的探测往返。
+  let sftp = false
+  if (session.sftpAvailable) {
+    try {
+      sftp = await session.sftpAvailable()
+    } catch {
+      sftp = false
+    }
+  }
   const cached = capsCache.get(session.name)
-  if (cached && !refresh) return cached
-  const caps: Capabilities = { rz: false, sz: false, base64: false, tar: false, md5sum: false }
+  // sftp 是连接层能力，可能因为设置/档案变化，所以缓存命中时也用最新值覆盖
+  if (cached && !refresh) return { ...cached, sftp }
+  const caps: Capabilities = { sftp, rz: false, sz: false, base64: false, tar: false, md5sum: false }
   try {
     // 一条命令问全：`command -v` 不输出就说明没有
     const out = await session.exec(
@@ -113,11 +140,14 @@ export function clearCapabilities(name?: string): void {
 /** 纯逻辑：上传该用哪条通道（可单测） */
 export function choosePushMethod(caps: Capabilities, isDir: boolean): TransferMethod | null {
   if (isDir) {
+    // 目录暂时仍走"本地打包 → 传 → 远端解开"：SFTP 递归是第二步，先不引入新风险。
     if (!caps.tar) return null
     if (caps.rz) return 'tar+rz'
     if (caps.base64) return 'tar+base64'
     return null
   }
+  // 单文件：直连优先 SFTP（不占 pty、可续传、不依赖对端装没装 lrzsz）
+  if (caps.sftp) return 'sftp'
   if (caps.rz) return 'rz'
   if (caps.base64) return 'base64'
   return null
@@ -125,6 +155,7 @@ export function choosePushMethod(caps: Capabilities, isDir: boolean): TransferMe
 
 /** 纯逻辑：下载该用哪条通道（可单测） */
 export function choosePullMethod(caps: Capabilities): TransferMethod | null {
+  if (caps.sftp) return 'sftp'
   if (caps.sz) return 'sz'
   if (caps.base64) return 'base64'
   return null
@@ -198,6 +229,28 @@ export async function pushPath(opts: {
         '两条通道都走不了。请让用户在这台机器上装一下（`yum install -y lrzsz` 或 `apt-get install -y lrzsz`），' +
         '或者把文件内容直接贴出来。'
     )
+  }
+
+  // ── SFTP：直连档案的首选 ──────────────────────────────────────────────
+  // 不占 pty（不会打断终端里正在跑的东西）、复用已认证连接（不再输 MFA）、
+  // 支持断点续传；大小校验在 sftpPut 内部完成（远端 stat 是最终事实）。
+  if (method === 'sftp') {
+    if (!session.sftpPut) return fail('❌ 这个宿主没有 SFTP 通道（正常不该发生）', method)
+    const r = await session.sftpPut(localPath, dirAbs || undefined)
+    if (!r.ok) return fail(`❌ SFTP 上传失败：${r.message}`, method)
+    const flags = [r.resumed ? '断点续传' : '', r.skipped ? '远端已有同大小文件，跳过' : ''].filter(Boolean).join('，')
+    return {
+      ok: true,
+      method,
+      localPath,
+      remotePath: r.remotePath ?? at(path.basename(localPath)),
+      bytes: r.bytes ?? st.size,
+      mode,
+      skipped: r.skipped,
+      message:
+        `✅ 已上传：${name} → ${r.remotePath ?? at(name)}（${fmtBytes(r.bytes ?? st.size)}）\n` +
+        `通道：${methodLabel(method)}${flags ? `（${flags}）` : ''}`
+    }
   }
 
   // 目录：先本地打包（Windows 10+ 自带 tar.exe，Linux/macOS 也有）
@@ -409,6 +462,22 @@ export async function pullPath(opts: {
     }
   }
 
+  // ── SFTP：直连档案的首选 ──────────────────────────────────────────────
+  if (method === 'sftp') {
+    if (!session.sftpGet) return { ok: false, method: 'sftp', message: '❌ 这个宿主没有 SFTP 通道（正常不该发生）' }
+    const r = await session.sftpGet(remotePath, localDir)
+    if (!r.ok) return { ok: false, method: 'sftp', message: `❌ SFTP 下载失败：${r.message}` }
+    return {
+      ok: true,
+      method: 'sftp',
+      localPath: r.localPath,
+      bytes: r.bytes,
+      message:
+        `✅ 已下载 ${path.basename(remotePath)}${r.bytes === undefined ? '' : `（${fmtBytes(r.bytes)}）`} → ${r.localPath ?? localDir}\n` +
+        `通道：${methodLabel('sftp')}${r.resumed ? '（断点续传）' : ''}`
+    }
+  }
+
   if (method === 'sz') {
     if (!session.szDownload) return { ok: false, method: 'sz', message: '❌ 这个宿主没有 sz 通道（正常不该发生）' }
     const r = await session.szDownload(remotePath, localDir)
@@ -523,6 +592,8 @@ async function pullViaBase64(session: TransferSession, remotePath: string, local
 /** 通道名（给人和 AI 看的人话） */
 export function methodLabel(m: TransferMethod): string {
   switch (m) {
+    case 'sftp':
+      return 'SFTP（复用已认证连接）'
     case 'rz':
       return 'rz（lrzsz）'
     case 'sz':

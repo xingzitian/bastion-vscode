@@ -2,7 +2,7 @@
   "name": "bastion-vscode",
   "displayName": "BastionShell SSH",
   "description": "SSH 堡垒机终端：一次 MFA + 连接复用，多开会话/批量部署/rz/sz 文件传输/端口转发/快捷命令，并提供 bastion.exec 让 VS Code 里的 AI 插件在服务器上执行命令",
-  "version": "0.3.16",
+  "version": "0.3.17",
   "publisher": "xingzitian",
   "author": "杏子甜",
   "license": "MIT",
@@ -427,6 +427,23 @@
               "pattern"
             ]
           }
+        },
+        "bastion.transferChannel": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "sftp",
+            "rz",
+            "base64"
+          ],
+          "enumDescriptions": [
+            "自动（默认）：直连档案用 SFTP，堡垒机档案用 rz/base64",
+            "强制走 SFTP（堡垒机上也试；注意堡垒机的 sftp 可能落在堡垒机自己身上）",
+            "强制用 rz（lrzsz），不试 SFTP",
+            "强制用 base64 降级（最慢，但目标机什么都不用装）"
+          ],
+          "default": "auto",
+          "description": "文件传输走哪条通道。直连推荐 SFTP（复用已认证连接、不占终端、可续传）；堡垒机推荐 rz。"
         }
       }
     },

@@ -26,6 +26,7 @@ import {
 } from '../core/transferPath'
 
 const caps = (over: Partial<Capabilities> = {}): Capabilities => ({
+  sftp: false,
   rz: false,
   sz: false,
   base64: false,
@@ -34,6 +35,19 @@ const caps = (over: Partial<Capabilities> = {}): Capabilities => ({
   ...over
 })
 
+test('★ 单文件：有 SFTP 就先走 SFTP（不占终端、可续传）；目录仍走 tar', () => {
+  assert.equal(choosePushMethod(caps({ sftp: true, rz: true, base64: true }), false), 'sftp')
+  assert.equal(choosePushMethod(caps({ sftp: true, rz: false }), false), 'sftp')
+  // sftp 不可用 → 回到 rz
+  assert.equal(choosePushMethod(caps({ sftp: false, rz: true }), false), 'rz')
+  // 目录暂不支持 sftp 递归：仍然 tar+rz
+  assert.equal(choosePushMethod(caps({ sftp: true, rz: true, tar: true }), true), 'tar+rz')
+})
+
+test('★ 下载：有 SFTP 就先走 SFTP', () => {
+  assert.equal(choosePullMethod(caps({ sftp: true, sz: true })), 'sftp')
+  assert.equal(choosePullMethod(caps({ sftp: false, sz: true })), 'sz')
+})
 test('上传通道：有 rz 就走 rz；没有就降级 base64（用户说的"没有 rz 就试别的"）', () => {
   assert.equal(choosePushMethod(caps({ rz: true, base64: true }), false), 'rz')
   assert.equal(choosePushMethod(caps({ rz: true, base64: false }), false), 'rz')

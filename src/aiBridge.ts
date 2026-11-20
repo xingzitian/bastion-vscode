@@ -931,6 +931,10 @@ export function transferSessionOf(term: BastionTerminal, name: string): Transfer
       return { skipped: r.skipped, mode: r.mode, error: term.uploadError }
     },
     szDownload: (remotePath, localDir) => term.download(remotePath, localDir),
+    // SFTP：直连档案的首选通道（复用同一条已认证连接、不占 pty、可续传）
+    sftpAvailable: () => term.sftpAvailable(),
+    sftpPut: (localPath, remoteDir) => term.sftpPut(localPath, remoteDir),
+    sftpGet: (remotePath, localDir) => term.sftpGet(remotePath, localDir),
     overwriteMode: () => {
       const raw = vscode.workspace.getConfiguration('bastion').get<string>('uploadOverwrite', 'skip')
       return raw === 'overwrite' || raw === 'rename' ? raw : 'skip'
