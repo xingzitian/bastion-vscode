@@ -249,7 +249,7 @@ test('★ 能力探测：输出被 ANSI 糊住（pty 的 ESC[?2004l）也要能�
     name: `ansi-probe-${Date.now()}`,
     exec,
     exitCode: () => 0,
-    sftpAvailable: async () => false,
+    sftpAllowed: () => false,
     overwriteMode: () => 'skip',
     log: () => undefined
   }

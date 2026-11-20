@@ -932,7 +932,7 @@ export function transferSessionOf(term: BastionTerminal, name: string): Transfer
     },
     szDownload: (remotePath, localDir) => term.download(remotePath, localDir),
     // SFTP：直连档案的首选通道（复用同一条已认证连接、不占 pty、可续传）
-    sftpAvailable: () => term.sftpAvailable(),
+    sftpAllowed: () => term.sftpAllowed(),
     sftpPut: (localPath, remoteDir) => term.sftpPut(localPath, remoteDir),
     sftpGet: (remotePath, localDir) => term.sftpGet(remotePath, localDir),
     overwriteMode: () => {

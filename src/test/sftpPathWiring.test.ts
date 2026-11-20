@@ -32,7 +32,7 @@ function makeSession(over: Partial<TransferSession> = {}): { session: TransferSe
       return ''
     },
     exitCode: () => 0,
-    sftpAvailable: async () => true,
+    sftpAllowed: () => true,
     sftpPut: async (local, remoteDir) => ({
       ok: true,
       remotePath: `${remoteDir ?? '?'}/${path.basename(local)}`,
@@ -82,7 +82,7 @@ test('pushPath：没给 remoteDir 时传 undefined（由宿主用 sftp 当前目
 
 test('★ sftp 不可用时才回退：这时才允许跑 shell（能力探测）', async () => {
   const { session, execCalls } = makeSession({
-    sftpAvailable: async () => false,
+    sftpAllowed: () => false,
     rzUpload: async () => ({ skipped: [], mode: 'skip' }),
     szDownload: async () => ({ ok: true })
   })
@@ -98,4 +98,40 @@ test('★ pullPath：sftp 可用时同样不调用 shell', async () => {
   assert.equal(out.ok, true)
   assert.equal(out.method, 'sftp')
   assert.deepEqual(execCalls, [])
+})
+
+test('★ 通道打不开（unsupported）→ 回退 rz；不是报错', async () => {
+  const execCalls: string[] = []
+  const session: TransferSession = {
+    name: `fallback-${Date.now()}`,
+    exec: async (cmd) => {
+      execCalls.push(cmd)
+      return 'rz=1\nsz=1\nbase64=1\ntar=1\nmd5sum=1\n'
+    },
+    exitCode: () => 0,
+    sftpAllowed: () => true,
+    sftpPut: async () => ({ ok: false, message: '打不开 SFTP 子系统：超时', unsupported: true }),
+    rzUpload: async () => ({ skipped: [], mode: 'skip' }),
+    overwriteMode: () => 'skip',
+    log: () => undefined
+  }
+  const out = await pushPath({ localPath: localFile('fb.txt', 10), remoteDir: '/tmp', session })
+  assert.notEqual(out.method, 'sftp', '应当回退到 rz，而不是直接失败')
+  assert.ok(execCalls.length > 0, '回退路径会跑能力探测')
+})
+
+test('★ 真实业务错误（目录不存在）→ 直接报错，**不许**偷偷换通道', async () => {
+  const session: TransferSession = {
+    name: `realerr-${Date.now()}`,
+    exec: async () => '',
+    exitCode: () => 0,
+    sftpAllowed: () => true,
+    sftpPut: async () => ({ ok: false, message: '远端目录不存在：/opt/x' }),
+    rzUpload: async () => ({ skipped: [], mode: 'skip' }),
+    overwriteMode: () => 'skip',
+    log: () => undefined
+  }
+  const out = await pushPath({ localPath: localFile('re.txt', 10), remoteDir: '/opt/x', session })
+  assert.equal(out.ok, false)
+  assert.match(out.message, /远端目录不存在/, '真实错误要原样报出来，换 rz 也没用')
 })

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
-import * as vscode from 'vscode';
+import * as vscode from 'vscode'
+import { describeDisconnect } from './core/disconnect';
 import { Client, ClientChannel, ConnectConfig } from 'ssh2';
 import type { ConnectionProfile } from './profiles';
 import { log } from './log';
@@ -75,6 +76,8 @@ export class SharedConnection {
    * 重试期间就会莫名其妙弹一个提示、还会把连接从池子里删掉。所以这条标志要拦住它。
    */
   private authFailed = false;
+  /** 最近一次断线原因（分类后的可读描述；close 时拼进日志） */
+  private lastDisconnectReason?: string
 
   /** 这次认证问过动态码没有 —— 供错误翻译用 */
   get mfaAttempted(): boolean {
@@ -180,7 +183,10 @@ export class SharedConnection {
 
     this.client.on('error', (err) => {
       if (isAuthFailure(err)) this.authFailed = true;
-      log(`SSH 错误（${profile.name}）: ${err.message}`);
+      // 断线原因分类：以前只有裸错误（`read ECONNRESET`），看起来都像"莫名断了"，
+      // 排障时没法区分"中间设备删了映射" / "keepalive 没回应" / "服务端拒绝通道"。
+      this.lastDisconnectReason = describeDisconnect(err);
+      log(`SSH 错误（${profile.name}）: ${err.message}｜${this.lastDisconnectReason}`);
       this.readyReject?.(err); // ready 已 resolve 时为 no-op
     });
 
@@ -191,7 +197,7 @@ export class SharedConnection {
       if (this.authFailed) return;
       if (!this.dead) {
         this.dead = true;
-        log(`连接已断开（${profile.name}）`);
+        log(`连接已断开（${profile.name}）｜${this.lastDisconnectReason ?? describeDisconnect(undefined)}`);
         const cbs = this.closeListeners.slice();
         this.closeListeners = [];
         for (const cb of cbs) cb();

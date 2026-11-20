@@ -15,6 +15,7 @@ import { fmtBytes as formatBytes } from './status';
 import { pushPath, type TransferSession } from './core/transferPath';
 // 单向依赖：menu.ts 不 import terminal.ts，所以这里可以放心用它的提示符识别
 import { TransferLock } from './core/transferLock';
+import { describeDisconnect } from './core/disconnect';
 import { putFile, getFile, resolveRemoteDir, shouldUseSftp, type SftpLike } from './core/sftpTransfer';
 import { fmtBytes } from './core/format';
 import { classifySessionScreen, resolveMenuHints, detectPrompt } from './core/menu';
@@ -500,7 +501,8 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   async withTransferLock<T>(reason: string, fn: () => Promise<T>): Promise<T> {
     // SFTP 不占 pty —— 既不需要锁键盘，也不会被 ↑ 打断。
     // 2026-11-20 真机：sftp 上传时仍然锁会话，用户以为卡住；锁还让整条 push 多等了一段。
-    if (await this.sftpAvailable()) return fn()
+    // 同步判定即可：sftp 不占 pty。真打不开时 pushPath 会回退 rz，那时没有锁（可接受）
+    if (this.sftpAllowed()) return fn()
     this.enterTransferLock(reason)
     try {
       return await fn()
@@ -616,7 +618,7 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   private sftpPromise?: Promise<SftpLike>
 
   /** 当前设置是否允许 SFTP：判定在 core（`shouldUseSftp`，有单测），这里只取配置 */
-  private sftpAllowed(): boolean {
+  sftpAllowed(): boolean {
     const ch = vscode.workspace.getConfiguration('bastion').get<string>('transferChannel', 'auto');
     return shouldUseSftp(this.profile.mode, ch);
   }
@@ -689,7 +691,7 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   async sftpPut(
     localPath: string,
     remoteDir?: string
-  ): Promise<{ ok: boolean; remotePath?: string; message: string; bytes?: number; skipped?: boolean; resumed?: boolean }> {
+  ): Promise<{ ok: boolean; remotePath?: string; message: string; bytes?: number; skipped?: boolean; resumed?: boolean; unsupported?: boolean }> {
     let handle: { sftp: SftpLike; close: () => void } | undefined;
     try {
       handle = await this.openSftp();
@@ -716,7 +718,7 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   async sftpGet(
     remotePath: string,
     localDir: string
-  ): Promise<{ ok: boolean; localPath?: string; message: string; bytes?: number; resumed?: boolean }> {
+  ): Promise<{ ok: boolean; localPath?: string; message: string; bytes?: number; resumed?: boolean; unsupported?: boolean }> {
     let handle: { sftp: SftpLike; close: () => void } | undefined;
     try {
       handle = await this.openSftp();
@@ -731,28 +733,41 @@ export class BastionTerminal implements vscode.Pseudoterminal {
       log(`SFTP 下载完成：${r.localPath}（${r.bytes} 字节${r.resumed ? '，断点续传' : ''}）`);
       return { ok: true, localPath: r.localPath, message: 'ok', bytes: r.bytes, resumed: r.resumed };
     } catch (e) {
-      return { ok: false, message: (e as Error).message };
+      const msg = (e as Error).message;
+      return { ok: false, message: msg, unsupported: isSftpUnavailableError(msg) };
     } finally {
       handle?.close();
     }
   }
+
   async upload(paths: string[]): Promise<{ skipped: string[]; mode: OverwriteMode; error?: string }> {
     this.lastUploadError = undefined;
     const rawMode = vscode.workspace.getConfiguration('bastion').get<string>('uploadOverwrite', 'skip');
     const overwrite: OverwriteMode = rawMode === 'overwrite' || rawMode === 'rename' ? rawMode : 'skip';
 
-    // 直连优先 SFTP：不占 pty，所以**不需要锁键盘**（也不会被 ↑ 打断）
-    if (await this.sftpAvailable()) {
+    // 直连优先 SFTP：不占 pty，所以**不需要锁键盘**（也不会被 ↑ 打断）。
+    // 不预先探活 —— 直接传一次；只有"通道打不开"才回退 rz（探测与传输合并成一次 open）。
+    if (this.sftpAllowed()) {
       const sftp = await this.sftpClient();
       const dir = await this.sftpCwd(sftp);
       const errors: string[] = [];
+      let unsupported = false;
       for (const one of paths) {
         const r = await this.sftpPut(one, dir);
-        if (!r.ok) errors.push(`${path.basename(one)}：${r.message}`);
+        if (!r.ok) {
+          if (r.unsupported) {
+            unsupported = true;
+            break;
+          }
+          errors.push(`${path.basename(one)}：${r.message}`);
+        }
       }
-      if (errors.length > 0) this.lastUploadError = errors.join('；');
-      log(`SFTP 上传结束：${paths.length - errors.length}/${paths.length} 成功（模式=${overwrite}，sftp 按大小决定续传/跳过）`);
-      return { skipped: [], mode: overwrite, error: this.lastUploadError };
+      if (!unsupported) {
+        if (errors.length > 0) this.lastUploadError = errors.join('；');
+        log(`SFTP 上传结束：${paths.length - errors.length}/${paths.length} 成功（模式=${overwrite}，sftp 按大小决定续传/跳过）`);
+        return { skipped: [], mode: overwrite, error: this.lastUploadError };
+      }
+      log(`SFTP 通道打不开 → 回退 rz/base64（${this.nameOf()}）`);
     }
 
     // 传输三阶段全程锁键盘：rz 运行期间 ESC（↑ 的第一字节）会打断传输
@@ -833,12 +848,13 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     if (this.closed || !this.stream) return { ok: false, message: '会话已关闭' };
     if (!remotePath.trim()) return { ok: false, message: '错误：需要 remotePath（远端文件路径）' };
     await this.shellReady;
-    // 直连优先 SFTP：不占 pty，不需要锁键盘
-    if (await this.sftpAvailable()) {
+    // 直连优先 SFTP：不占 pty，不需要锁键盘；同样不预探活，打不开再回退
+    if (this.sftpAllowed()) {
       const r = await this.sftpGet(remotePath, localDir);
-      return r.ok
-        ? { ok: true, localPath: r.localPath, message: `已下载（SFTP${r.resumed ? '，续传' : ''}）` }
-        : { ok: false, message: r.message };
+      if (r.ok) return { ok: true, localPath: r.localPath, message: `已下载（SFTP${r.resumed ? '，续传' : ''}）` };
+      // 只有"通道打不开"才回退；文件不存在等是真实错误
+      if (!r.unsupported) return { ok: false, message: r.message };
+      log(`SFTP 通道打不开 → 回退 sz/base64（${this.nameOf()}）`);
     }
 
     // 下载同样锁键盘：sz 跑的时候按键（ESC）会打断传输
@@ -1360,7 +1376,9 @@ export class BastionTerminal implements vscode.Pseudoterminal {
         stream.on('close', () => {
           const bridge = this.rawBridge;
           if (bridge) bridge.onClose();
-          log(`远端 shell 已断开（${this.profile.name}）`);
+          // 单条 shell 通道被关（连接可能还在，其它会话不受影响）—— 单独标一类，
+          // 别和「整条连接断了」混在一起看。
+          log(`远端 shell 已断开（${this.profile.name}）｜${describeDisconnect(undefined, 'shell')}`);
           this.finish(0, '[会话已断开]');
         });
         stream.stderr?.on('data', (data: Buffer) => {
@@ -1557,6 +1575,16 @@ function stripMarker(s: string, marker: string): string {
  * 为什么单独一层：core 那边是纯逻辑（可单测），ssh2 是回调式 API 且版本细节多，
  * 把这层适配挡在外面，换实现（比如将来换成 sftp.exe）只需要改这里。
  */
+/**
+ * 这次 sftp 失败是"通道打不开"（该回退 rz），还是真实业务错误（不该回退）？
+ *
+ * 只有打不开/超时才回退：目录不存在、无权限、大小不一致这些换通道也没用，
+ * 直接如实报错更有用。
+ */
+function isSftpUnavailableError(msg: string): boolean {
+  return /打不开 SFTP 子系统|Channel open failure|open failed|超时|timed out|ECONNRESET|EPIPE/i.test(msg);
+}
+
 function wrapSftp(raw: unknown): SftpLike {
   type Cb<T> = (err: Error | null | undefined, v?: T) => void;
   const s = raw as {

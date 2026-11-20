@@ -42,15 +42,39 @@ export interface TransferSession extends ExecLike {
    * 零配置、不占 pty（不会打断终端里正在跑的东西）、支持断点续传。
    * 堡垒机档案默认不提供（sftp 可能落在堡垒机自己身上，见文件头注释）。
    */
-  sftpAvailable?(): Promise<boolean>
+  /**
+   * 这条会话**允许**用 sftp 吗（同步判定，只看设置与档案模式，不发任何网络请求）。
+   *
+   * 为什么是同步的：2026-11-20 真机 —— 之前的 `sftpAvailable()` 会**打开一个通道**去探活，
+   * 一次 push 竟然开 3 次（锁判断 / 能力探测 / 真传），既慢又会撞服务端 MaxSessions。
+   * 现在改成：允许就直接拿 sftpPut 去试 —— **探测与传输合并成一次 open**。
+   */
+  sftpAllowed?(): boolean
   sftpPut?(
     localPath: string,
     remoteDir?: string
-  ): Promise<{ ok: boolean; remotePath?: string; message: string; bytes?: number; skipped?: boolean; resumed?: boolean }>
+  ): Promise<{
+    ok: boolean
+    remotePath?: string
+    message: string
+    bytes?: number
+    skipped?: boolean
+    resumed?: boolean
+    /** true = 这次失败是"打不开 sftp 通道"（该回退 rz），false/空 = 真实业务错误（别回退） */
+    unsupported?: boolean
+  }>
   sftpGet?(
     remotePath: string,
     localDir: string
-  ): Promise<{ ok: boolean; localPath?: string; message: string; bytes?: number; resumed?: boolean }>
+  ): Promise<{
+    ok: boolean
+    localPath?: string
+    message: string
+    bytes?: number
+    resumed?: boolean
+    /** 同 sftpPut：true = 通道打不开，应回退 sz/base64 */
+    unsupported?: boolean
+  }>
   /** 当前生效的覆盖方式（来自 `bastion.uploadOverwrite`） */
   overwriteMode(): OverwriteMode
   log(msg: string): void
@@ -97,14 +121,8 @@ const capsCache = new Map<string, Capabilities>()
 export async function probeCapabilities(session: TransferSession, refresh = false): Promise<Capabilities> {
   // SFTP 不靠远端命令探测（它是连接层能力）：由宿主回答"能不能开"。
   // 直连档案优先走它，所以这一步要放在最前面 —— 省掉 rz/base64 的探测往返。
-  let sftp = false
-  if (session.sftpAvailable) {
-    try {
-      sftp = await session.sftpAvailable()
-    } catch {
-      sftp = false
-    }
-  }
+  // 同步判定（会不会用 sftp），**不打开任何通道** —— 探测与传输合并成一次 open
+  const sftp = session.sftpAllowed?.() ?? false
   const cached = capsCache.get(session.name)
   // sftp 是连接层能力，可能因为设置/档案变化，所以缓存命中时也用最新值覆盖
   if (cached && !refresh) return { ...cached, sftp }
@@ -246,24 +264,34 @@ export async function pushPath(opts: {
   // ②仍然跑能力探测；③仍然锁键盘。而 sftp 根本不需要这些 ——
   // 目录用 sftp 自己的 realpath 解析，能力探测只跟 rz/base64 有关。
   const sftpPut = session.sftpPut;
-  const sftpOK = !isDir && !opts.forceMethod && !!sftpPut && (await session.sftpAvailable?.() ?? false);
-  if (sftpOK && sftpPut) {
+  // 这次 open 失败后，后续选通道不能再选 sftp（否则会绕回同一个坑）
+  let sftpUnusable = false;
+  // 只看"允许不允许"（同步，不发请求）；能不能用，交给这次 open 自己回答 ——
+  // 探测与传输合并成**一次**通道打开（2026-11-20：之前一次 push 开 3 次，还会撞 MaxSessions）。
+  if (!isDir && !opts.forceMethod && sftpPut && (session.sftpAllowed?.() ?? false)) {
     const wantDir = (opts.remoteDir ?? '').trim();
     const r = await sftpPut(localPath, wantDir || undefined);
-    if (!r.ok) return fail(`❌ SFTP 上传失败：${r.message}`, 'sftp')
-    const flags = [r.resumed ? '断点续传' : '', r.skipped ? '远端已有同大小文件，跳过' : ''].filter(Boolean).join('，')
-    return {
-      ok: true,
-      method: 'sftp',
-      localPath,
-      remotePath: r.remotePath,
-      bytes: r.bytes ?? st.size,
-      mode,
-      skipped: r.skipped,
-      message:
-        `✅ 已上传：${name} → ${r.remotePath ?? '?'}（${fmtBytes(r.bytes ?? st.size)}）\n` +
-        `通道：${methodLabel('sftp')}${flags ? `（${flags}）` : ''}`
+    if (r.ok) {
+      const flags = [r.resumed ? '断点续传' : '', r.skipped ? '远端已有同大小文件，跳过' : ''].filter(Boolean).join('，')
+      return {
+        ok: true,
+        method: 'sftp',
+        localPath,
+        remotePath: r.remotePath,
+        bytes: r.bytes ?? st.size,
+        mode,
+        skipped: r.skipped,
+        message:
+          `✅ 已上传：${name} → ${r.remotePath ?? '?'}（${fmtBytes(r.bytes ?? st.size)}）\n` +
+          `通道：${methodLabel('sftp')}${flags ? `（${flags}）` : ''}`
+      }
     }
+    // 通道打不开（超时 / Channel open failure）→ 本次回退 rz/base64；
+    // 其它错误（目录不存在、无权限、大小不一致）是真实业务错误，**不能**偷偷换通道。
+    if (!r.unsupported) return fail(`❌ SFTP 上传失败：${r.message}`, 'sftp')
+    // 打不开 → 记住，别在后面选通道时又选回 sftp（否则两次都踩同一个坑）
+    sftpUnusable = true
+    session.log(`[transfer] SFTP 通道打不开（${r.message}）→ 本次回退 rz/base64`)
   }
 
 
@@ -289,7 +317,7 @@ export async function pushPath(opts: {
   const at = (n: string): string => (dirAbs ? `${dirAbs.replace(/\/+$/, '')}/${n}` : n)
 
   const caps = await probeCapabilities(session)
-  const method = opts.forceMethod ?? choosePushMethod(caps, isDir)
+  const method = opts.forceMethod ?? choosePushMethod({ ...caps, sftp: caps.sftp && !sftpUnusable }, isDir)
   if (!method) {
     return fail(
       `❌ 目标机上既没有 **rz**（lrzsz），也没有 **base64**${isDir ? '，或者没有 tar（传目录要用）' : ''} —— ` +
@@ -502,22 +530,27 @@ export async function pullPath(opts: {
 
   // SFTP 优先，且**不需要 shell 能力探测**（它跟 lrzsz/base64 无关）
   const sftpGet = session.sftpGet
-  if (!opts.forceMethod && sftpGet && (await session.sftpAvailable?.() ?? false)) {
+  let sftpUnusable = false
+  if (!opts.forceMethod && sftpGet && (session.sftpAllowed?.() ?? false)) {
     const r = await sftpGet(remotePath, localDir)
-    if (!r.ok) return { ok: false, method: 'sftp', message: `❌ SFTP 下载失败：${r.message}` }
-    return {
-      ok: true,
-      method: 'sftp',
-      localPath: r.localPath,
-      bytes: r.bytes,
-      message:
-        `✅ 已下载 ${path.basename(remotePath)}${r.bytes === undefined ? '' : `（${fmtBytes(r.bytes)}）`} → ${r.localPath ?? localDir}\n` +
-        `通道：${methodLabel('sftp')}${r.resumed ? '（断点续传）' : ''}`
+    if (r.ok) {
+      return {
+        ok: true,
+        method: 'sftp',
+        localPath: r.localPath,
+        bytes: r.bytes,
+        message:
+          `✅ 已下载 ${path.basename(remotePath)}${r.bytes === undefined ? '' : `（${fmtBytes(r.bytes)}）`} → ${r.localPath ?? localDir}\n` +
+          `通道：${methodLabel('sftp')}${r.resumed ? '（断点续传）' : ''}`
+      }
     }
+    // 只有"通道打不开"才回退；文件不存在/无权限是真实错误
+    if (!r.unsupported) return { ok: false, method: 'sftp', message: `❌ SFTP 下载失败：${r.message}` }
+    session.log(`[transfer] SFTP 通道打不开（${r.message}）→ 本次回退 sz/base64`)
   }
 
   const caps = await probeCapabilities(session)
-  const method = opts.forceMethod ?? choosePullMethod(caps)
+  const method = opts.forceMethod ?? choosePullMethod({ ...caps, sftp: caps.sftp && !sftpUnusable })
   if (!method) {
     return {
       ok: false,
