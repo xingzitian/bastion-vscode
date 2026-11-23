@@ -1,7 +1,7 @@
 # B 阶段：桌面薄壳（窗口指向 CLI 的网页终端）
 
 > 前提：A1–A3 已完成（CLI 宿主 = 终端 + MCP + 网页终端）。本文只谈 **B：把桌面 Wails 窗口变成薄壳**。
-> 状态：**设计，未开工**（需要 Wails 构建工具链，见 §5）。
+> 状态：**B1 已完成**（2026-11-23）：桌面后端能 spawn CLI 薄壳并 302 到网页终端。见 §8。
 
 ## 1. 目标形态
 
@@ -73,3 +73,39 @@ tools\bastionshell.cmd xzt
 起 `serve`、抓到网页终端地址、用默认浏览器打开 —— 效果同 B，只是没有"双击图标"和托盘。
 真机验证：`serve` 日志打印 `网页终端：http://127.0.0.1:<port>/term?token=…`，
 端点文件 `~/.bastionshell/mcp-cli.json` 里也带 `termUrl`（壳子靠这个字段）。
+
+## 8. B1 实际结果（2026-11-23）
+
+工具链就绪后（`wsl -u root` 装 mingw + `go install wails@v2.15.0`），桌面版重新构建通过（19.2MB）。
+
+新增 `shell_cli.go`：
+
+| 路由 | 作用 |
+|---|---|
+`GET /api/shell/cli?profile=<档案>` | spawn `node out/cli/main.js serve <档案> --print-endpoint`，解析端点行，**302** 跳到网页终端 |
+`POST /api/shell/cli/stop` | 收掉子进程（应用退出时 `defer` 也会收） |
+
+配套：
+
+- `main.go` 新增 **headless 模式**（`BASTIONSHELL_HEADLESS=1`）：只跑后端 + MCP，不开窗口。
+  用途：窗口被 WebView2 占用/无桌面环境时验证 HTTP 链路。
+- CLI 新增 `--print-endpoint`：打印 `端点：{url,token,termUrl,port,actualPort,legacy}`，
+  并**放在 `浏览器打开：` 之前**；CLI 不再写文件（`writeEndpoint:false`），由宿主落盘。
+
+真机验证（Windows，headless）：
+
+```
+GET /api/shell/cli?profile=xzt  →  302
+  Location: http://127.0.0.1:6xxxx/term?token=<沿用的旧 token>
+```
+
+**一个待复验点**：把 exe 从当前终端上下文启动时，Go 往 `%APPDATA%\bastionshell`
+写**新文件**报 `Access is denied`（同一 shell 里 pwsh 写同目录正常）；判断是启动上下文的 ACL 差异，
+不是代码问题 —— 正常双击启动时该目录可写（现有 `mcp.json` 就是那样写的）。
+下一轮在**正常启动**下复验，再决定是否需要降级方案。
+
+## 9. 下一步
+
+1. 正常启动下复验端点文件写入（或改成写 `%LOCALAPPDATA%`）。
+2. 前端：档案页加「CLI 终端（beta）」入口 —— 直接 `iframe` 指向 `/api/shell/cli?profile=…`（302 会落到真终端）。
+3. C：删 Go 引擎，核对体积。
