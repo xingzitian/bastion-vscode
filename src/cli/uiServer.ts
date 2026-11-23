@@ -15,6 +15,7 @@
  */
 
 import * as http from 'node:http'
+import * as net from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { connectProfile } from '../engine/connect'
 import { EngineSession } from '../engine/session'
@@ -92,6 +93,7 @@ function transferSession(session: EngineSession, client: Client): TransferSessio
 export async function startUiServer(opts: UiServerOptions = {}): Promise<UiServer> {
   const log = opts.log ?? (() => undefined)
   const conns = new Map<string, UiConn>()
+  const forwards = new Map<string, { server: net.Server; sockets: Set<net.Socket> }>()
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -334,8 +336,50 @@ export async function startUiServer(opts: UiServerOptions = {}): Promise<UiServe
         })()
         return
       }
-      if (type.startsWith('forward:')) {
-        send({ type: 'error', message: `CLI 后端暂未实现 ${type}` })
+      if (type === 'forward:start') {
+        if (!conn) {
+          send({ type: 'forward:error', id: str('id'), message: '还没有连接' })
+          return
+        }
+        const id = str('id') || `fw-${Math.random().toString(36).slice(2, 8)}`
+        const localPort = Number(m.localPort) || 0
+        const localHost = str('localHost') || '127.0.0.1'
+        const remoteHost = str('remoteHost')
+        const remotePort = Number(m.remotePort) || 0
+        const sockets = new Set<net.Socket>()
+        const c = conn.client
+        const server = net.createServer((sock) => {
+          sockets.add(sock)
+          sock.on('close', () => sockets.delete(sock))
+          sock.on('error', () => sockets.delete(sock))
+          c.forwardOut('127.0.0.1', sock.remotePort ?? 0, remoteHost, remotePort, (err, stream) => {
+            if (err) {
+              log(`转发失败 ${id}：${err.message}`)
+              sock.destroy()
+              return
+            }
+            sock.pipe(stream).pipe(sock)
+            stream.on('close', () => sock.destroy())
+            sock.on('close', () => stream.close())
+          })
+        })
+        server.once('error', (e) => send({ type: 'forward:error', id, message: e.message }))
+        server.listen(localPort, localHost, () => {
+          forwards.set(id, { server, sockets })
+          log(`转发已启动 ${id}：${localHost}:${localPort} → ${remoteHost}:${remotePort}`)
+          send({ type: 'forward:started', id })
+        })
+        return
+      }
+      if (type === 'forward:stop') {
+        const id = str('id')
+        const fw = forwards.get(id)
+        if (fw) {
+          for (const s of fw.sockets) s.destroy()
+          fw.server.close()
+          forwards.delete(id)
+        }
+        send({ type: 'forward:stopped', id })
         return
       }
     })
