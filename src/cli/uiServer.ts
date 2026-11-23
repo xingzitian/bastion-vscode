@@ -16,15 +16,20 @@
 
 import * as http from 'node:http'
 import * as net from 'node:net'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { connectProfile } from '../engine/connect'
 import { EngineSession } from '../engine/session'
 import { loadProfiles } from '../engine/profiles'
+import { openSftp } from '../engine/sftp'
+import { ZmodemSessionController } from '../core/zmodem'
+import { NodeFsZmodemIo } from '../core/zmodemIo'
 import { buildDesktopAiAccessView } from '../core/aiAccessView'
 import { BINDINGS_FILE, loadBindings, saveBindings, unbind } from '../core/sessionBindings'
 import { configFilePath } from '../core/config'
 import { pushPath, type TransferSession } from '../core/transferPath'
-import { openSftp } from '../engine/sftp'
 import { putFile, getFile, resolveRemoteDir } from '../core/sftpTransfer'
 import type { EngineProfile } from '../engine/profiles'
 import type { Client } from 'ssh2'
@@ -54,6 +59,47 @@ interface UiConn {
   client: Client
   connId: string
   sessions: Set<EngineSession>
+}
+
+/**
+ * 问一次这条会话的 shell「现在在哪个目录」。
+ *
+ * 为什么非得问：SFTP 没有 cwd 的概念（`realpath('.')` 给的是登录用户的 home）。
+ * 旧版上传是 rz 在 shell 里跑，文件天然落在用户 `cd` 到的目录；换成 SFTP 之后
+ * 不问就等于把文件扔到 home —— `cd /opt/app` 再拖文件会传错地方（真机回归）。
+ *
+ * 代价：这条命令会在这条会话的终端里留下一行可见的 `pwd`。用户点了"上传"，
+ * 看到一行 pwd 比"文件传到别处去了"要好得多。
+ */
+async function shellCwd(session: EngineSession): Promise<string> {
+  try {
+    const r = await session.exec('pwd', { maxMs: 8000, quietMs: 1500 })
+    const line = r.text
+      .split(/\r?\n/)
+      .map((x) => x.trim())
+      .filter((x) => x.startsWith('/'))
+      .pop()
+    return line ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 桌面终端里 `sz` 下来的文件存哪儿。
+ *
+ * 用 `~/Downloads/BastionShell`（与扩展侧人工下载同一处），而不是 `process.cwd()/downloads`：
+ * 桌面进程的 cwd 可能是 exe 所在目录（Program Files 下根本不可写）。
+ * 环境变量可以改；**同步返回**，绝不弹窗 —— ZMODEM 握手等不起对话框。
+ */
+function desktopDownloadDir(): string {
+  const base = process.env.BASTIONSHELL_DOWNLOAD_DIR?.trim() || path.join(os.homedir(), 'Downloads', 'BastionShell')
+  try {
+    fs.mkdirSync(base, { recursive: true })
+  } catch {
+    /* 建不了就在打开文件时再报错 */
+  }
+  return base
 }
 
 /** 把「界面会话 + 已认证连接」适配成 core 传输层要的会话（上传/下载复用同一套） */
@@ -337,10 +383,42 @@ export async function startUiServer(opts: UiServerOptions = {}): Promise<UiServe
             )
             session = s
             hit.sessions.add(s)
-            s.onData((d) => send({ type: 'data', data: d.toString('utf8') }))
-            s.onClose(() => send({ type: 'session:closed' }))
             // 注册进宿主：MCP 的 listSessions/exec 才能看到界面开的这条会话（统一核心）
             let sid = connId
+            // ZMODEM 由 core 的控制器接管这条会话的数据流：
+            //   远端 `sz 文件名` → 自动收下来（存到 ~/Downloads/BastionShell），其余字节照常给终端。
+            // 为什么要在 CLI 里做：桌面终端以前靠 Go 内嵌的 trzsz，⑤ 删传输层时一起没了；
+            // 扩展侧一直是这个控制器（`src/terminal.ts`），搬过来就是"同一份语义"。
+            const zc = new ZmodemSessionController(
+              `ui-${connId}-${Date.now()}`,
+              (d) => s.write(d),
+              (d) => send({ type: 'data', data: d.toString('utf8') }),
+              new NodeFsZmodemIo(
+                () => null,
+                // 下载目录：同步返回、绝不弹窗（弹窗会把 ZMODEM 握手拖死，见 ZmodemIo 注释）
+                () => desktopDownloadDir()
+              )
+            )
+            zc.on('event', (p: unknown) => {
+              send({ type: 'zmodem', payload: p })
+              // 远端自己敲了 `rz`：桌面这边没有"要发哪些文件"的入口（拖文件走的是 SFTP 上传），
+              // 不主动收尾的话这条会话会一直等着，终端看起来像卡住。明确说一句再中止。
+              const ev = p as { type?: string; message?: string }
+              if (ev.type === 'info' && typeof ev.message === 'string' && ev.message.includes('rz 接收模式')) {
+                setTimeout(() => {
+                  zc.abortAll()
+                  send({
+                    type: 'zmodem',
+                    payload: { sessionId: sid, transferId: 'rz-manual', direction: 'send', type: 'info', message: '桌面里上传请用「上传」按钮（走 SFTP）；rz 的交互式选文件这里没有入口，已中止本次握手' }
+                  })
+                }, 1200)
+              }
+            })
+            s.onData((d) => zc.consume(d))
+            s.onClose(() => {
+              zc.destroy()
+              send({ type: 'session:closed' })
+            })
             if (opts.onSession) {
               try {
                 sid = opts.onSession({
@@ -383,8 +461,14 @@ export async function startUiServer(opts: UiServerOptions = {}): Promise<UiServe
         const ts = transferSession(session, conn.client)
         void (async () => {
           try {
+            // 落点必须是**用户 cd 到的那个目录**，不是登录用户的 home。
+            // 旧版是 rz 在 shell 里跑，天然落在当前目录；换成 SFTP 之后
+            // `realpath('.')` 只会给 home，于是 `cd /opt/app` 后拖文件会传错地方（2026-11-23 回归）。
+            // 代价：这次 `pwd` 会在这条会话的终端里留下可见的一行 —— 换来的是文件落到对的地方。
+            const cwd = await shellCwd(session)
+            if (cwd) log(`界面上传落到当前目录：${cwd}`)
             for (const p of paths) {
-              const r = await pushPath({ localPath: p, session: ts })
+              const r = await pushPath({ localPath: p, session: ts, remoteDir: cwd || undefined })
               if (!r.ok) throw new Error(`${p}: ${r.message}`)
               log(`界面上传完成：${r.remotePath}`)
             }

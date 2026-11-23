@@ -302,4 +302,24 @@ GUI（这次真的开了窗口，不是 headless）：从 `C:\Users\Administrato
 > 结论：从「双击 exe」到「界面列档案」这一段已经亲眼看到；「点 ⚡ 在窗口里开出终端」这一段目前由
 > headless 的 `/term/ws` 回显 + `e2e:shell` 的 term 页面断言覆盖（脚本点 GUI 不可靠，会点到别的窗口）。
 
+### 17. 补三处能力差距（2026-11-23 晚）
+
+统一核心之后有三处「工具在、能力不在」，这一轮补掉，**架构没动**（还是 core + 壳 + 4 条代理）：
+
+| 问题 | 修法 | 证据 |
+|---|---|---|
+桌面 `bastion_connect` 回「宿主没开启这个能力」 | Go 启动核心后端时经 **stdin** 喂 DPAPI 密码表（`--passwords-stdin`），`cmdUi` 注入 `connectSession` | `e2e:session`：MCP `bastion_connect {profile:xzt}` → 「已连接…会话 id `s-xxxx-1`」 |
+上传落到 home（SFTP 没有 cwd 概念） | 上传前先问一次会话的 `pwd`，当 `remoteDir` 传给 `pushPath` | `e2e:session`：`cd /tmp/bscwdtest` 后上传 → 文件就在那儿（日志「界面上传落到当前目录：/tmp/bscwdtest」） |
+桌面终端没有 `rz`/`sz` | 把扩展侧同一个 `ZmodemSessionController` 接到 WS 会话上；事件经 `{type:'zmodem'}` 转给界面传输面板 | `e2e:zmodem`（xzt 装了 lrzsz）：`sz /tmp/probe-sz.txt` → `end` 事件 + 文件落到下载目录 |
+
+细节与取舍：
+
+- 手敲 `rz` 没有选文件的入口（拖文件走 SFTP 上传）。检测到远端 `rz` 后 core 会明确说明并中止握手，
+  否则那条会话会一直等下去，终端看起来像卡死。
+- 下载目录：`$BASTIONSHELL_DOWNLOAD_DIR` > `~/Downloads/BastionShell`；**同步返回、绝不弹窗** ——
+  弹窗会把 ZMODEM 握手拖死（见 `ZmodemIo.resolveDownloadDir` 的注释）。
+- 我这边的沙箱不允许「Go 拉起的子进程」写 `~/Downloads`、`%TEMP%`（EPERM），所以 zmodem 验收时用
+  `BASTIONSHELL_DOWNLOAD_DIR` 指到工作区；用户双击启动（不在沙箱里）时默认目录是可写的。
+
+
 

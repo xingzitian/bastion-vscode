@@ -450,8 +450,39 @@ async function cmdUi(port: number | undefined, proxyBase?: string, mcpPort?: num
   // 下一个 exe 起不来（端口被占），界面连上去却是个不响应的后端（2026-11-23 踩到）。
   const uiParentPid = parseParentPid(process.argv)
   if (uiParentPid) exitWhenParentDies(uiParentPid, log)
+  // 档案密码：桌面经 stdin 交过来（DPAPI 解密后的明文，只在内存里）。
+  // 有它，AI 的 bastion_connect 才能连密码认证的档案 —— 与 serve 模式同一套机制。
+  await loadPasswordTableFromStdin(process.argv.includes('--passwords-stdin'))
   let seq = 0
-  const host = new CliHost({ sessions: [], version: VERSION, log: (m) => log(m) })
+  // AI 新建连接（bastion_connect）：和 serve 模式同一份实现，区别只是新会话也注册进宿主，
+  // 而且它的远端输出会经 WS 推给界面（不写 stdout，免得和日志混在一起）。
+  const connectSession = async (profileName: string): Promise<CliSessionEntry> => {
+    const p = findProfile(profileName)
+    if (!p) throw new Error(`找不到档案「${profileName}」（${profilesFilePath()}）`)
+    const needPw = p.authMethod !== 'key'
+    if (needPw && !passwordTable?.[p.name]) {
+      throw new Error(
+        `档案「${p.name}」是密码认证，但宿主没有它的密码（桌面没存过 / 没在密码框里给过）。` +
+          `请先在桌面里用 ⚡ 连一次（会写入 DPAPI），或在界面上新建连接。`
+      )
+    }
+    const pw = await ensurePassword(p.name, needPw)
+    const conn = await connectProfile(p, {
+      password: pw,
+      log,
+      hostKey: parseHostKeyPolicy(process.argv),
+      knownHostsFile: parseKnownHostsFile(process.argv)
+    })
+    const s = new EngineSession(p.name, conn.channel, { log })
+    await s.waitShellReady()
+    seq += 1
+    const id = `s-${process.pid.toString(16)}-${seq}`
+    // 注意：**不要**在这里 host.addSession —— CliHost.connect() 拿到 entry 后自己会 add，
+    // 两边都加会撞 id（"会话 id 冲突：s-xxxx-1"，2026-11-23 实测）。
+    log(`AI 新建连接：${p.name}（${p.username}@${p.host}:${p.port}）→ ${id}`)
+    return { id, profile: p, session: s, client: conn.client }
+  }
+  const host = new CliHost({ sessions: [], version: VERSION, log: (m) => log(m), connectSession })
   let mcp: Awaited<ReturnType<typeof startCliMcp>> | undefined
   try {
     mcp = await startCliMcp({
