@@ -45,6 +45,31 @@
 二次开发 / 排障 | 配置 · 部署任务 JSON 模板 · 开发与测试 · 代码结构 |
 
 > 只想知道「命令怎么配」：看 **配置** 一节；只想查某个命令 ID：看 **命令 ID** 一节。
+
+## 不想开 VS Code？用 CLI 宿主（同一份内核）
+
+```bash
+# 一次性准备（要求 Node ≥ 22）
+npm install && npm run compile
+
+# 交互式终端 + MCP（Ctrl-] 退出）
+node out/cli/main.js connect xzt
+
+# 只跑后台：会话 + MCP + 网页终端，远端输出实时打印
+node out/cli/main.js serve xzt
+
+# 跑一条就走（脚本/CI 用）
+node out/cli/main.js run xzt --exec "systemctl status nginx"
+```
+
+起好之后终端会打印网页地址（`http://127.0.0.1:<端口>/term?token=…`），浏览器打开就能敲命令；
+同一进程还提供 MCP 端点（`~/.bastionshell/mcp-cli.json` 里有 url + token），AI 客户端配一次即可。
+
+**和扩展的关系**：不是替代品，是第二个宿主 —— 同一份 `src/core`（执行协议/作业/账本/MCP/传输），
+所以 `sleep 10` 不再被误判、`rz` 探测不会再因为 ANSI 前缀失败、账本也写同一份 JSONL。
+
+细节与边界：`docs/cli-host.md`（一进程一条会话；`bastion_connect` 不支持；凭据只用密钥或交互式密码、不落盘）。
+
 ## 核心能力
 
 - **连接复用**：一条堡垒机连接认证一次（密码 + MFA），后续开 N 个 shell 会话直接复用，不再输 MFA。
