@@ -98,6 +98,33 @@ try {
   else bad('WS 握手', seen.join(','))
   if (out.includes('core-ui-ok')) ok('input → data 回显', String(out.length) + ' 字节')
   else bad('回显', out.slice(-160))
+
+  // 「AI 访问」页面：Go 的 MCP 层删了之后由 core 出这份数据，字段名必须还能喂给旧界面
+  const ai = await (await fetch('http://127.0.0.1:18090/api/ai-access')).json()
+  const aiOk =
+    ai.mainOnly === true &&
+    typeof ai.token === 'string' &&
+    ai.token.length > 0 &&
+    typeof ai.tokenMasked === 'string' &&
+    !ai.tokenMasked.includes(ai.token.slice(4, -4)) &&
+    ai.endpoint.includes('/mcp') &&
+    Array.isArray(ai.clients) &&
+    ai.clients[0]?.isMain === true
+  if (aiOk) ok('/api/ai-access 由 core 提供', `endpoint=${ai.endpoint} token=${ai.tokenMasked}`)
+  else bad('/api/ai-access', JSON.stringify(ai).slice(0, 200))
+  if (Array.isArray(ai.sessions) && ai.sessions.some((s) => String(s.id).startsWith('s-')))
+    ok('界面会话出现在 AI 访问里', `${ai.sessions.length} 条`)
+  else bad('AI 访问会话行', JSON.stringify(ai.sessions).slice(0, 160))
+
+  const un = await (
+    await fetch('http://127.0.0.1:18090/api/ai-access/unbind', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientId: 'no-such-client', alias: 'ZZ' })
+    })
+  ).json()
+  if (un.ok === false) ok('解绑不存在的绑定 → ok:false（不写文件）')
+  else bad('解绑', JSON.stringify(un))
 } catch (e) {
   bad('e2e 整体', e instanceof Error ? e.message : String(e))
 } finally {

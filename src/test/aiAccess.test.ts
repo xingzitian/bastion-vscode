@@ -4,7 +4,7 @@
 // **每一档权限必须被翻译成人话**，而且主令牌永远要显示出来（不然会误以为"没有令牌=没权限"）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildAiModel, ownersSummary, scopeDetail, scopeOneLiner, normalizeAiScope, SCOPE_INFO } from '../aiAccess'
+import { buildAiModel, ownersSummary, scopeDetail, scopeOneLiner, normalizeAiScope, SCOPE_INFO } from '../core/aiAccess'
 
 test('三档权限都必须能讲清「能做什么 / 不能做什么」', () => {
   for (const s of ['observer', 'operator', 'full'] as const) {

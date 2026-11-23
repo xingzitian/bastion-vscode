@@ -63,3 +63,38 @@ main.go:37                 initLrzsz
 3. `main.go` 去掉 `initLrzsz()`（lrzsz 属于已删的传输层）
 4. 再删实现文件 → `go build` / `go test` 通过
 5. 三套闸门 + 桌面人工验收 → 合并回 main
+
+## ⑤ 完成情况（2026-11-23，第三次续做）
+
+第二刀已收尾，`go build ./...` / `go vet ./...` / `go test ./...` 全绿。
+
+做了什么：
+
+- `forwardRule` 类型（含 `ProfileID`/`Label`）搬进 `shared_config.go`，只在共享文件读写里用
+- `server.go` 从 368 行砍到 80 行：删掉 `wsMsg` / `upgrader` / 连接池（`acquireConn` / `releaseConn`）/
+  `handleForwardMsg` / `controlChannel` / `handleWS` / `/ws` 路由；只留壳路由的注册 + CORS
+- `main.go` 去掉 `initLrzsz()`（内嵌 lrzsz 属于已删的传输层）
+- 删 `transfer_test.go`（被测文件已随第二刀删除）
+
+### 踩到的两处「界面契约」（删之前没注意，差点删过头）
+
+1. **`/api/upload` 与 `/api/pick-files` 不能一起删。**
+   界面是「浏览器环境」，拿不到真实文件路径：`shim.js` 先把文件字节 POST `/api/upload`
+   让后端落成临时文件，再把**路径**喂给 WS 上传；选文件则要 `/api/pick-files` 弹系统对话框。
+   这两件事都不是 SSH 能力，而是**壳能力**（写临时文件 / 系统对话框）。
+   现在它们单独放在 `shell_routes.go`，由 core 反向代理过来（与 DPAPI 的 `/api/secret` 同一类）。
+
+2. **`/api/ai-access` 是 Go 的 MCP 层产出的，必须由 core 接手。**
+   桌面界面的「AI 访问」页读它（端点、令牌、客户端、绑定、会话）。
+   现在 core 侧 `src/core/aiAccessView.ts` 用**扩展侧同一套** `buildAiModel` 生成，
+   字段名与 Go 版保持一致，界面不改；`/api/ai-access/unbind` 也由 core 直接改
+   `~/.bastionshell/mcp-bindings.json`。
+   与 Go 版的差别只有一处，且是如实写出来的：桌面 MCP 现在只有一个令牌，所以
+   `mainOnly: true`，页面上明说「要分档限权请去 VS Code 扩展签独立令牌」。
+
+### 顺带修掉的一个老 404
+
+`/api/profiles` 的 **GET** 由 core 直接回（为了不再依赖 Go 读档案），但「加机器/改机器/删机器」
+仍是 POST/DELETE 走 Go 的档案存储。①–④ 期间这两条落到代理名单之外 → 404，
+界面能看不能改。现在 `/api/profiles` 也进了代理名单（GET 在它之前就被 core 拦下了）。
+

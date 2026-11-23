@@ -475,6 +475,7 @@ async function cmdUi(port: number | undefined, proxyBase?: string, mcpPort?: num
     knownHostsFile: parseKnownHostsFile(process.argv),
     log,
     mcp: mcp ? { url: mcp.url, token: mcp.token, port: mcp.port, portFallback: mcp.portFallback, file: mcp.file } : undefined,
+    hostSessions: () => host.sessionList(),
     onSession: ({ profile, session, client }) => {
       seq += 1
       const id = `s-${process.pid.toString(16)}-${seq}`

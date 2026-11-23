@@ -20,6 +20,9 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import { connectProfile } from '../engine/connect'
 import { EngineSession } from '../engine/session'
 import { loadProfiles } from '../engine/profiles'
+import { buildDesktopAiAccessView } from '../core/aiAccessView'
+import { BINDINGS_FILE, loadBindings, saveBindings, unbind } from '../core/sessionBindings'
+import { configFilePath } from '../core/config'
 import { pushPath, type TransferSession } from '../core/transferPath'
 import { openSftp } from '../engine/sftp'
 import { putFile, getFile, resolveRemoteDir } from '../core/sftpTransfer'
@@ -38,6 +41,8 @@ export interface UiServerOptions {
   /** 指纹策略 */
   hostKey?: 'known_hosts' | 'strict' | 'off'
   knownHostsFile?: string
+  /** 当前会话表（/api/ai-access 的会话行；界面开的会话也在里面） */
+  hostSessions?: () => { id: string; name: string }[]
 }
 
 export interface UiServer {
@@ -109,6 +114,13 @@ export async function startUiServer(opts: UiServerOptions = {}): Promise<UiServe
       res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify(body))
     }
+    const readBody = (r: http.IncomingMessage): Promise<string> =>
+      new Promise((resolve, reject) => {
+        const chunks: Buffer[] = []
+        r.on('data', (c: Buffer) => chunks.push(c))
+        r.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+        r.on('error', reject)
+      })
     // 档案：界面直接渲染 name/host/port
     if (url.pathname === '/api/profiles' && req.method === 'GET') {
       json(
@@ -138,9 +150,56 @@ export async function startUiServer(opts: UiServerOptions = {}): Promise<UiServe
       })
       return
     }
+    // 「AI 访问」页面：令牌/绑定/会话都由这个进程（= core）出 —— Go 的 MCP 层已经删了。
+    if (url.pathname === '/api/ai-access' && req.method === 'GET') {
+      json(
+        200,
+        buildDesktopAiAccessView({
+          endpoint: opts.mcp?.url ?? '',
+          token: opts.mcp?.token ?? '',
+          bindings: loadBindings(),
+          sessions: opts.hostSessions?.() ?? [],
+          bindingsFile: configFilePath(BINDINGS_FILE)
+        })
+      )
+      return
+    }
+    if (url.pathname === '/api/ai-access/unbind' && req.method === 'POST') {
+      readBody(req)
+        .then((body) => {
+          let p: { clientId?: unknown; alias?: unknown; sessionId?: unknown } = {}
+          try {
+            p = JSON.parse(body || '{}') as typeof p
+          } catch {
+            json(400, { error: 'bad json' })
+            return
+          }
+          const clientId = typeof p.clientId === 'string' && p.clientId.trim() ? p.clientId.trim() : 'default'
+          const alias = typeof p.alias === 'string' ? p.alias : undefined
+          const sessionId = typeof p.sessionId === 'string' ? p.sessionId : undefined
+          const doc = loadBindings()
+          const ok = unbind(doc, clientId, { alias, sessionId })
+          if (ok) saveBindings(doc)
+          json(200, { ok })
+        })
+        .catch((e: unknown) => json(400, { error: (e as Error).message }))
+      return
+    }
     // 还没迁进 core 的接口：有 proxyBase 就原样转发给 Go（DPAPI 存密码、上传、转发、系统对话框），
     // 没有就明确 501 —— 两种都比"假装成功"好。
-    const proxied = ['/api/upload', '/api/forwards', '/api/quick-commands', '/api/secret', '/api/pick-files', '/api/shell', '/api/ai-access']
+    //
+    // `/api/profiles` 在这里只兜**写**操作：GET 上面已经由 core 直接回了，
+    // 但界面的「加机器/改机器/删机器」还是走 Go 的档案存储（同一份 profiles.jsonc），
+    // 不放进来就会 404 —— 界面能看不能改。
+    const proxied = [
+      '/api/upload',
+      '/api/forwards',
+      '/api/quick-commands',
+      '/api/secret',
+      '/api/pick-files',
+      '/api/shell',
+      '/api/profiles'
+    ]
     if (proxied.some((p) => url.pathname === p || url.pathname.startsWith(p + '/'))) {
       if (!opts.proxyBase) {
         json(501, { error: `CLI 后端暂未实现 ${url.pathname}（没有配置 proxyBase）` })
@@ -385,10 +444,35 @@ export async function startUiServer(opts: UiServerOptions = {}): Promise<UiServe
     })
   }
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(opts.port ?? 18090, '127.0.0.1', () => resolve())
-  })
+  // 端口偶尔还被上一个进程占着（桌面 exe 被强杀后，子进程要靠父进程守卫退出，最多几秒）。
+  // 这种情况必须**重试**：界面只认 18090，绑不上就等于界面打不开；
+  // 以前这里是直接抛错，桌面于是退回 Go 后端 —— 而 Go 的 /ws 已经删了，退回只会更糊涂。
+  const bindPort = opts.port ?? 18090
+  let attempt = 0
+  for (;;) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onErr = (e: NodeJS.ErrnoException): void => {
+          server.removeListener('listening', onOk)
+          reject(e)
+        }
+        const onOk = (): void => {
+          server.removeListener('error', onErr)
+          resolve()
+        }
+        server.once('error', onErr)
+        server.once('listening', onOk)
+        server.listen(bindPort, '127.0.0.1')
+      })
+      break
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      attempt += 1
+      if (code !== 'EADDRINUSE' || attempt >= 12) throw e
+      log(`端口 ${bindPort} 还被占着，等 500ms 再试（第 ${attempt} 次）`)
+      await new Promise((r) => setTimeout(r, 500))
+    }
+  }
   const addr = server.address()
   const port = typeof addr === 'object' && addr ? addr.port : 0
   log(`界面后端已启动：http://127.0.0.1:${port}（/api/* + /ws）`)

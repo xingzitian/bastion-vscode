@@ -9,7 +9,7 @@ import { abortDeployTask } from './deployRun'
 import { fmtBytes, fmtDuration, fmtSpeed, progressBar } from './status'
 import { updateStatusBar } from './slots'
 import { log, outChannel } from './log'
-import { buildAiModel } from './aiAccess'
+import { buildAiModel } from './core/aiAccess'
 import { mcpClientTokens, mcpMainToken } from './mcpRegister'
 import { loadBindings } from './core/sessionBindings'
 

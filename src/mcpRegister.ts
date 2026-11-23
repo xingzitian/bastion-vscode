@@ -27,7 +27,7 @@ import { setMcpEndpointInfo, terminals } from './state'
 import { loadActionRecords } from './core/actionLedgerIo'
 import { cancelExecJob } from './aiBridge'
 import { normalizeClientId } from './core/sessionBindings'
-import { normalizeAiScope, SCOPE_INFO } from './aiAccess'
+import { normalizeAiScope, SCOPE_INFO } from './core/aiAccess'
 import type { McpClientToken, McpScope } from './core/mcpServer'
 
 /** 必须和 package.json 里 `contributes.mcpServerDefinitionProviders[0].id` 一致 */

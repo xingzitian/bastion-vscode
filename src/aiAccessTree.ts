@@ -14,7 +14,7 @@ import * as vscode from 'vscode'
 import { terminals } from './state'
 import { bindingsOf, loadBindingsSwept, onBindingsChanged } from './core/sessionBindings'
 import { mcpClientTokens, mcpMainToken } from './mcpRegister'
-import { buildAiModel, ownersSummary, scopeDetail, scopeInfoOf, type AiClientRow, type AiSessionRow } from './aiAccess'
+import { buildAiModel, ownersSummary, scopeDetail, scopeInfoOf, type AiClientRow, type AiSessionRow } from './core/aiAccess'
 
 const CLIENT_CTX = 'aiClient'
 const BINDING_CTX = 'aiBinding'

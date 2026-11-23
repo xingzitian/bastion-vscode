@@ -314,6 +314,11 @@ export class CliHost {
     }
   }
 
+  /** 当前会话表（id + 档案名）：界面后端的「AI 访问」页面要按它列会话 */
+  sessionList(): { id: string; name: string }[] {
+    return this.opts.sessions.map((s) => ({ id: s.id, name: s.profile.name }))
+  }
+
   api(): McpSessionApi {
     const self = this
     const sessions = this.opts.sessions
