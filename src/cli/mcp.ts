@@ -57,6 +57,14 @@ export interface StartCliMcpOptions {
   endpointFile?: string
   /** 强制新 token（默认会复用已有文件里的 token） */
   freshToken?: boolean
+  /**
+   * false = **不写端点文件**，由宿主自己写。
+   *
+   * 为什么需要：桌面 exe spawn 出来的 CLI，写这个文件会 `EPERM`（父进程上下文差异，
+   * 2026-11-23 实测；从 pwsh 启动则正常）。与其赌权限，不如让 CLI 只报告事实
+   * （`--print-endpoint` 打一行 JSON），由宿主决定写哪儿。
+   */
+  writeEndpoint?: boolean
 }
 
 export async function startCliMcp(opts: StartCliMcpOptions): Promise<CliMcp> {
@@ -78,7 +86,8 @@ export async function startCliMcp(opts: StartCliMcpOptions): Promise<CliMcp> {
     ui: { listActions: () => loadActionRecords(300) }
   })
 
-  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const writeEndpoint = opts.writeEndpoint !== false
+  if (writeEndpoint) fs.mkdirSync(path.dirname(file), { recursive: true })
   const note = handle.portFallback
     ? '默认端口被占用，已退到随机端口（本机可能还开着另一个 BastionShell 或 VS Code 扩展）'
     : undefined
@@ -110,7 +119,7 @@ export async function startCliMcp(opts: StartCliMcpOptions): Promise<CliMcp> {
         ...(note ? { note } : {}),
         note2: '此文件由 CLI 宿主写入；VS Code 扩展用 ~/.bastionshell/mcp.json（互不覆盖）'
       }
-  fs.writeFileSync(file, JSON.stringify(payload, null, 2), 'utf8')
+  if (writeEndpoint) fs.writeFileSync(file, JSON.stringify(payload, null, 2), 'utf8')
 
   return {
     url: handle.url,
@@ -128,6 +137,7 @@ export async function startCliMcp(opts: StartCliMcpOptions): Promise<CliMcp> {
       // 只删自己写的（token 对得上才删，避免删掉后来者的文件）
       try {
         const cur = JSON.parse(fs.readFileSync(file, 'utf8')) as { token?: string; pid?: number }
+        if (!writeEndpoint) return
         if (cur.token === token && (legacy || cur.pid === process.pid)) fs.unlinkSync(file)
       } catch {
         /* 文件可能已被覆盖/删除 */

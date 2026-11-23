@@ -222,12 +222,21 @@ async function cmdServe(name: string, mcpFile?: string, mcpPort?: number): Promi
     sessionId,
     log,
     port: mcpPort,
-    endpointFile: mcpFile
+    endpointFile: mcpFile,
+    // 桌面 spawn 时用 --print-endpoint：CLI 不写文件，宿主自己写（子进程写文件会 EPERM）
+    writeEndpoint: !process.argv.includes('--print-endpoint')
   })
   log(`MCP 已启动：${mcp.url}`)
   log(`端点文件：${mcp.file}`)
   // 网页终端 + 只读面板：同一个 token，单开一个端口（不污染 MCP 的 HTTP 层）
   const term = await startTermServer({ session, token: mcp.token, title: profile.name, log: (m) => log(m) })
+  if (process.argv.includes('--print-endpoint')) {
+    // 机器可读：桌面据此自己写 mcp.json
+    log('端点：' + JSON.stringify({ url: mcp.url, token: mcp.token, termUrl: term.url, port: mcp.port, actualPort: mcp.port, legacy: mcp.legacy }))
+  } else {
+    addTermUrlToEndpoint(term.url, mcp.file)
+  }
+
   log(`浏览器打开：${term.url}`)
   log('serve 模式：远端输出会实时打在这里；Ctrl-C 退出。')
 
