@@ -19,6 +19,9 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import { connectProfile } from '../engine/connect'
 import { EngineSession } from '../engine/session'
 import { loadProfiles } from '../engine/profiles'
+import { pushPath, type TransferSession } from '../core/transferPath'
+import { openSftp } from '../engine/sftp'
+import { putFile, getFile, resolveRemoteDir } from '../core/sftpTransfer'
 import type { EngineProfile } from '../engine/profiles'
 import type { Client } from 'ssh2'
 
@@ -45,6 +48,45 @@ interface UiConn {
   client: Client
   connId: string
   sessions: Set<EngineSession>
+}
+
+/** 把「界面会话 + 已认证连接」适配成 core 传输层要的会话（上传/下载复用同一套） */
+function transferSession(session: EngineSession, client: Client): TransferSession {
+  return {
+    name: 'ui',
+    exec: async (cmd) => (await session.exec(cmd, { maxMs: 5 * 60_000 })).text,
+    exitCode: () => undefined,
+    sftpAllowed: () => true,
+    sftpPut: async (localPath, remoteDir) => {
+      const h = await openSftp(client)
+      try {
+        const dir = await resolveRemoteDir(h.sftp, remoteDir)
+        const r = await putFile(h.sftp, localPath, dir, {})
+        return r.ok
+          ? { ok: true, remotePath: r.remotePath, message: 'ok', bytes: r.bytes, skipped: r.skipped, resumed: r.resumed }
+          : { ok: false, message: r.error ?? '未知原因' }
+      } catch (e) {
+        return { ok: false, message: (e as Error).message }
+      } finally {
+        h.close()
+      }
+    },
+    sftpGet: async (remotePath, localDir) => {
+      const h = await openSftp(client)
+      try {
+        const r = await getFile(h.sftp, remotePath, localDir, {})
+        return r.ok
+          ? { ok: true, localPath: r.localPath, message: 'ok', bytes: r.bytes, resumed: r.resumed }
+          : { ok: false, message: r.error ?? '未知原因' }
+      } catch (e) {
+        return { ok: false, message: (e as Error).message }
+      } finally {
+        h.close()
+      }
+    },
+    overwriteMode: () => 'skip',
+    log: () => undefined
+  }
 }
 
 export async function startUiServer(opts: UiServerOptions = {}): Promise<UiServer> {
@@ -271,7 +313,28 @@ export async function startUiServer(opts: UiServerOptions = {}): Promise<UiServe
         session?.resize(Number(m.cols) || 100, Number(m.rows) || 30)
         return
       }
-      if (type === 'upload' || type.startsWith('forward:')) {
+      if (type === 'upload') {
+        const paths = Array.isArray(m.paths) ? (m.paths as string[]) : []
+        if (!session || !conn) {
+          send({ type: 'upload:error', message: '还没有会话' })
+          return
+        }
+        const ts = transferSession(session, conn.client)
+        void (async () => {
+          try {
+            for (const p of paths) {
+              const r = await pushPath({ localPath: p, session: ts })
+              if (!r.ok) throw new Error(`${p}: ${r.message}`)
+              log(`界面上传完成：${r.remotePath}`)
+            }
+            send({ type: 'upload:done' })
+          } catch (e) {
+            send({ type: 'upload:error', message: (e as Error).message })
+          }
+        })()
+        return
+      }
+      if (type.startsWith('forward:')) {
         send({ type: 'error', message: `CLI 后端暂未实现 ${type}` })
         return
       }
