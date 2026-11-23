@@ -145,6 +145,24 @@ bastionshell serve xzt xb cana
 `~/.bastionshell/action-ledger.jsonl`，字段与扩展一致（`actionId/brief/steps/status/exitCode/elapsed`），
 外部面板不用区分宿主。
 
+## 进程生命周期（为什么不该看到一堆 node）
+
+桌面（Wails）会 spawn 一个 `serve` 子进程，**它跟着桌面进程活**：
+
+- 桌面正常退出 → 子进程收 SIGTERM 退出；
+- 桌面被强杀（更新/崩溃/任务管理器结束任务）→ 子进程每 5 秒检查父进程，发现没了就自己退出。
+
+如果哪天又看到残留的 `node out/cli/main.js serve`，可以直接结束掉；
+它们只是占着 SSH 连接和两个回环端口，不会影响档案或账本。
+
+排查用的一行（PowerShell）：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+  Where-Object { $_.CommandLine -match 'out[\\/]cli[\\/]main\.js' } |
+  Select-Object ProcessId, CommandLine
+```
+
 ## 自己验证（真机 e2e）
 
 ```bash

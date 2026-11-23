@@ -23,6 +23,43 @@ import { startTermServer } from './termServer'
 /** CLI 版本：跟扩展同号（同一份 core），先硬编码，发版时一起改 */
 const VERSION = '0.3.21-cli'
 
+/** 父进程还活着吗（Windows 上 signal 0 也能用） */
+export function isAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 父进程死了就退出。
+ *
+ * 为什么必须要有：桌面（Wails）spawn 了我们。如果它被强杀（更新、崩溃、任务管理器结束任务），
+ * 我们会变成**孤儿 node 进程**，继续占着 SSH 连接和端口 —— 2026-11-23 用户就是看到一堆
+ * `node out/cli/main.js serve` 在跑。这里每 5 秒看一眼父进程，没了就收摊。
+ */
+export function exitWhenParentDies(parentPid: number, logFn: (m: string) => void = () => undefined): NodeJS.Timeout {
+  const timer = setInterval(() => {
+    if (isAlive(parentPid)) return
+    logFn(`父进程 ${parentPid} 已退出，跟着收尾`)
+    clearInterval(timer)
+    process.exit(0)
+  }, 5000)
+  timer.unref?.()
+  return timer
+}
+
+/** 从 argv 里取 --parent-pid */
+export function parseParentPid(argv: string[]): number | undefined {
+  const i = argv.indexOf('--parent-pid')
+  if (i < 0 || i + 1 >= argv.length) return undefined
+  const n = Number(argv[i + 1])
+  return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
 const log = (msg: string): void => {
   process.stderr.write(`[bastion] ${msg}\n`)
 }
@@ -249,6 +286,8 @@ async function cmdConnect(name: string): Promise<number> {
  */
 async function cmdServe(names: string[], mcpFile?: string, mcpPort?: number): Promise<number> {
   await loadPasswordTableFromStdin(process.argv.includes('--passwords-stdin'))
+  const parentPid = parseParentPid(process.argv)
+  if (parentPid) exitWhenParentDies(parentPid, log)
   if (names.length === 0) {
     process.stderr.write('serve 需要至少一个档案名（可多个：serve a b c）\n')
     return 2
@@ -378,6 +417,10 @@ async function main(): Promise<number> {
       if (a === '--port') {
         const n = Number(rest[++i])
         mp = Number.isFinite(n) ? n : undefined
+        continue
+      }
+      if (a === '--parent-pid') {
+        i++ // 值不能当档案名
         continue
       }
       if (a.startsWith('--')) continue
