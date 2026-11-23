@@ -1416,7 +1416,8 @@
     "check:assets": "node scripts/check-assets.mjs",
     "check:cycles": "node scripts/check-cycles.mjs",
     "check:unused": "tsc -p tsconfig.core.json --noUnusedLocals --noUnusedParameters",
-    "check": "npm run check:core && npm run check:load && npm run check:requires && npm run check:assets && npm run check:cycles && npm run check:unused"
+    "check": "npm run check:core && npm run check:load && npm run check:requires && npm run check:assets && npm run check:cycles && npm run check:unused",
+    "cli": "node out/cli/main.js"
   },
   "dependencies": {
     "jsonc-parser": "^3.3.1",

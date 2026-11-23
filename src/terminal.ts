@@ -15,6 +15,17 @@ import { fmtBytes as formatBytes } from './status';
 import { pushPath, type TransferSession } from './core/transferPath';
 // 单向依赖：menu.ts 不 import terminal.ts，所以这里可以放心用它的提示符识别
 import { TransferLock } from './core/transferLock';
+// 这些纯函数搬到了 core/screen.ts（CLI 引擎也要用同一份判定语义）。
+// 这里 re-export 保持既有 import（aiBridge/deployRun/sessions 都从 './terminal' 取）不变。
+import {
+  stripAnsi as coreStripAnsi,
+  tailText as coreTailText,
+  isMarkerSafe as coreIsMarkerSafe,
+  readMarkerLine as coreReadMarkerLine,
+  safeReadStart as coreSafeReadStart,
+  stripMarker as coreStripMarker
+} from './core/screen';
+export { stripAnsi, tailText, isMarkerSafe, readMarkerLine, safeReadStart } from './core/screen';
 import { describeDisconnect } from './core/disconnect';
 import { putFile, getFile, resolveRemoteDir, shouldUseSftp, type SftpLike } from './core/sftpTransfer';
 import { fmtBytes } from './core/format';
@@ -924,7 +935,7 @@ export class BastionTerminal implements vscode.Pseudoterminal {
    * 但输出本来就经过我们这里，顺手留一份滚动缓冲即可。
    */
   getTail(maxLines = 80): string {
-    return tailText(this.tailBuf, maxLines);
+    return coreTailText(this.tailBuf, maxLines);
   }
 
   /**
@@ -976,11 +987,11 @@ export class BastionTerminal implements vscode.Pseudoterminal {
 
   /** 取标记之后的新输出（已去 ANSI、`\r` 覆盖、尾部空行），供菜单识别使用 */
   readSince(mark: ScreenMark, maxLines = 40): string {
-    return tailText(this.tailBuf.slice(safeReadStart(this.tailBuf, mark.len)), maxLines);
+    return coreTailText(this.tailBuf.slice(coreSafeReadStart(this.tailBuf, mark.len)), maxLines);
   }
 
   private safeMarkIndex(len: number): number {
-    return safeReadStart(this.tailBuf, len);
+    return coreSafeReadStart(this.tailBuf, len);
   }
 
   /**
@@ -1073,7 +1084,7 @@ export class BastionTerminal implements vscode.Pseudoterminal {
     // 尾巴上**带上退出码**：没有它，AI 只能靠读输出猜命令成没成（`systemctl restart`
     // 失败、脚本里 `false` 这类，光看输出是看不出来的）。
     const marker = `__BASTION_DONE_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}__`;
-    const safe = isMarkerSafe(command, opts.allowPlainSudo === true);
+    const safe = coreIsMarkerSafe(command, opts.allowPlainSudo === true);
     // 长命令可选 tee 一份到远端：人照常在终端里看到输出（不是 nohup 那种把终端抢走），
     // 我们额外拿到完整日志 + 可靠的退出码（从 .rc 文件读，见 execTee.ts）。
     const teeLogPath = opts.logToFile && opts.logPath ? opts.logPath : '';
@@ -1141,7 +1152,7 @@ export class BastionTerminal implements vscode.Pseudoterminal {
           // 统一在这里剥 ANSI：能力探测、md5/大小解析、部署报告都吃这份干净文本。
           // 真机（2026-11-20）：pty 输出第一行常带 ESC[?2004l，会把 `rz=...` 糊住，
           // 导致“rz 明明有却被判定没有”。
-          text: stripAnsi(safe ? stripMarker(buf, marker) : buf),
+          text: coreStripAnsi(safe ? coreStripMarker(buf, marker) : buf),
           exitCode,
           markerSeen: !safe || markerSeen,
           elapsedMs: Date.now() - startedAt,
@@ -1158,7 +1169,7 @@ export class BastionTerminal implements vscode.Pseudoterminal {
         }
         // 哨兵命中（真实输出行 == marker[:rc]，而不是命令回显里的 marker）→ 立刻完成
         if (safe) {
-          const found = readMarkerLine(buf, marker);
+          const found = coreReadMarkerLine(buf, marker);
           if (found.seen) {
             markerSeen = true;
             exitCode = found.rc;
@@ -1481,81 +1492,11 @@ export class BastionTerminal implements vscode.Pseudoterminal {
   }
 }
 
-/**
- * 判断命令是否适合追加哨兵标记（标记永远不会打印的命令不能加，否则只能等超时）。
- * - su / sudo -i / sudo -s 会换成交互式 shell → 不适合
- * - 尾部 `&` 后台任务、`exec` 换 shell → 不适合
- * - 普通 `sudo <命令>` 本身是安全的，但只有当习惯文件确认该账号 sudo 免密
- *   （allowPlainSudo）时才启用；否则一旦弹密码提示命令就卡住，只能靠「输出静止」兜底。
- */
-export function isMarkerSafe(command: string, allowPlainSudo = false): boolean {
-  const c = command.trim();
-  if (!c) return false;
-  if (/^(sudo|su)(\s|$)/.test(c)) {
-    if (!allowPlainSudo) return false;
-    if (!/^sudo\s+/.test(c)) return false; // su 一律不加
-    // 保守起见：只要出现 -i / -s / --login / --shell 就当交互式 shell 处理
-    // （哪怕像 `sudo grep -i` 这样被误判，也只是退回静止判定，不会出错）
-    if (/(^|\s)(-i|-s|--login|--shell)(\s|$)/.test(c)) return false;
-  }
-  if (/&\s*$/.test(c)) return false;
-  if (/(^|[;&|]\s*)exec(\s|$)/.test(c)) return false;
-  return true;
-}
 
-/**
- * 清掉终端输出里的 ANSI 转义序列（颜色、光标、标题等），只留可见文本。
- * ZMODEM 控制序列不在这里处理 —— 那是 zmodem.ts 的职责。
- */
-export function stripAnsi(s: string): string {
-  if (!s) return '';
-  return s
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC ... BEL/ST
-    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '') // CSI
-    .replace(/\x1b[()][A-Za-z0-9]/g, '') // 字符集切换
-    .replace(/\x1b[=>78]/g, ''); // 其他单字符转义
-}
 
-/**
- * 把终端原始输出整理成人类/AI 可读的纯文本：
- * 去掉 ANSI 转义序列、按 \r 覆盖只保留最后一段（进度条）、去掉尾部空行，最后取末 maxLines 行。
- */
-export function tailText(raw: string, maxLines = 80): string {
-  if (!raw) return '';
-  const clean = stripAnsi(raw);
-  const lines: string[] = [];
-  for (const line of clean.split('\n')) {
-    // \r 覆盖：同一行被反复重写的进度条只保留最后一段
-    const segs = line.split('\r').filter((s) => s.length > 0);
-    lines.push((segs.length ? segs[segs.length - 1] : '').replace(/\s+$/, ''));
-  }
-  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-  return lines.slice(-Math.max(1, maxLines)).join('\n');
-}
 
-/**
- * 读取起点：标记落在缓冲区里的位置。如果它正好把一个 ANSI 转义序列切成两半，
- * 就退回到那个 `\x1b` 再开始读。
- *
- * 为什么非要有这个函数：切出来的后半段开头会粘着 `2m` 这种残渣，
- * 而 `^\s*opt>`、`^\s*id>` 这类**行首锚定**的规则就再也匹配不上了 ——
- * 这正是之前「菜单明明在屏幕上、日志里也看得见，就是认不出来」的元凶。
- * （导出成纯函数是为了能直接测 —— 见 test/terminal.test.ts）
- */
-export function safeReadStart(buf: string, len: number): number {
-  if (len <= 0 || len > buf.length) return 0;
-  const from = Math.max(0, len - 32);
-  const esc = buf.lastIndexOf('\x1b', len - 1);
-  if (esc < from) return len;
-  // \x1b 之后若已出现「终止字符」（跳过 [ ] ( ) # % 这些引导符），说明这条转义序列在标记之前就结束了
-  const body = buf.slice(esc + 1, len).replace(/^[\[\]()#%]/, '');
-  return /[\x40-\x7e]/.test(body) ? len : esc;
-}
 
 /** 检测哨兵是否作为「独立输出行」出现（区别于命令回显里 `; echo __MARKER__` 的 token） */
-function hasMarkerLine(s: string, marker: string): boolean {
-  return readMarkerLine(s, marker).seen;
-}
 
 /**
  * 找哨兵行，并把它带的**退出码**读出来。
@@ -1563,24 +1504,6 @@ function hasMarkerLine(s: string, marker: string): boolean {
  * 行格式：`<marker>:<rc>`（老版本是裸 `<marker>`，这里也兼容 —— 兼容是为了
  * 「远端 shell 里已经有一行旧标记」这种边角情况不会把解析搞崩）。
  */
-/**
- * 在输出里找哨兵。
- *
- * **不要求行首**：真机上哨兵那行前面常残留 ANSI 转义或提示符刷新（`\x1b[K__BASTION…`），
- * 用"整行 equals/startsWith"会漏判 —— 表现就是"命令明明跑完了却报退出码未知"。
- * 回显里的 `echo <marker>:$ec` 是**字面量**（`$ec` 没有展开成数字），
- * 所以 `marker:(数字)` 这种匹配不会把命令回显误当成完成。
- */
-export function readMarkerLine(s: string, marker: string): { seen: boolean; rc?: number } {
-  if (!marker) return { seen: false };
-  const idx = s.lastIndexOf(marker + ':');
-  if (idx < 0) return { seen: false };
-  const rest = s.slice(idx + marker.length + 1);
-  const m = /^(\d+)/.exec(rest);
-  // 必须带数字才算：回显里的 cho MARKER: 是字面量，没有数字 → 不能当完成
-  if (!m) return { seen: false };
-  return { seen: true, rc: Number.parseInt(m[1], 10) };
-}
 
 /** shell 单引号引用（远端路径里可能有空格/引号） */
 export function shQuote(s: string): string {
@@ -1588,13 +1511,6 @@ export function shQuote(s: string): string {
 }
 
 /** 从返回给 AI 的输出里剔除哨兵相关行（命令回显行 + 哨兵输出行） */
-function stripMarker(s: string, marker: string): string {
-  if (!marker) return s;
-  return s
-    .split(/\r?\n/)
-    .filter((line) => !line.includes(marker))
-    .join('\n');
-}
 
 /**
  * 把 ssh2 的 SFTPWrapper 包成 core/sftpTransfer 要的 Promise 接口。
