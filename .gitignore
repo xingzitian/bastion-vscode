@@ -20,3 +20,8 @@ npm-debug.log*
 # 编辑器与系统杂项
 .DS_Store
 Thumbs.db
+
+# CLI 试跑/launcher 的临时输出
+tools/.launcher-*.txt
+tools/.e2e-*.txt
+tools/.cli-*.txt
