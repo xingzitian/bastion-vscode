@@ -74,7 +74,9 @@ bastionshell run xzt --exec "systemctl status nginx"
 **和扩展的关系**：不是替代品，是第二个宿主 —— 同一份 `src/core`（执行协议/作业/账本/MCP/传输），
 所以 `sleep 10` 不再被误判、`rz` 探测不会再因为 ANSI 前缀失败、账本也写同一份 JSONL。
 
-细节与边界：`docs/cli-host.md`（一进程一条会话；`bastion_connect` 不支持；凭据只用密钥或交互式密码、不落盘）。
+完整手册：**`docs/cli.md`**（安装/命令/工具表/安全边界/常见问题）；设计取舍见 `docs/cli-host.md`。
+
+> 安全提醒：v1 **不校验主机指纹**，密码只在内存；`bastion_connect` 有意不做（连接由人发起）。
 
 ## 核心能力
 
