@@ -224,3 +224,26 @@ node tools/make-portable-cli.mjs          # 默认装到 dist/desktop-0.9.2/bast
 
 打包踩到的坑（写进脚本注释）：Windows 上 `shell:true` 会把带空格的路径不加引号拼进命令行，
 tar 直接失败 —— 所以 tar 走 `execFile`（不带 shell），npm 只在目标目录里跑（参数无路径）。
+## 14. 洁净环境发布验证（2026-11-23）
+
+把 `dist/BastionShell-0.9.2-win-x64.zip` 解到**临时目录**（没有仓库、没有环境变量），
+从那里启动 exe —— 这是普通用户的实际路径：
+
+```
+解压内容：BastionShell.exe 19.25 MB │ bastion-cli/ 9.9 MB │ README-给使用者.md
+
+GET /api/shell/cli?profile=xzt        → 302
+GET /api/shell/cli?profiles=xzt,xb    → 302
+日志：找到 CLI 入口：…\bs-release-check\bastion-cli\out\cli\main.js
+强杀桌面 6 秒后：残留 node 进程 0
+```
+
+结论：**换台机器只需 Node ≥ 22 + 解压即用**，不再依赖仓库路径。
+
+### 发版前检查清单（每次打 dist 都跑一遍）
+
+1. `cd bastion-wails && bash build-win.sh`（WSL 里）
+2. `cd bastion-vscode && npm test && npm run e2e:cli && npm run e2e:shell`
+3. `node tools/make-portable-cli.mjs`（把 CLI 装进 dist）
+4. 复制 exe 到 dist → 打 zip
+5. **洁净验证**：解到临时目录 → 启 exe → 两条路由 302 → 强杀后无残留 node
