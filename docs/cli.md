@@ -169,6 +169,35 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
   Select-Object ProcessId, CommandLine
 ```
 
+## 桌面版里的 ⚡ / 🗂（不用敲命令）
+
+装好桌面版后，侧边栏档案行有 **⚡**（单条）、工具栏有 **🗂 组**（多条共用一个端点）：
+
+| 入口 | 行为 |
+|---|---|
+⚡ 单条 | 密钥档案直接开；密码档案先弹密码框（密码只经 stdin 传给子进程） |
+🗂 组 | 勾选多个档案 + 填密码 → **一个进程**连上，网页终端顶栏可切换会话，MCP 只配一次 |
+
+窗口顶栏会显示 **MCP 地址**（点一下复制）和 **复制客户端配置**（`{"url":…,"token":…}`）。
+关掉窗口时，它起的 CLI 进程会跟着退出（`--parent-pid`，不会留孤儿 node）。
+
+**便携副本**：桌面发行包（`dist/BastionShell-0.9.2-win-x64.zip`）里自带 `bastion-cli/`（约 10MB，
+不含 Node 运行时）。换台机器只要装了 Node ≥ 22，双击 exe 就能点 ⚡ —— 不需要仓库、不需要 `npm install`。
+
+打包命令（在仓库里）：
+
+```bash
+node tools/make-portable-cli.mjs      # npm pack → <dist>/bastion-cli → npm install --omit=dev
+```
+
+真机验证（从 dist 目录启动，模拟"没有仓库的机器"）：
+
+```
+找到 CLI 入口：…\dist\desktop-0.9.2\bastion-cli\out\cli\main.js
+GET /api/shell/cli?profile=xzt → 302
+便携副本 serve xzt → MCP bastion_exec → portable-mcp-ok / 退出码 0
+```
+
 ## 自己验证（真机 e2e）
 
 ```bash
