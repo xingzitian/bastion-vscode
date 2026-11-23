@@ -79,7 +79,7 @@ try {
   const ep = await waitEndpoint()
 
   const h = await callTool(ep, 'bastion_health', {})
-  if (h.text.includes('BastionShell CLI') && h.text.includes('CLI（一进程一条会话）')) ok('bastion_health')
+  if (h.text.includes('BastionShell CLI') && /CLI（\d+ 条会话/.test(h.text)) ok('bastion_health')
   else bad('bastion_health', h.text.slice(0, 200))
 
   const e = await callTool(ep, 'bastion_exec', { command: 'echo cli-mcp-ok; id -un', why: 'e2e 验证 MCP' })

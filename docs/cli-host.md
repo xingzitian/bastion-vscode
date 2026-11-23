@@ -304,3 +304,23 @@ SSE 收到 `: connected` / 无 token 一律 401。
 - 「← 回终端」链接直接跳 `/term`。
 
 e2e 扩到 9 条（新增：`/ui` 有会话下拉、`/ui/panel` 可渲染）。
+## 20. 一条命令跑完所有真机 e2e（2026-11-23）
+
+```bash
+npm run e2e:cli      # tools/cli-e2e-all.mjs：顺序跑 5 组，最后给汇总
+```
+
+```
+✓ MCP 基础   pass=6 fail=0
+✓ 网页终端   pass=5 fail=0
+✓ 行动面板   pass=9 fail=0
+✓ 传文件     pass=5 fail=0
+✓ 多会话     pass=5 fail=0
+TOTAL pass=30 fail=0（5 组）
+```
+
+需要真档案（默认 `xzt` / `xb`，见各脚本头部）。跑失败时退出码非 0，可直接挂 CI。
+
+顺手修了一处**测试与实现漂移**：`bastion_health` 的输出在改成多会话后变成
+「CLI（N 条会话，共用这一个 MCP 端点）」，而 e2e 还在断言旧文案「一进程一条会话」——
+这类断言用正则匹配数字，不再写死句子。
