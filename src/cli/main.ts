@@ -138,7 +138,7 @@ async function cmdConnect(name: string): Promise<number> {
 
   // MCP：一进程一条会话；端口随机（不抢扩展的 39311），端点写 ~/.bastionshell/mcp-cli.json
   const sessionId = `s-${process.pid.toString(16)}`
-  const host = new CliHost({ profile, session, sessionId, version: VERSION, log: (m) => log(m) })
+  const host = new CliHost({ profile, session, sessionId, version: VERSION, client: conn.client, log: (m) => log(m) })
   let mcp: Awaited<ReturnType<typeof startCliMcp>> | undefined
   try {
     mcp = await startCliMcp({ host, version: VERSION, profileName: profile.name, sessionId, log })
@@ -214,7 +214,7 @@ async function cmdServe(name: string, mcpFile?: string, mcpPort?: number): Promi
   session.onData((d) => process.stdout.write(d))
 
   const sessionId = `s-${process.pid.toString(16)}`
-  const host = new CliHost({ profile, session, sessionId, version: VERSION, log: (m) => log(m) })
+  const host = new CliHost({ profile, session, sessionId, version: VERSION, client: conn.client, log: (m) => log(m) })
   const mcp = await startCliMcp({
     host,
     version: VERSION,

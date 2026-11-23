@@ -222,3 +222,23 @@ bastionshell serve <档案> --mcp-file "%AppData%\bastionshell\mcp.json" --port 
 `schema` 判定为旧版，网页终端也用同一个 token。
 
 测试：`src/test/cliMcpEndpoint.test.ts` 4 条（默认 schema / 旧 schema / token 复用 / 端口退让）。
+## 15. 传文件接上了（2026-11-23）
+
+`src/engine/sftp.ts`（新）+ `CliHost.transferSession()`：把无头会话适配成 `core/transferPath` 要的传输会话。
+
+- **每次传输新开 sftp 通道**、15s 开通道超时、`finally` 里 `end()`
+  —— 这三条是从扩展那两次真机事故抄过来的（缓存通道会在断线后永远等不到回调；一次 push 开 3 个通道会撞 MaxSessions）。
+- `sftpAllowed()` = 档案是 `direct` 且有 client；堡垒机档案不提供 sftp → `transferPath` 自动降级到 base64。
+- `resolveRemoteDir` 先解析成绝对路径再传 —— 避免 `/root` 那个坑（空串 `realpath` 会落到家目录）。
+- 下载落盘前 `mkdir -p`：否则 fastGet 会因**本机**目录不存在报 ENOENT，而 core 会显示成「远端路径不存在」。
+- 覆盖策略：`BASTIONSHELL_OVERWRITE=skip|overwrite|rename`（默认 skip）。
+
+真机 e2e（`tools/cli-sftp-e2e.mjs`，xzt 直连，5/5）：
+
+| 用例 | 结果 |
+|---|---|
+`bastion_push` → `/tmp` | ✅ 通道：SFTP（复用已认证连接），239 B |
+远端 md5 与本机一致 | ✅ |
+同大小再传 → 跳过 | ✅ |
+`bastion_pull` 回本机 `downloads/`，内容一致 | ✅ |
+缺 `localPath` → 明确报错 | ✅ |

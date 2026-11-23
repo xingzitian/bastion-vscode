@@ -7,12 +7,17 @@
  *   - 没做的能力明确回"未支持 + 为什么"，不假装成功。
  */
 
+import * as fs from 'node:fs'
 import { appendActionRecord } from '../core/actionLedgerIo'
 import { recordFromJob } from '../core/actionLedger'
 import { summarizeCommand, normalizeWhy } from '../core/commandSummary'
 import type { ExecJob } from '../core/execJobs'
 import type { ExecResponse } from '../core/execResult'
 import type { McpSessionApi } from '../core/mcpTools'
+import { pushPath, pullPath, type TransferSession } from '../core/transferPath'
+import { putFile, getFile, resolveRemoteDir } from '../core/sftpTransfer'
+import { defaultDownloadDir, openSftp } from '../engine/sftp'
+import type { Client } from 'ssh2'
 import type { EngineSession } from '../engine/session'
 import { loadProfiles, type EngineProfile } from '../engine/profiles'
 
@@ -21,6 +26,8 @@ export interface CliHostOptions {
   session: EngineSession
   /** 一进程一条会话，所以固定一个 id */
   sessionId: string
+  /** 同一条已认证连接：push/pull 的 SFTP 要用它（不提供就只能走 base64） */
+  client?: Client
   version: string
   log?: (msg: string) => void
   now?: () => number
@@ -47,6 +54,8 @@ export class CliHost {
   private readonly jobs = new Map<string, CliJob>()
   private readonly order: string[] = []
   private boundClient?: string
+  /** 上一条命令的退出码（transferPath 的 ExecLike 要它） */
+  private lastRc?: number
   private readonly now: () => number
 
   constructor(private readonly opts: CliHostOptions) {
@@ -91,6 +100,64 @@ export class CliHost {
     }
   }
 
+  /**
+   * 把无头会话适配成 `core/transferPath` 要的传输会话。
+   *
+   * 与扩展 `aiBridge.transferSessionOf` 同构：rz/sz 不提供（CLI 没有 zmodem 通道），
+   * 于是直连档案走 SFTP、堡垒机档案自动降级到 base64 —— 降级链是 core 的逻辑，不在这里。
+   */
+  private transferSession(): TransferSession {
+    const self = this
+    return {
+      name: this.opts.profile.name,
+      exec: async (cmd) => (await self.opts.session.exec(cmd, { maxMs: 5 * 60_000 })).text,
+      exitCode: () => self.lastRc,
+      sftpAllowed: () => self.opts.profile.mode === 'direct' && !!self.opts.client,
+      sftpPut: async (localPath, remoteDir) => {
+        if (!self.opts.client) return { ok: false, message: '这条会话没有可用的 SFTP 连接' }
+        const h = await openSftp(self.opts.client)
+        try {
+          // 用 resolveRemoteDir 把目标目录解析成绝对路径（不能拿空串去 realpath，那是 /root 那个坑）
+          const dir = await resolveRemoteDir(h.sftp, remoteDir)
+          const r = await putFile(h.sftp, localPath, dir, {
+            onProgress: (pr) => {
+              if (pr.ratio < 1) self.opts.log?.(`SFTP 上传 ${Math.round(pr.ratio * 100)}%`)
+            }
+          })
+          return r.ok
+            ? { ok: true, remotePath: r.remotePath, message: 'ok', bytes: r.bytes, skipped: r.skipped, resumed: r.resumed }
+            : { ok: false, message: r.error ?? '未知原因' }
+        } catch (e) {
+          return { ok: false, message: (e as Error).message }
+        } finally {
+          h.close()
+        }
+      },
+      sftpGet: async (remotePath, localDir) => {
+        if (!self.opts.client) return { ok: false, message: '这条会话没有可用的 SFTP 连接' }
+        // 落盘目录要先建好：否则 fastGet 会因为**本机**目录不存在报 ENOENT，
+        // 而 core 的 humanError 会把它显示成「远端路径不存在」（挺误导的）
+        fs.mkdirSync(localDir, { recursive: true })
+        const h = await openSftp(self.opts.client)
+        try {
+          const r = await getFile(h.sftp, remotePath, localDir, {})
+          return r.ok
+            ? { ok: true, localPath: r.localPath, message: 'ok', bytes: r.bytes, resumed: r.resumed }
+            : { ok: false, message: r.error ?? '未知原因' }
+        } catch (e) {
+          return { ok: false, message: (e as Error).message }
+        } finally {
+          h.close()
+        }
+      },
+      overwriteMode: () => {
+        const v = (process.env.BASTIONSHELL_OVERWRITE ?? 'skip').toLowerCase()
+        return v === 'overwrite' || v === 'rename' ? v : 'skip'
+      },
+      log: (m) => self.opts.log?.(m)
+    }
+  }
+
   private toResponse(j: CliJob): ExecResponse {
     const secs = Math.round(((j.completedAt ?? this.now()) - j.startedAt) / 1000)
     const head =
@@ -131,6 +198,7 @@ export class CliHost {
 
     try {
       const r = await this.opts.session.exec(command, { quietMs: input.quietMs, maxMs: 15 * 60_000 })
+      this.lastRc = r.exitCode
       job.text = r.text
       job.exitCode = r.exitCode
       job.state = r.markerSeen && (r.exitCode ?? 0) === 0 ? 'completed' : 'failed'
@@ -246,12 +314,25 @@ export class CliHost {
         )
       },
 
-      async push() {
-        return 'CLI 版暂不支持 bastion_push（A2 之后接 core/transferPath）。请先用 VS Code 扩展传文件。'
+      async push(input) {
+        const localPath = (input?.localPath ?? '').trim()
+        if (!localPath) return '错误：需要 localPath（本机文件路径）'
+        const out = await pushPath({
+          localPath,
+          remoteDir: input?.remoteDir,
+          session: self.transferSession()
+        })
+        const tail = out.remotePath ? `\n远端：${out.remotePath}` : ''
+        return `${out.ok ? '已上传' : '上传失败'}：${out.message}${tail}`
       },
 
-      async pull() {
-        return 'CLI 版暂不支持 bastion_pull（A2 之后接 core/transferPath）。请先用 VS Code 扩展传文件。'
+      async pull(input) {
+        const remotePath = (input?.remotePath ?? '').trim()
+        if (!remotePath) return '错误：需要 remotePath（远端文件路径）'
+        const localDir = (input?.localDir ?? '').trim() || defaultDownloadDir()
+        const out = await pullPath({ remotePath, localDir, session: self.transferSession() })
+        const tail = out.localPath ? `\n本机：${out.localPath}` : ''
+        return `${out.ok ? '已下载' : '下载失败'}：${out.message}${tail}`
       },
 
       async habits() {

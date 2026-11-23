@@ -25,3 +25,6 @@ Thumbs.db
 tools/.launcher-*.txt
 tools/.e2e-*.txt
 tools/.cli-*.txt
+
+# CLI pull 的默认落盘目录
+downloads/
