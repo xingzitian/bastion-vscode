@@ -32,7 +32,9 @@ function usage(): void {
       '  bastionshell list',
       '  bastionshell run <档案> --exec "命令"   （非交互，打印输出与退出码）',
       '  bastionshell connect <档案>            （交互式终端 + MCP；Ctrl-] 退出）',
-      '  bastionshell serve <档案>              （非交互：起会话 + MCP，输出实时打印；给脚本/桌面薄壳用）',
+      '  bastionshell serve <档案…>            （非交互：起会话 + MCP，输出实时打印；给脚本/桌面薄壳用）',
+      '                                        --passwords-stdin：从 stdin 读一行 JSON 密码表（桌面用）',
+      '                                        --print-endpoint：打印机器可读端点行（宿主写端点文件）',
       ''
     ].join('\n')
   )
@@ -76,8 +78,44 @@ function readPassword(prompt: string): Promise<string> {
   })
 }
 
+/**
+ * 一次性密码表：桌面 spawn 时通过 **stdin** 传进来。
+ *
+ * 为什么不能走命令行参数：argv 会出现在进程列表里（`ps`/任务管理器），密码就泄漏了。
+ * 格式是一行 JSON：`{"xzt":"密码","生产堡垒机":"密码"}`；只在内存，进程退出即丢。
+ */
+let passwordTable: Record<string, string> | undefined
+
+async function loadPasswordTableFromStdin(enabled: boolean): Promise<void> {
+  if (!enabled) return
+  const chunks: Buffer[] = []
+  await new Promise<void>((resolve) => {
+    const stdin = process.stdin
+    const done = (): void => resolve()
+    stdin.on('data', (d: Buffer | string) => chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(String(d))))
+    stdin.on('end', done)
+    stdin.on('error', done)
+    // 桌面写完就会关 stdin；万一没关，10s 后也继续（不能永远等）
+    setTimeout(done, 10_000).unref?.()
+  })
+  const text = Buffer.concat(chunks).toString('utf8').trim()
+  log(`stdin 收到 ${text.length} 字节（--passwords-stdin）`)
+  if (!text) return
+  try {
+    const j = JSON.parse(text) as Record<string, unknown>
+    const table: Record<string, string> = {}
+    for (const [k, v] of Object.entries(j)) if (typeof v === 'string') table[k] = v
+    passwordTable = table
+    log(`已收到 ${Object.keys(table).length} 个档案的密码（只在内存）`)
+  } catch {
+    log('stdin 里的密码表不是合法 JSON，忽略')
+  }
+}
+
 async function ensurePassword(profileName: string, needPassword: boolean): Promise<string | undefined> {
   if (!needPassword) return undefined
+  const fromTable = passwordTable?.[profileName]
+  if (fromTable) return fromTable
   return readPassword(`档案「${profileName}」的密码（只留在内存）：`)
 }
 
@@ -119,6 +157,7 @@ async function cmdRun(name: string, command: string): Promise<number> {
 }
 
 async function cmdConnect(name: string): Promise<number> {
+  await loadPasswordTableFromStdin(process.argv.includes('--passwords-stdin'))
   const profile = findProfile(name)
   if (!profile) {
     process.stderr.write(`找不到档案「${name}」（文件：${profilesFilePath()}）\n`)
@@ -207,6 +246,7 @@ async function cmdConnect(name: string): Promise<number> {
  * 这样它能被脚本/测试驱动，也就是将来桌面薄壳指向的那个"后台"。
  */
 async function cmdServe(names: string[], mcpFile?: string, mcpPort?: number): Promise<number> {
+  await loadPasswordTableFromStdin(process.argv.includes('--passwords-stdin'))
   if (names.length === 0) {
     process.stderr.write('serve 需要至少一个档案名（可多个：serve a b c）\n')
     return 2
