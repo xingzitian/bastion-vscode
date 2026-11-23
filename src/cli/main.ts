@@ -201,7 +201,7 @@ async function cmdConnect(name: string): Promise<number> {
  * 和 `connect` 的区别只有一个：不接管键盘（不做 raw 模式）。
  * 这样它能被脚本/测试驱动，也就是将来桌面薄壳指向的那个"后台"。
  */
-async function cmdServe(name: string): Promise<number> {
+async function cmdServe(name: string, mcpFile?: string, mcpPort?: number): Promise<number> {
   const profile = findProfile(name)
   if (!profile) {
     process.stderr.write(`找不到档案「${name}」（文件：${profilesFilePath()}）\n`)
@@ -215,7 +215,15 @@ async function cmdServe(name: string): Promise<number> {
 
   const sessionId = `s-${process.pid.toString(16)}`
   const host = new CliHost({ profile, session, sessionId, version: VERSION, log: (m) => log(m) })
-  const mcp = await startCliMcp({ host, version: VERSION, profileName: profile.name, sessionId, log })
+  const mcp = await startCliMcp({
+    host,
+    version: VERSION,
+    profileName: profile.name,
+    sessionId,
+    log,
+    port: mcpPort,
+    endpointFile: mcpFile
+  })
   log(`MCP 已启动：${mcp.url}`)
   log(`端点文件：${mcp.file}`)
   // 网页终端 + 只读面板：同一个 token，单开一个端口（不污染 MCP 的 HTTP 层）
@@ -273,7 +281,10 @@ async function main(): Promise<number> {
       usage()
       return 2
     }
-    return cmdServe(name)
+    // --mcp-file / --port：接管旧桌面版的 mcp.json 身份（客户端配置不用改）
+    const mf = rest.indexOf('--mcp-file') >= 0 ? rest[rest.indexOf('--mcp-file') + 1] : undefined
+    const mp = rest.indexOf('--port') >= 0 ? Number(rest[rest.indexOf('--port') + 1]) : undefined
+    return cmdServe(name, mf, Number.isFinite(mp) ? mp : undefined)
   }
   usage()
   return 2

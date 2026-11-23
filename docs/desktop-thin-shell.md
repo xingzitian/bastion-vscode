@@ -47,21 +47,15 @@
 
 我建议 **A**：对使用者零感知，也是"薄壳"该有的样子（壳换掉，地址不变）。
 
-## 5. 工具链（当前缺，需要一次人工操作）
+## 5. 工具链（**已就绪**，2026-11-23）
 
-| 需要 | 现状 |
+| 需要 | 状态 |
 |---|---|
-Wails CLI（v2.15.0，对齐 `go.mod`） | ❌ 没装 |
-`x86_64-w64-mingw32-gcc-posix`（交叉编译 Windows 必需） | ❌ 没装 |
-WSL 的 `sudo` | ⚠️ 需要密码 |
+`x86_64-w64-mingw32-gcc-posix` | ✅ 已装（`wsl -d Debian -u root` 里 apt 装，**不需要 sudo 密码**） |
+Wails CLI v2.15.0 | ✅ `/home/wsl/go/bin/wails`（`go install …@v2.15.0`） |
+构建 | ✅ `wsl -d Debian -e bash -lc 'cd <repo> && bash build-win.sh'` → `build/bin/BastionShell.exe`（19.2MB，2m56s） |
 
-一条命令（你输一次密码）：
-
-```bash
-sudo apt update && sudo apt install -y gcc-mingw-w64-x86-64
-```
-
-之后我这边可以：`go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0`（不需要 sudo）+ `bash build-win.sh`。
+> 教训：WSL 可以直接用 `-u root`，不必让用户输 sudo 密码。
 
 ## 6. 验收（B）
 

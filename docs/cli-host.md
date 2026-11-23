@@ -207,3 +207,18 @@ xterm.js 本地资源 | ✅ 200（>10KB） |
 依赖变化（都是 npm 依赖，**不打运行时**）：`@xterm/xterm`、`@xterm/addon-fit`、`ws`（+ `@types/ws` 仅开发）。
 
 下一步 B：桌面 Wails 窗口指向这个 `/term` 页面（Go 只改窗口 URL，不碰 MCP/会话逻辑）。
+## 14. B 的硬前置已实现：CLI 可以接管旧 `mcp.json` 身份
+
+```
+bastionshell serve <档案> --mcp-file "%AppData%\bastionshell\mcp.json" --port 39311
+```
+
+- **复用文件里已有的 token**（不换 token），并按**旧桌面版 schema** 写回
+  （`url` / `port` / `actualPort` / `token` / `updatedAt` / `note`）；
+- 端口被占（比如 VS Code 扩展在跑 39311）→ 自动退到随机端口并在 `note` 里说明；
+- 现有客户端配置**一个字都不用改**。
+
+真机验证（2026-11-23）：39311 被扩展占用 → 退到 55994，token 保持 `LEGACY_TOKEN_…`，
+`schema` 判定为旧版，网页终端也用同一个 token。
+
+测试：`src/test/cliMcpEndpoint.test.ts` 4 条（默认 schema / 旧 schema / token 复用 / 端口退让）。
