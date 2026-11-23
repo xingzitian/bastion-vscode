@@ -448,19 +448,6 @@ async function cmdUi(port: number | undefined, proxyBase?: string, mcpPort?: num
   // 会话表 + MCP 都在这个进程里：界面开的会话对 AI 可见（统一核心：一份会话、一份语义）
   let seq = 0
   const host = new CliHost({ sessions: [], version: VERSION, log: (m) => log(m) })
-  const srv = await startUiServer({
-    port,
-    proxyBase,
-    hostKey: parseHostKeyPolicy(process.argv),
-    knownHostsFile: parseKnownHostsFile(process.argv),
-    log,
-    onSession: ({ profile, session, client }) => {
-      seq += 1
-      const id = `s-${process.pid.toString(16)}-${seq}`
-      host.addSession({ id, profile: { ...profile, name: `${profile.name}（界面）` }, session, client })
-      return id
-    }
-  })
   let mcp: Awaited<ReturnType<typeof startCliMcp>> | undefined
   try {
     mcp = await startCliMcp({
@@ -470,12 +457,31 @@ async function cmdUi(port: number | undefined, proxyBase?: string, mcpPort?: num
       sessionId: '(none)',
       port: mcpPort ?? 0,
       endpointFile: mcpFile,
+      // --print-endpoint：由宿主（Go）自己写端点文件 —— 子进程写 %APPDATA% 可能被拒
+      writeEndpoint: !process.argv.includes('--print-endpoint'),
       log
     })
     log(`MCP 已启动：${mcp.url}（会话由界面 / bastion_connect 提供）`)
+    if (process.argv.includes('--print-endpoint')) {
+      log('端点：' + JSON.stringify({ url: mcp.url, token: mcp.token, termUrl: '', port: mcp.port, actualPort: mcp.port, legacy: mcp.legacy }))
+    }
   } catch (e) {
     log(`MCP 启动失败（界面仍可用）：${(e as Error).message}`)
   }
+  const srv = await startUiServer({
+    port,
+    proxyBase,
+    hostKey: parseHostKeyPolicy(process.argv),
+    knownHostsFile: parseKnownHostsFile(process.argv),
+    log,
+    mcp: mcp ? { url: mcp.url, token: mcp.token, port: mcp.port, portFallback: mcp.portFallback, file: mcp.file } : undefined,
+    onSession: ({ profile, session, client }) => {
+      seq += 1
+      const id = `s-${process.pid.toString(16)}-${seq}`
+      host.addSession({ id, profile: { ...profile, name: `${profile.name}（界面）` }, session, client })
+      return id
+    }
+  })
   log(`界面后端：http://127.0.0.1:${srv.port}/  （/api/profiles、/api/mcp-info、WS /ws）`)
   log('上传/端口转发/MFA 还没迁进 core（会明确回 501 或走代理）。Ctrl-C 退出。')
   const shutdown = async (): Promise<void> => {
