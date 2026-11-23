@@ -116,6 +116,36 @@ function page(title: string, token: string, list: Array<{ id: string; name: stri
 </script></body></html>`
 }
 
+/** 面板外壳：会话下拉 + iframe（内层面板自己会轮询 /ui/actions?session=） */
+function uiShell(token: string, list: Array<{ id: string; name: string }>, current: string): string {
+  const opts = ['<option value="">全部会话</option>']
+    .concat(list.map((s) => `<option value="${s.id}"${s.id === current ? ' selected' : ''}>${s.name}（${s.id}）</option>`))
+    .join('')
+  const src = `/ui/panel?token=${encodeURIComponent(token)}${current ? `&session=${encodeURIComponent(current)}` : ''}`
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>BastionShell 行动面板（CLI）</title>
+<style>
+  html,body{margin:0;height:100%;background:#1e1e1e;color:#ccc;font-family:system-ui,sans-serif}
+  #bar{height:32px;display:flex;align-items:center;gap:10px;padding:0 10px;background:#252526;font-size:12px}
+  #bar select{background:#1e1e1e;color:#ccc;border:1px solid #3c3c3c;font-size:12px;padding:1px 4px}
+  #bar a{color:#4daafc;text-decoration:none}
+  iframe{position:absolute;top:32px;left:0;right:0;bottom:0;width:100%;border:0;background:#1e1e1e}
+</style></head><body>
+<div id="bar"><b>行动面板</b>（CLI）
+  <select id="sess">${opts}</select>
+  <a href="/term?token=${encodeURIComponent(token)}">← 回终端</a>
+</div>
+<iframe src="${src}"></iframe>
+<script>
+  document.getElementById('sess').addEventListener('change', (e) => {
+    const id = e.target.value
+    const u = new URL(location.href)
+    if (id) u.searchParams.set('session', id); else u.searchParams.delete('session')
+    location.href = u.toString()
+  })
+</script>
+</body></html>`
+}
 /** 只允许读这几个文件（防止路径穿越） */
 function assetFor(urlPath: string): string | undefined {
   const map: Record<string, string> = {
@@ -214,7 +244,12 @@ export async function startTermServer(opts: TermServerOptions): Promise<TermServ
       return
     }
     if (url.pathname === '/ui') {
-      void renderUi(res, token)
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end(uiShell(token, opts.sessions.map((s) => ({ id: s.id, name: s.name })), url.searchParams.get('session') ?? ''))
+      return
+    }
+    if (url.pathname === '/ui/panel') {
+      void renderUi(res, token, (url.searchParams.get('session') ?? '').trim() || undefined)
       return
     }
     const asset = assetFor(url.pathname)
@@ -231,8 +266,9 @@ export async function startTermServer(opts: TermServerOptions): Promise<TermServ
   async function renderUi(res: http.ServerResponse, tok: string, sessionId?: string): Promise<void> {
     try {
       const list = (opts.listActions ?? loadActionRecords)(300)
-      // 面板页是"全量"视图；按会话筛选走 /ui/actions?session=（页面会自己刷新）
-      const html = renderStandalonePanel(await list, tok, { embed: false, theme: 'dark', limit: 100 })
+      const all = await list
+      const records = sessionId ? all.filter((r) => r.sessionId === sessionId) : all
+      const html = renderStandalonePanel(records, tok, { embed: false, theme: 'dark', limit: 100 })
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
       res.end(html)
     } catch (e) {

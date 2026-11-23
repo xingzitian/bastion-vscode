@@ -295,3 +295,12 @@ bastionshell serve xzt xb          # 两条会话，共用一个端点
 
 真机 e2e（`tools/cli-panel-e2e.mjs`，7/7）：页面 / actions 有刚跑的动作 / status / cancel 405+POST /
 SSE 收到 `: connected` / 无 token 一律 401。
+## 19. 面板加了会话筛选（2026-11-23）
+
+`/ui` 现在是"外壳"（会话下拉 + iframe），真正渲染在 `/ui/panel?session=`：
+
+- 下拉里有「全部会话」+ 每个会话（id 显示在后面，方便和 `bastion_listSessions` 对上）；
+- 内层面板仍走 `/ui/actions?session=` 轮询，所以筛选后刷新也是对的；
+- 「← 回终端」链接直接跳 `/term`。
+
+e2e 扩到 9 条（新增：`/ui` 有会话下拉、`/ui/panel` 可渲染）。

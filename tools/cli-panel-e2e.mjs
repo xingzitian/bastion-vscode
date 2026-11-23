@@ -73,6 +73,14 @@ try {
   if (page.status === 200 && html.includes('行动面板')) ok('/ui 页面')
   else bad('/ui', `status=${page.status} len=${html.length}`)
 
+  if (html.includes('id="sess"') && /<option value="s-/.test(html)) ok('/ui 有会话下拉')
+  else bad('/ui 会话下拉', '没找到 select/option')
+
+  const panel = await fetch(`${base}/ui/panel?session=${encodeURIComponent(ep.sessionId ?? '')}&token=${token}`)
+  const panelHtml = await panel.text()
+  if (panel.status === 200 && panelHtml.includes('行动面板')) ok('/ui/panel 可渲染')
+  else bad('/ui/panel', `status=${panel.status}`)
+
   const acts = await fetch(`${base}/ui/actions?limit=50&token=${token}`)
   const aj = await acts.json()
   if (acts.status === 200 && typeof aj.html === 'string' && /panel-e2e|echo/.test(aj.html)) {
