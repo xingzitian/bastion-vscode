@@ -270,3 +270,14 @@ BastionShell.exe（Go）
 待做：④ upload/forward 迁进 core；⑤ 删 Go 的 session/exec/mcp（删前全量 e2e）。
 
 单测：800 用例 / 775 通过 / 0 失败。
+
+### 继续做 ④ 的入口（交接用）
+
+- 协议侧：`src/cli/uiServer.ts` 的 `ws.on('message')` 已处理 `control/connect/input/resize`；
+  `upload` 与 `forward:start|stop` 现在回 `{type:'error'}`。要补的就是这两个分支。
+- 上传：复用 `src/core/transferPath.ts` 的 `pushPath`（需要给会话造一个 `TransferSession`，
+  参考 `src/cli/host.ts` 里的 `transferSession(entry)`）。
+- 转发：Go 的实现见 `bastion-wails/server.go` 的 `handleForwardMsg` + `forward.go`；
+  TS 侧没有现成实现，需要新写（本地 TCP ↔ SSH `direct-tcpip`）。
+- 迁完后的验收：界面里拖文件上传、加一条本地转发规则，行为与 Go 版一致；
+  再去掉 `uiServer` 代理清单里的 `/api/upload`、`/api/forwards`。
