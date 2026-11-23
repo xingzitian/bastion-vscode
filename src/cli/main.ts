@@ -13,6 +13,11 @@
 import { connectProfile } from '../engine/connect'
 import { EngineSession } from '../engine/session'
 import { findProfile, loadProfiles, profilesFilePath } from '../engine/profiles'
+import { CliHost } from './host'
+import { startCliMcp } from './mcp'
+
+/** CLI 版本：跟扩展同号（同一份 core），先硬编码，发版时一起改 */
+const VERSION = '0.3.21-cli'
 
 const log = (msg: string): void => {
   process.stderr.write(`[bastion] ${msg}\n`)
@@ -24,7 +29,8 @@ function usage(): void {
       '用法：',
       '  bastionshell list',
       '  bastionshell run <档案> --exec "命令"   （非交互，打印输出与退出码）',
-      '  bastionshell connect <档案>            （交互式终端；Ctrl-] 退出）',
+      '  bastionshell connect <档案>            （交互式终端 + MCP；Ctrl-] 退出）',
+      '  bastionshell serve <档案>              （非交互：起会话 + MCP，输出实时打印；给脚本/桌面薄壳用）',
       ''
     ].join('\n')
   )
@@ -128,6 +134,18 @@ async function cmdConnect(name: string): Promise<number> {
   const session = new EngineSession(profile.name, conn.channel, { log })
   // 先把登录 banner 收完再进交互（否则它会刷在用户第一屏的最上面，还会被当成输出）
   await session.waitShellReady()
+
+  // MCP：一进程一条会话；端口随机（不抢扩展的 39311），端点写 ~/.bastionshell/mcp-cli.json
+  const sessionId = `s-${process.pid.toString(16)}`
+  const host = new CliHost({ profile, session, sessionId, version: VERSION, log: (m) => log(m) })
+  let mcp: Awaited<ReturnType<typeof startCliMcp>> | undefined
+  try {
+    mcp = await startCliMcp({ host, version: VERSION, profileName: profile.name, sessionId, log })
+    log(`MCP 已启动：${mcp.url}（token 在 ${mcp.file}）`)
+    log('AI 客户端配置：{"url":"' + mcp.url + '","headers":{"Authorization":"Bearer <token>"}}')
+  } catch (e) {
+    log(`MCP 启动失败（终端仍可用）：${(e as Error).message}`)
+  }
   log(`已连上（${conn.readyMs}ms）。Ctrl-] 退出。`)
 
   const stdout = process.stdout
@@ -141,6 +159,7 @@ async function cmdConnect(name: string): Promise<number> {
   // 本地 → 远端；Ctrl-] 退出
   const onStdin = (d: Buffer): void => {
     if (d.length === 1 && d[0] === 0x1d) {
+      void mcp?.close()
       session.close()
       conn.client.end()
       restore()
@@ -163,6 +182,7 @@ async function cmdConnect(name: string): Promise<number> {
   }
 
   session.onClose(() => {
+    void mcp?.close()
     restore()
     log('远端会话已关闭')
     conn.client.end()
@@ -171,6 +191,49 @@ async function cmdConnect(name: string): Promise<number> {
 
   return await new Promise<number>(() => {
     /* 直到 Ctrl-] / 远端关闭 */
+  })
+}
+
+/**
+ * `serve`：非交互的"守护进程"模式 —— 起会话 + MCP，把远端输出实时打到当前终端。
+ *
+ * 和 `connect` 的区别只有一个：不接管键盘（不做 raw 模式）。
+ * 这样它能被脚本/测试驱动，也就是将来桌面薄壳指向的那个"后台"。
+ */
+async function cmdServe(name: string): Promise<number> {
+  const profile = findProfile(name)
+  if (!profile) {
+    process.stderr.write(`找不到档案「${name}」（文件：${profilesFilePath()}）\n`)
+    return 2
+  }
+  const password = await ensurePassword(profile.name, profile.authMethod !== 'key')
+  const conn = await connectProfile(profile, { password, log })
+  const session = new EngineSession(profile.name, conn.channel, { log })
+  await session.waitShellReady()
+  session.onData((d) => process.stdout.write(d))
+
+  const sessionId = `s-${process.pid.toString(16)}`
+  const host = new CliHost({ profile, session, sessionId, version: VERSION, log: (m) => log(m) })
+  const mcp = await startCliMcp({ host, version: VERSION, profileName: profile.name, sessionId, log })
+  log(`MCP 已启动：${mcp.url}`)
+  log(`端点文件：${mcp.file}`)
+  log('serve 模式：远端输出会实时打在这里；Ctrl-C 退出。')
+
+  const shutdown = async (): Promise<void> => {
+    try {
+      await mcp.close()
+    } catch {
+      /* ignore */
+    }
+    session.close()
+    conn.client.end()
+    process.exit(0)
+  }
+  process.on('SIGINT', () => void shutdown())
+  process.on('SIGTERM', () => void shutdown())
+  session.onClose(() => void shutdown())
+  return await new Promise<number>(() => {
+    /* 长驻 */
   })
 }
 
@@ -198,6 +261,14 @@ async function main(): Promise<number> {
       return 2
     }
     return cmdConnect(name)
+  }
+  if (cmd === 'serve') {
+    const name = rest[0]
+    if (!name) {
+      usage()
+      return 2
+    }
+    return cmdServe(name)
   }
   usage()
   return 2

@@ -1,6 +1,6 @@
 # CLI 宿主：一份语义，终端就是界面
 
-> 状态：**A1 已完成**（2026-11-23）。`bastionshell run xzt --exec "…"` 真机通过；
+> 状态：**A1 + A2 已完成**（2026-11-23）。`bastionshell run xzt --exec "…"` 真机通过；
 > `core/screen.ts` 抽取完成（扩展零行为变化，全量测试 784 绿）。
 > 下一步：A2（MCP 接线）。
 > 决策日期：2026-11-23。背景：桌面版 0.9.2 已冻结，但**有人真的在用它的 MCP**；
@@ -145,3 +145,39 @@ VM-24-4-debian
    把检查弄挂。修法：`if (require.main === module)` 入口守卫。
 2. 连上就 exec，**登录 banner/MOTD 还在刷**，会被算进这次命令输出（真机看到 Debian 版权声明混进 stdout）。
    修法：`waitShellReady()` 等屏幕上出现 shell 提示符（最多 8s）。
+## 12. A2 实际结果（2026-11-23）—— MCP 接上了
+
+`src/cli/host.ts`（`McpSessionApi` 适配器）+ `src/cli/mcp.ts`（起端点、写 `mcp-cli.json`），
+复用 `core/mcpServer` + `core/mcpTools` + `core/actionLedger`。
+
+**新增 `serve` 命令**（非交互长驻）：起会话 + MCP，把远端输出实时打在当前终端 ——
+这就是将来桌面薄壳要指向的"后台"。
+
+```
+$ node out/cli/main.js serve xzt
+[bastion] MCP 已启动：http://127.0.0.1:52341/mcp
+[bastion] 端点文件：C:\Users\...\.bastionshell\mcp-cli.json
+```
+
+真机 e2e（`tools/cli-mcp-e2e.mjs`，直接 POST `/mcp`）：
+
+| 用例 | 结果 |
+|---|---|
+`bastion_health` | ✅ 返回版本/宿主/会话/屏幕状态 |
+`bastion_exec` | ✅ `echo cli-mcp-ok; id -un` → 输出 + `completed` + 退出码 0 |
+`bastion_tail` | ✅ 读到屏幕（含上一条命令的输出） |
+`bastion_connect` | ✅ 明确回"CLI 版不支持由 AI 新建连接"（不假装成功） |
+`bastion_listSessions` | ✅ 标出"CLI 宿主，一进程一条" |
+账本 | ✅ 写进**同一份** `action-ledger.jsonl`：`brief/ steps / why / status / exitCode / elapsedMs` 与扩展一致 |
+
+`mcp-cli.json` 示例（端口随机，**不抢**扩展的 39311；与扩展的 `mcp.json` 互不覆盖）：
+
+```json
+{ "url": "http://127.0.0.1:52341/mcp", "port": 52341, "token": "<32 hex>", "pid": 12345,
+  "profile": "xzt", "sessionId": "s-72dc", "version": "0.3.21-cli" }
+```
+
+**A2 明确不做**（返回可读文案，不假装成功）：`bastion_connect`（一进程一连接）、
+`bastion_push` / `bastion_pull`（下一批接 `core/transferPath`）、`bastion_habits`（写共享文件需确认流程）。
+
+下一步 A3：网页终端（xterm.js over WS）+ `/ui` 面板，然后 B 阶段桌面窗口指向它。
