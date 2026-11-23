@@ -200,3 +200,27 @@ PASS  stop 后子进程归零
 
 修法：`spawnUrl` 与 `url` 分开算；有 `directUrl` 时**跳过** spawn 探活，只轮询端点。
 另外给 `/api/shell/endpoint` 加了 `pid`（CLI 子进程），测试用它判断「没有重复起进程」——比数进程稳。
+## 13. 便携 CLI：dist 里自带 CLI，⚡/🗂 开箱即用（2026-11-23）
+
+之前 dist 里只有 exe —— 换台机器（没有仓库）点 ⚡ 会报"找不到 CLI 入口"。
+
+现在打包时多一步：
+
+```bash
+cd bastion-vscode
+node tools/make-portable-cli.mjs          # 默认装到 dist/desktop-0.9.2/bastion-cli
+```
+
+它做四件事：`npm pack`（401KB）→ 解到 `<dist>/bastion-cli` → `npm install --omit=dev --ignore-scripts`
+→ 从临时目录跑一次 `list` 自检。结果 **9.9MB**，不含 Node 运行时。
+
+桌面端的候选路径里加了 `bastion-cli/out/cli/main.js`（npm 包布局），真机验证：
+
+```
+从 dist 目录启动 exe：
+  找到 CLI 入口：...\dist\desktop-0.9.2\bastion-cli\out\cli\main.js
+  GET /api/shell/cli?profile=xzt → 302
+```
+
+打包踩到的坑（写进脚本注释）：Windows 上 `shell:true` 会把带空格的路径不加引号拼进命令行，
+tar 直接失败 —— 所以 tar 走 `execFile`（不带 shell），npm 只在目标目录里跑（参数无路径）。

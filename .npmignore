@@ -16,4 +16,4 @@ out/**/*.map
 RELEASE-*.md
 tsconfig*.json
 *.tgz
-node_modules/**
+node_modules/**downloads/
