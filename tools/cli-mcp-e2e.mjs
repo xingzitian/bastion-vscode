@@ -26,7 +26,7 @@ const results = []
 const ok = (name, extra = '') => results.push(`PASS  ${name}${extra ? '  ' + extra : ''}`)
 const bad = (name, why) => results.push(`FAIL  ${name}  ${why}`)
 
-const child = spawn(process.execPath, [cli, 'serve', 'xzt'], { stdio: ['ignore', 'pipe', 'pipe'] })
+const child = spawn(process.execPath, [cli, 'serve', 'xzt'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
 let out = ''
 child.stdout.on('data', (d) => (out += d))
 child.stderr.on('data', (d) => (out += d))

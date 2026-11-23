@@ -25,7 +25,7 @@ const run = (file) =>
   new Promise((resolve) => {
     const child = spawn(process.execPath, [path.join(repo, 'tools', file)], {
       cwd: repo,
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
     })
     let out = ''
     child.stdout.on('data', (d) => (out += d))

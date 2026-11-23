@@ -25,7 +25,7 @@ const ok = (n, x = '') => results.push(`PASS  ${n}${x ? '  ' + x : ''}`)
 const bad = (n, w) => results.push(`FAIL  ${n}  ${w}`)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-/** 数本机 CLI 子进程（PowerShell 查询，和用户排查时用的一条命令一致） */
+/** 数本机 CLI 子进程（诊断用；主判断已改用 host 报的 pid，避免每次测试都 spawn 一个 powershell 窗口） */
 function cliChildren() {
   try {
     const out = execFileSync(

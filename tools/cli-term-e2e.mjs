@@ -24,7 +24,7 @@ const ok = (n, x = '') => results.push(`PASS  ${n}${x ? '  ' + x : ''}`)
 const bad = (n, w) => results.push(`FAIL  ${n}  ${w}`)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-const child = spawn(process.execPath, [cli, 'serve', 'xzt'], { stdio: ['ignore', 'pipe', 'pipe'] })
+const child = spawn(process.execPath, [cli, 'serve', 'xzt'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
 let log = ''
 let termUrl = ''
 child.stdout.on('data', (d) => (log += d))
