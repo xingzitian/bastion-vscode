@@ -99,11 +99,14 @@ bastionshell serve xzt xb cana
 | 能力 | 扩展 | CLI |
 |---|---|---|
 | 工具数 | 13 | 13（`connect` 已对齐） |
-行动面板 | ✅ 右侧停靠 / 独立网页 | ✅ `/ui`（可按会话筛） |
-传输期键盘锁 / zmodem rz-sz | ✅ | ❌（只有 SFTP + base64；网页终端用不到键盘锁） |
-部署任务 / 端口转发 / 目录同步 | ✅ | ❌ |
-凭据存储 | SecretStorage | **不落盘**：密钥认证，或每次问密码 |
-共享文件 | `~/.bastionshell/*`（profiles / habits / 账本） | 同一份 ✅ |
+| 行动面板 | ✅ 右侧停靠 / 独立网页 | ✅ `/ui`（可按会话筛） |
+| 传输期键盘锁 / zmodem rz-sz | ✅ | 键盘锁 ❌；`rz`/`sz` 在 `ui` 模式 ✅（桌面终端那条 WS，文件落在 `~/Downloads/BastionShell`），`serve` 的网页终端 ❌ |
+| 部署任务 / 端口转发 / 目录同步 | ✅ | ❌ |
+| 凭据存储 | SecretStorage | **不落盘**：密钥认证，或每次问密码（桌面把 DPAPI 密码经 stdin 交给 `ui` 进程，也只在内存里） |
+| 共享文件 | `~/.bastionshell/*`（profiles / habits / 账本） | 同一份 ✅ |
+
+> 桌面版（`BastionShell.exe`）= 这个 CLI 的 `ui` 模式 + Go 壳，所以上表「CLI」这一列就是桌面版的能力；
+> `serve` 指纯命令行起会话那种用法（网页终端，不接 zmodem）。
 
 ## 安全边界（先看清楚再用）
 

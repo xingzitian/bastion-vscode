@@ -9,9 +9,12 @@
  *   ① 建连接：{type:'control', connId, host, port, user, password, key, passphrase}
  *   ② 开会话：{type:'connect', connId, cols, rows}  → 服务端回 {type:'ready'} 然后 {type:'data', data}
  *   ③ 输入/尺寸：{type:'input', data} / {type:'resize', cols, rows}
+ *   ④ 传文件：{type:'upload', paths} → 直接走 SFTP（落到 shell 当前目录）→ {type:'upload:done'}
+ *   ⑤ 转发：{type:'forward:start'|'forward:stop'} → {type:'forward:started'|'stopped'|'error'}
+ *   ⑥ zmodem：{type:'zmodem', payload}（远端 rz/sz 的进度与结果，界面传输面板用）
  *
- * 还没做的（Go 那边有）：文件上传、端口转发、MFA 交互、DPAPI 存密码 —— 这些先明确拒绝，
- * 不假装成功。
+ * 还留在 Go 的只有「壳能力」：DPAPI 存密码、系统文件对话框、把界面文件字节落成临时文件；
+ * 这些由 core 反向代理到 Go 的 18091（见下方 proxied 列表）。
  */
 
 import * as http from 'node:http'

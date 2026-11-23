@@ -29,7 +29,7 @@ ai_api.go / ai_access.go | 637 / 256 | AI 访问与会话 API |
 
 - `main.go` / `app.go` / `assets.go` / `version.go` / `shell_cli*.go`：窗口、WebView2、拉起 core 后端
 - `secrets*.go`（DPAPI）、`profile.go`、`shared_config.go`、`shared_rules.go`、`danger.go`、`jsonc.go`、`termtext.go`、`tailbuf.go`：配置与规则（core 侧也会读同一份文件）
-- `server.go`：**只留** `/api/secret`、`/api/upload`、`/api/forwards`、`/api/pick-files` 这几条给 core 反向代理用，`/ws` 与其余路由一起删
+- `server.go`：**只留壳路由**（`/api/secret`、`/api/upload`、`/api/pick-files`、`/api/profiles` 的写操作、`/api/quick-commands`、`/api/forwards`、`/api/shell/*`、`/api/shell/fs-probe`），`/ws` 与终端会话一起删
 
 ## 执行顺序（每步都可回退）
 

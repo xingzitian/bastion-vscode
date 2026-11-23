@@ -7,7 +7,7 @@
  *
  * 用法（在 bastion-vscode 根目录）：
  *   node tools/make-portable-cli.mjs [目标目录]
- * 默认目标：../dist/desktop-0.9.2/bastion-cli
+ * 默认目标：../dist/desktop-0.9.3/bastion-cli
  *
  * 坑（2026-11-23 踩过）：
  *   - Windows 上 `shell: true` 会把带空格的路径**不加引号**地拼进命令行 → tar 直接失败；
@@ -21,7 +21,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 const repo = path.resolve(import.meta.dirname, '..')
-const target = path.resolve(process.argv[2] ?? path.join(repo, '..', 'dist', 'desktop-0.9.2', 'bastion-cli'))
+const target = path.resolve(process.argv[2] ?? path.join(repo, '..', 'dist', 'desktop-0.9.3', 'bastion-cli'))
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 
 function npm(args, cwd) {

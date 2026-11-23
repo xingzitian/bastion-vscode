@@ -474,7 +474,17 @@ async function cmdUi(port: number | undefined, proxyBase?: string, mcpPort?: num
       knownHostsFile: parseKnownHostsFile(process.argv)
     })
     const s = new EngineSession(p.name, conn.channel, { log })
-    await s.waitShellReady()
+    const shellReady = await s.waitShellReady()
+    if (!shellReady) {
+      // 堡垒机档案登录后停在菜单上（选资产/选用户/输动态码），AI 走不下去。
+      // 宁可如实报错，也不要返回"已连接"让 AI 对着菜单发命令。
+      s.close()
+      conn.client.end()
+      throw new Error(
+        `档案「${p.name}」登录后没有到达 shell 提示符（${p.mode === 'bastion' ? '堡垒机菜单需要人选择资产/用户' : '可能还需要交互认证'}）。` +
+          `请在界面里手动连它，再用 listSessions 拿会话 id。`
+      )
+    }
     seq += 1
     const id = `s-${process.pid.toString(16)}-${seq}`
     // 注意：**不要**在这里 host.addSession —— CliHost.connect() 拿到 entry 后自己会 add，
@@ -519,7 +529,7 @@ async function cmdUi(port: number | undefined, proxyBase?: string, mcpPort?: num
     }
   })
   log(`界面后端：http://127.0.0.1:${srv.port}/  （/api/profiles、/api/mcp-info、WS /ws）`)
-  log('上传/端口转发/MFA 还没迁进 core（会明确回 501 或走代理）。Ctrl-C 退出。')
+  log('壳能力（secret/upload/pick-files/shell、快捷命令与转发规则）由 Go 18091 提供，其余全在这一个进程里。Ctrl-C 退出。')
   const shutdown = async (): Promise<void> => {
     try {
       await mcp?.close()
