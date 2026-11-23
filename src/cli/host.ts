@@ -75,7 +75,7 @@ export class CliHost {
   private readonly now: () => number
 
   constructor(private readonly opts: CliHostOptions) {
-    if (opts.sessions.length === 0) throw new Error('CliHost 至少要一条会话')
+    // 允许零会话：界面的 /ws 连接和 bastion_connect 会在运行期加进来
     this.now = opts.now ?? Date.now
   }
 
@@ -99,6 +99,7 @@ export class CliHost {
       const hit = sid ? this.entry(sid) : undefined
       if (hit) return hit
     }
+    if (this.opts.sessions.length === 0) return { error: '现在还没有会话：用 bastion_connect 连一台（或在界面里连）' }
     if (this.opts.sessions.length === 1) return this.opts.sessions[0]
     return {
       error: `这个端点有 ${this.opts.sessions.length} 条会话，请用 session 指定（可用：${this.opts.sessions

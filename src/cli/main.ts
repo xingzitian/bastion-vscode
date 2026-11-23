@@ -444,18 +444,43 @@ async function cmdServe(names: string[], mcpFile?: string, mcpPort?: number): Pr
  * 用法：bastionshell ui [--port 18090]
  * 然后把桌面界面的 API 地址指到它（默认就是 18090，所以界面不用改）。
  */
-async function cmdUi(port: number | undefined, proxyBase?: string): Promise<number> {
+async function cmdUi(port: number | undefined, proxyBase?: string, mcpPort?: number, mcpFile?: string): Promise<number> {
+  // 会话表 + MCP 都在这个进程里：界面开的会话对 AI 可见（统一核心：一份会话、一份语义）
+  let seq = 0
+  const host = new CliHost({ sessions: [], version: VERSION, log: (m) => log(m) })
   const srv = await startUiServer({
     port,
     proxyBase,
     hostKey: parseHostKeyPolicy(process.argv),
     knownHostsFile: parseKnownHostsFile(process.argv),
-    log
+    log,
+    onSession: ({ profile, session, client }) => {
+      seq += 1
+      const id = `s-${process.pid.toString(16)}-${seq}`
+      host.addSession({ id, profile: { ...profile, name: `${profile.name}（界面）` }, session, client })
+      return id
+    }
   })
+  let mcp: Awaited<ReturnType<typeof startCliMcp>> | undefined
+  try {
+    mcp = await startCliMcp({
+      host,
+      version: VERSION,
+      profileName: '(界面)',
+      sessionId: '(none)',
+      port: mcpPort ?? 0,
+      endpointFile: mcpFile,
+      log
+    })
+    log(`MCP 已启动：${mcp.url}（会话由界面 / bastion_connect 提供）`)
+  } catch (e) {
+    log(`MCP 启动失败（界面仍可用）：${(e as Error).message}`)
+  }
   log(`界面后端：http://127.0.0.1:${srv.port}/  （/api/profiles、/api/mcp-info、WS /ws）`)
-  log('这个模式只服务界面：文件上传/端口转发/MFA 交互还没实现（会明确回 501）。Ctrl-C 退出。')
+  log('上传/端口转发/MFA 还没迁进 core（会明确回 501 或走代理）。Ctrl-C 退出。')
   const shutdown = async (): Promise<void> => {
     try {
+      await mcp?.close()
       await srv.close()
     } catch {
       /* ignore */
@@ -497,15 +522,27 @@ async function main(): Promise<number> {
   if (cmd === 'ui') {
     let port: number | undefined
     let proxyBase: string | undefined
+    let mcpPort: number | undefined
+    let mcpFile: string | undefined
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === '--port') {
         const n = Number(rest[++i])
         port = Number.isFinite(n) ? n : undefined
       } else if (rest[i] === '--proxy') {
         proxyBase = rest[++i]
+      } else if (rest[i] === '--mcp-port') {
+        const n = Number(rest[++i])
+        mcpPort = Number.isFinite(n) ? n : undefined
+      } else if (rest[i] === '--mcp-file') {
+        mcpFile = rest[++i]
+      } else if (rest[i] === '--mcp-port') {
+        const n = Number(rest[++i])
+        mcpPort = Number.isFinite(n) ? n : undefined
+      } else if (rest[i] === '--mcp-file') {
+        mcpFile = rest[++i]
       }
     }
-    return cmdUi(port, proxyBase)
+    return cmdUi(port, proxyBase, mcpPort, mcpFile)
   }
   if (cmd === 'serve') {
     // 位置参数 = 档案名（可多个）；--mcp-file / --port 各带一个值

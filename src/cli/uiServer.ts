@@ -29,6 +29,8 @@ export interface UiServerOptions {
   log?: (msg: string) => void
   /** 未迁移的接口反向代理到这里（Go 的 18091；保证界面功能不断） */
   proxyBase?: string
+  /** 界面开的会话注册进宿主（MCP 才能 listSessions/exec 到它）；返回会话 id */
+  onSession?: (s: { profile: EngineProfile; session: EngineSession; client: Client }) => string
   /** 指纹策略 */
   hostKey?: 'known_hosts' | 'strict' | 'off'
   knownHostsFile?: string
@@ -234,8 +236,28 @@ export async function startUiServer(opts: UiServerOptions = {}): Promise<UiServe
             hit.sessions.add(s)
             s.onData((d) => send({ type: 'data', data: d.toString('utf8') }))
             s.onClose(() => send({ type: 'session:closed' }))
-            log(`界面会话已打开：${connId}`)
-            send({ type: 'ready', connId })
+            // 注册进宿主：MCP 的 listSessions/exec 才能看到界面开的这条会话（统一核心）
+            let sid = connId
+            if (opts.onSession) {
+              try {
+                sid = opts.onSession({
+                  profile: {
+                    name: `${str('user') || 'ui'}@界面会话`,
+                    host: 'ui',
+                    port: 22,
+                    username: str('user') || 'ui',
+                    authMethod: 'password',
+                    mode: 'direct'
+                  },
+                  session: s,
+                  client: hit.client
+                })
+              } catch (e) {
+                log(`注册界面会话失败（终端仍可用）：${(e as Error).message}`)
+              }
+            }
+            log(`界面会话已打开：${connId}（注册为 ${sid}）`)
+            send({ type: 'ready', connId, sessionId: sid })
           }
         )
         return
