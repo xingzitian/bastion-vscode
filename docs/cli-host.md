@@ -242,3 +242,27 @@ bastionshell serve <档案> --mcp-file "%AppData%\bastionshell\mcp.json" --port 
 同大小再传 → 跳过 | ✅ |
 `bastion_pull` 回本机 `downloads/`，内容一致 | ✅ |
 缺 `localPath` → 明确报错 | ✅ |
+## 16. hub-lite：一个进程、多条会话、一个 MCP 端点（2026-11-23）
+
+```
+bastionshell serve xzt xb          # 两条会话，共用一个端点
+```
+
+- `CliHost` 内部从"一条会话"改成"会话表"；工具里用 `session:` 指定（**会话 id 或档案名都行**）。
+- 没指定 session 时：绑定过就用绑定的 → 只有一条就用那一条 → 多条且没绑定 **明确报错并列出可用会话**（不猜）。
+- `bastion_use` 的绑定按 `clientId` 存（一个 AI 客户端绑一条，互不干扰）。
+- 网页终端：`/term?session=<id|档案名>`，页面顶栏有会话下拉；WS 也按 session 路由。
+- 端点文件里的 `profile` 变成 `xzt+xb`，`sessionId` 是第一条（仅作标识）。
+
+真机 e2e（`tools/cli-hub-e2e.mjs`，xzt + xb，5/5）：
+
+| 用例 | 结果 |
+|---|---|
+`listSessions` 看到两条 | ✅ |
+多条且不指定 session → 明确报错（`isError=true`） | ✅ |
+`session: "xzt"` / `"xb"` 落到不同机器 | ✅（VM-24-4-debian vs 另一台） |
+`bastion_use` 绑定后不带 session 也能用 | ✅ |
+`bastion_tail` 指向指定会话 | ✅ |
+
+**顺手修了 core 的一个真问题**：`bastion_exec` 的返回把 `isError` 吞掉了（只透传 text/structured），
+导致"多条会话又没指定"这种客户端错误被 AI 当成执行成功。现在 `mcpTools` 会把 `r.isError` 透传 —— 扩展同样受益。

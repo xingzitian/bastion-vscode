@@ -12,7 +12,8 @@
 
 import { connectProfile } from '../engine/connect'
 import { EngineSession } from '../engine/session'
-import { findProfile, loadProfiles, profilesFilePath } from '../engine/profiles'
+import { findProfile, loadProfiles, profilesFilePath, type EngineProfile } from '../engine/profiles'
+import type { Client } from 'ssh2'
 import { CliHost } from './host'
 import { addTermUrlToEndpoint, startCliMcp } from './mcp'
 import { startTermServer } from './termServer'
@@ -138,7 +139,11 @@ async function cmdConnect(name: string): Promise<number> {
 
   // MCP：一进程一条会话；端口随机（不抢扩展的 39311），端点写 ~/.bastionshell/mcp-cli.json
   const sessionId = `s-${process.pid.toString(16)}`
-  const host = new CliHost({ profile, session, sessionId, version: VERSION, client: conn.client, log: (m) => log(m) })
+  const host = new CliHost({
+    sessions: [{ id: sessionId, profile, session, client: conn.client }],
+    version: VERSION,
+    log: (m) => log(m)
+  })
   let mcp: Awaited<ReturnType<typeof startCliMcp>> | undefined
   try {
     mcp = await startCliMcp({ host, version: VERSION, profileName: profile.name, sessionId, log })
@@ -201,24 +206,39 @@ async function cmdConnect(name: string): Promise<number> {
  * 和 `connect` 的区别只有一个：不接管键盘（不做 raw 模式）。
  * 这样它能被脚本/测试驱动，也就是将来桌面薄壳指向的那个"后台"。
  */
-async function cmdServe(name: string, mcpFile?: string, mcpPort?: number): Promise<number> {
-  const profile = findProfile(name)
-  if (!profile) {
-    process.stderr.write(`找不到档案「${name}」（文件：${profilesFilePath()}）\n`)
+async function cmdServe(names: string[], mcpFile?: string, mcpPort?: number): Promise<number> {
+  if (names.length === 0) {
+    process.stderr.write('serve 需要至少一个档案名（可多个：serve a b c）\n')
     return 2
   }
-  const password = await ensurePassword(profile.name, profile.authMethod !== 'key')
-  const conn = await connectProfile(profile, { password, log })
-  const session = new EngineSession(profile.name, conn.channel, { log })
-  await session.waitShellReady()
-  session.onData((d) => process.stdout.write(d))
+  // 逐条连接：口令认证的档案会各问一次（不落盘）；密钥认证直接连
+  const entries: Array<{ id: string; profile: EngineProfile; session: EngineSession; client: Client }> = []
+  for (const name of names) {
+    const profile = findProfile(name)
+    if (!profile) {
+      process.stderr.write(`找不到档案「${name}」（文件：${profilesFilePath()}）\n`)
+      return 2
+    }
+    const password = await ensurePassword(profile.name, profile.authMethod !== 'key')
+    log(`连接 ${profile.name}（${profile.username}@${profile.host}:${profile.port}）…`)
+    const conn = await connectProfile(profile, { password, log })
+    const session = new EngineSession(profile.name, conn.channel, { log })
+    await session.waitShellReady()
+    session.onData((d) => process.stdout.write(d))
+    entries.push({ id: `s-${process.pid.toString(16)}-${entries.length + 1}`, profile, session, client: conn.client })
+    log(`  ✅ ${profile.name} 已连上（${conn.readyMs}ms）`)
+  }
 
-  const sessionId = `s-${process.pid.toString(16)}`
-  const host = new CliHost({ profile, session, sessionId, version: VERSION, client: conn.client, log: (m) => log(m) })
+  const sessionId = entries[0].id
+  const host = new CliHost({
+    sessions: entries,
+    version: VERSION,
+    log: (m) => log(m)
+  })
   const mcp = await startCliMcp({
     host,
     version: VERSION,
-    profileName: profile.name,
+    profileName: entries.map((e) => e.profile.name).join('+'),
     sessionId,
     log,
     port: mcpPort,
@@ -229,7 +249,12 @@ async function cmdServe(name: string, mcpFile?: string, mcpPort?: number): Promi
   log(`MCP 已启动：${mcp.url}`)
   log(`端点文件：${mcp.file}`)
   // 网页终端 + 只读面板：同一个 token，单开一个端口（不污染 MCP 的 HTTP 层）
-  const term = await startTermServer({ session, token: mcp.token, title: profile.name, log: (m) => log(m) })
+  const term = await startTermServer({
+    sessions: entries.map((e) => ({ id: e.id, name: e.profile.name, session: e.session })),
+    token: mcp.token,
+    title: entries.map((e) => e.profile.name).join('+'),
+    log: (m) => log(m)
+  })
   if (process.argv.includes('--print-endpoint')) {
     // 机器可读：桌面据此自己写 mcp.json
     log('端点：' + JSON.stringify({ url: mcp.url, token: mcp.token, termUrl: term.url, port: mcp.port, actualPort: mcp.port, legacy: mcp.legacy }))
@@ -247,13 +272,15 @@ async function cmdServe(name: string, mcpFile?: string, mcpPort?: number): Promi
     } catch {
       /* ignore */
     }
-    session.close()
-    conn.client.end()
+    for (const e of entries) {
+      e.session.close()
+      e.client.end()
+    }
     process.exit(0)
   }
   process.on('SIGINT', () => void shutdown())
   process.on('SIGTERM', () => void shutdown())
-  session.onClose(() => void shutdown())
+  for (const e of entries) e.session.onClose(() => void shutdown())
   return await new Promise<number>(() => {
     /* 长驻 */
   })
@@ -285,15 +312,29 @@ async function main(): Promise<number> {
     return cmdConnect(name)
   }
   if (cmd === 'serve') {
-    const name = rest[0]
-    if (!name) {
+    // 位置参数 = 档案名（可多个）；--mcp-file / --port 各带一个值
+    const names: string[] = []
+    let mf: string | undefined
+    let mp: number | undefined
+    for (let i = 0; i < rest.length; i++) {
+      const a = rest[i]
+      if (a === '--mcp-file') {
+        mf = rest[++i]
+        continue
+      }
+      if (a === '--port') {
+        const n = Number(rest[++i])
+        mp = Number.isFinite(n) ? n : undefined
+        continue
+      }
+      if (a.startsWith('--')) continue
+      names.push(a)
+    }
+    if (names.length === 0) {
       usage()
       return 2
     }
-    // --mcp-file / --port：接管旧桌面版的 mcp.json 身份（客户端配置不用改）
-    const mf = rest.indexOf('--mcp-file') >= 0 ? rest[rest.indexOf('--mcp-file') + 1] : undefined
-    const mp = rest.indexOf('--port') >= 0 ? Number(rest[rest.indexOf('--port') + 1]) : undefined
-    return cmdServe(name, mf, Number.isFinite(mp) ? mp : undefined)
+    return cmdServe(names, mf, mp)
   }
   usage()
   return 2

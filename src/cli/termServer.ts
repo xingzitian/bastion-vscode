@@ -17,8 +17,15 @@ import { renderStandalonePanel } from '../core/uiPage'
 import { loadActionRecords } from '../core/actionLedgerIo'
 import type { EngineSession } from '../engine/session'
 
-export interface TermServerOptions {
+export interface TermSessionRef {
+  id: string
+  name: string
   session: EngineSession
+}
+
+export interface TermServerOptions {
+  /** 至少一条；多条时页面顶部出现会话切换 */
+  sessions: TermSessionRef[]
   token: string
   /** 0 = 让系统分配 */
   port?: number
@@ -39,7 +46,7 @@ const XTERM_DIR = path.join(path.dirname(require.resolve('@xterm/xterm/package.j
 const XTERM_CSS = path.join(path.dirname(require.resolve('@xterm/xterm/package.json')), 'css', 'xterm.css')
 const FIT_JS = require.resolve('@xterm/addon-fit')
 
-function page(title: string, token: string): string {
+function page(title: string, token: string, list: Array<{ id: string; name: string }>, current: string): string {
   // 说明：token 放在 URL 上（同源限制 + 只监听 127.0.0.1；与扩展 /ui 的取舍一致）
   return `<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -49,10 +56,15 @@ function page(title: string, token: string): string {
   html,body{margin:0;height:100%;background:#1e1e1e;color:#ccc;font-family:system-ui,sans-serif}
   #bar{height:28px;display:flex;align-items:center;gap:12px;padding:0 10px;background:#252526;font-size:12px}
   #bar a{color:#4daafc;text-decoration:none}
+  #bar select{background:#1e1e1e;color:#ccc;border:1px solid #3c3c3c;font-size:12px;padding:1px 4px}
   #term{position:absolute;top:28px;left:0;right:0;bottom:0}
 </style></head>
 <body>
-<div id="bar"><b>BastionShell CLI</b><span id="stat">连接中…</span>
+<div id="bar"><b>BastionShell CLI</b>
+  <select id="sess" title="切换会话">
+    ${list.map((s) => `<option value="${s.id}"${s.id === current ? ' selected' : ''}>${s.name}（${s.id}）</option>`).join('')}
+  </select>
+  <span id="stat">连接中…</span>
   <a href="/ui?token=${encodeURIComponent(token)}" target="_blank">行动面板</a></div>
 <div id="term"></div>
 <script src="/xterm/xterm.js?token=${encodeURIComponent(token)}"></script>
@@ -65,8 +77,14 @@ function page(title: string, token: string): string {
   term.open(document.getElementById('term'));
   fit.fit();
 
+  document.getElementById('sess').addEventListener('change', (ev) => {
+    const id = ev.target.value;
+    location.href = '/term?token=' + encodeURIComponent(${JSON.stringify(token)}) + '&session=' + encodeURIComponent(id);
+  });
+  const sessQ = new URLSearchParams(location.search).get('session');
   const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host +
-    '/term/ws?token=' + encodeURIComponent(${JSON.stringify(token)}));
+    '/term/ws?token=' + encodeURIComponent(${JSON.stringify(token)}) +
+    (sessQ ? '&session=' + encodeURIComponent(sessQ) : ''));
   const stat = document.getElementById('stat');
   ws.onopen = () => {
     stat.textContent = '已连接';
@@ -97,6 +115,17 @@ function assetFor(urlPath: string): string | undefined {
 export async function startTermServer(opts: TermServerOptions): Promise<TermServer> {
   const log = opts.log ?? (() => undefined)
   const token = opts.token
+  const sessions = opts.sessions
+  if (sessions.length === 0) throw new Error('TermServer 至少要一条会话')
+  const pick = (url: URL): TermSessionRef => {
+    const want = (url.searchParams.get('session') ?? '').trim().toLowerCase()
+    if (!want) return sessions[0]
+    return (
+      sessions.find((s) => s.id.toLowerCase() === want) ??
+      sessions.find((s) => s.name.toLowerCase() === want) ??
+      sessions[0]
+    )
+  }
   const authed = (url: URL): boolean => url.searchParams.get('token') === token
 
   const server = http.createServer((req, res) => {
@@ -108,7 +137,7 @@ export async function startTermServer(opts: TermServerOptions): Promise<TermServ
     }
     if (url.pathname === '/' || url.pathname === '/term') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-      res.end(page(opts.title, token))
+      res.end(page(opts.title, token, sessions.map((s) => ({ id: s.id, name: s.name })), pick(url).id))
       return
     }
     if (url.pathname === '/ui') {
@@ -151,12 +180,13 @@ export async function startTermServer(opts: TermServerOptions): Promise<TermServ
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ t: 'out', d: d.toString('base64') }))
       }
       const onData = (d: Buffer): void => send(d)
-      opts.session.onData(onData)
+      const target = pick(url)
+      target.session.onData(onData)
       ws.on('message', (raw) => {
         try {
           const m = JSON.parse(String(raw)) as { t?: string; d?: string; cols?: number; rows?: number }
-          if (m.t === 'in' && typeof m.d === 'string') opts.session.write(m.d)
-          else if (m.t === 'resize' && m.cols && m.rows) opts.session.resize(m.cols, m.rows)
+          if (m.t === 'in' && typeof m.d === 'string') target.session.write(m.d)
+          else if (m.t === 'resize' && m.cols && m.rows) target.session.resize(m.cols, m.rows)
         } catch {
           /* 忽略坏帧 */
         }

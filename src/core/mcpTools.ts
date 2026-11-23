@@ -603,7 +603,9 @@ export function createToolDispatch(
           why: typeof a.why === 'string' ? a.why : undefined,
           intentId: typeof a.intentId === 'string' ? a.intentId : undefined
         })
-        return { text: r.text, structured: r.structured }
+        // isError 要透传：CLI 里"多条会话又没指定 session"就是 isError，
+        // 吞掉它 AI 会以为命令真执行了（2026-11-23 hub e2e 抓到的）
+        return { text: r.text, structured: r.structured, ...(r.isError ? { isError: true } : {}) }
       }
       case 'bastion_connect': {
         const profile = typeof a.profile === 'string' ? a.profile : ''
