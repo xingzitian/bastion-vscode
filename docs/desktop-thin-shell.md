@@ -1,7 +1,7 @@
 # B 阶段：桌面薄壳（窗口指向 CLI 的网页终端）
 
 > 前提：A1–A3 已完成（CLI 宿主 = 终端 + MCP + 网页终端）。本文只谈 **B：把桌面 Wails 窗口变成薄壳**。
-> 状态：**B1 已完成**（2026-11-23）：桌面后端能 spawn CLI 薄壳并 302 到网页终端。见 §8。
+> 状态：**B2 已完成**（2026-11-23）：档案行 ⚡ → 窗口内 iframe 装网页终端。见 §8/§10。
 
 ## 1. 目标形态
 
@@ -109,3 +109,24 @@ GET /api/shell/cli?profile=xzt  →  302
 1. 正常启动下复验端点文件写入（或改成写 `%LOCALAPPDATA%`）。
 2. 前端：档案页加「CLI 终端（beta）」入口 —— 直接 `iframe` 指向 `/api/shell/cli?profile=…`（302 会落到真终端）。
 3. C：删 Go 引擎，核对体积。
+## 10. B2 实际结果（2026-11-23）
+
+- `frontend/src/components/CliShellView.tsx`（新）：全屏覆盖层 + iframe。
+  `src = http://127.0.0.1:18090/api/shell/cli?profile=…`（后端 302 → `/term?token=…`）。
+  - 打开前先 `fetch(url, {redirect:'manual'})` 探一次：后端返回 JSON error 时把原因显示出来；
+  - 关闭时 `POST /api/shell/cli/stop`（不留孤儿 node）；
+  - 15s 内没加载出来给"正在启动 CLI 宿主…"提示。
+- `App.tsx`：每个档案行加 ⚡ 按钮；`main.css` 加覆盖层样式。
+- 构建：**前端在 WSL 里由 wails 跑**（Windows 侧 `npm run build` 会因 esbuild 删 `%TEMP%` 临时文件被拒而失败 ——
+  和之前 CLI 写端点文件被拒是同一类"子进程文件操作受限"现象）。
+
+验证：
+
+| 项 | 结果 |
+|---|---|
+产物含新组件 | `index-*.js` 里有 `cli-shell-overlay` 与 `/api/shell/cli` |
+headless 路由 | 302 → `http://127.0.0.1:63124/term?token=…` |
+跟进页面 | 200，页面含 `xterm.js` |
+真实 `mcp.json` | 未被测试改动（仍是 10-22 的版本） |
+
+**仍然待办**：B3 正常启动下复验端点文件写入（若仍 Access denied，改写到 `%LOCALAPPDATA%` 或由前端读 `/api/shell/endpoint`）。
