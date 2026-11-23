@@ -82,7 +82,9 @@ bastionshell serve xzt xb cana
 `bastion_push` / `bastion_pull` | 传文件（直连档案走 **SFTP**，堡垒机自动降级 base64） |
 `bastion_habits` | 读/写个人习惯（`read` / `remember` / `setPrivilege`），写**共享** `habits.jsonc` |
 
-**不做**：`bastion_connect`（连接必须由人在命令行发起 —— 一进程一条会话，AI 不新建连接）。
+| `bastion_connect` | **AI 新建连接**：密钥档案直接连；密码档案需要宿主有密码（桌面密码框 / stdin 密码表），否则给出可读原因 |
+
+> 连上之后 `bastion_listSessions` 会多一条，exec/tail 用 `session:` 指定即可。
 
 多会话时要指定 `session`（**会话 id 或档案名都行**）：
 
@@ -96,7 +98,7 @@ bastionshell serve xzt xb cana
 
 | 能力 | 扩展 | CLI |
 |---|---|---|
-工具数 | 13（多 `connect`） | 12 |
+| 工具数 | 13 | 13（`connect` 已对齐） |
 行动面板 | ✅ 右侧停靠 / 独立网页 | ✅ `/ui`（可按会话筛） |
 传输期键盘锁 / zmodem rz-sz | ✅ | ❌（只有 SFTP + base64；网页终端用不到键盘锁） |
 部署任务 / 端口转发 / 目录同步 | ✅ | ❌ |
