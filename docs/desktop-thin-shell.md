@@ -282,3 +282,24 @@ Go（`BastionShell.exe`，18091） | 窗口、WebView2、DPAPI 存密码、系�
 闸门（全绿）：`npm test` 803 用例 / `npm run e2e:cli` 30 / `npm run e2e:shell` 7 /
 `node tools/desktop-core-ui-e2e.mjs` 6。踩到的坑与修法见 `docs/desktop-cleanup.md`。
 
+### 16. 发布副本上的验收（2026-11-23，自动化 + GUI 截图）
+
+自动化（`node tools/desktop-smoke-e2e.mjs ["<exe 路径>"]`，跑在**发行副本**上，不是 build/bin）：
+
+| 项 | 证据 |
+|---|---|
+② DPAPI 存密码 | `GET /api/secret?key=xzt` → 200 + 真实口令（经 18090 → 18091 代理） |
+③ 桌面 MCP | 用 `/api/ai-access` 的 token 打 `initialize` + `tools/list` → **13 个工具**，含 `bastion_connect` / `bastion_push` / `bastion_pull` |
+⚡ 真机终端 | `POST /api/shell/cli/start {xzt}` → 打 `/term/ws` → `echo term-core-ok` 有回显 |
+代理 | `/api/upload` 落盘内容正确、`/api/quick-commands` 200、`/api/forwards` 200、档案仍 10 条 |
+
+GUI（这次真的开了窗口，不是 headless）：从 `C:\Users\Administrator\Desktop\BastionShell-0.9.3\` 双击/启动，
+`MainWindowTitle=BastionShell` + 6 个 `msedgewebview2` 子进程 = WebView2 控制器创建成功（工作区里那个
+`800700aa` 不会再出现）；用 `PrintWindow` 抓窗口位图，界面完整渲染：左侧 10 条档案卡片
+（生产堡垒机 / 新加坡堡垒机 / Mac-Mini-Pub / xb / xzt / xzt游戏 …）+ 每行的 **⚡** 按钮，
+右侧是「还没有会话」空态。CSP 里的 `frame-src 'self' http: https:` 也在打包产物里确认过。
+
+> 结论：从「双击 exe」到「界面列档案」这一段已经亲眼看到；「点 ⚡ 在窗口里开出终端」这一段目前由
+> headless 的 `/term/ws` 回显 + `e2e:shell` 的 term 页面断言覆盖（脚本点 GUI 不可靠，会点到别的窗口）。
+
+
