@@ -42,3 +42,24 @@ ai_api.go / ai_access.go | 637 / 256 | AI 访问与会话 API |
 
 - `ai_api.go` 里可能有 core 端 MCP 仍需要的辅助函数（如 habits 解析）—— 删前先看被谁引用
 - 删完后 Go 侧不再有 SSH 能力：**上传/转发/secret 仍走 core 的代理请求**，所以这 4 条路由不能一起删
+## ⑤ 实际进展与剩余依赖（2026-11-23，分支 cleanup-go-mcp）
+
+- `6f654ce` 第一刀：删 MCP + AI 层（mcp_*.go / ai_api.go / ai_access.go 及配套测试）→ **go build + go test 通过**。
+- `3ed88d1` 第二刀 WIP：删 session/exec/transfer/upload/forward/ssh/lrzsz/deploy → **编译未通过**，原因是
+  配置层与档案层引用了被删文件里的类型与函数：
+
+```
+shared_config.go:149,187   forwardRule        （原在 forward.go，被配置引用）
+profile.go:334             forwardRule
+server.go:86,94,121,122    connect / rememberConn / connMeta / forgetConn / stopForwardsOfConn
+server.go:148              registerUploadRoutes
+main.go:37                 initLrzsz
+```
+
+### 第二刀的正确顺序（下一轮照这个做）
+
+1. 把 `forwardRule` **类型**从 forward.go 挪到 `shared_config.go`（只搬类型，不搬实现）
+2. `server.go` 只保留 4 条代理路由（secret/upload/forwards/pick-files），删 `/ws` 与连接池
+3. `main.go` 去掉 `initLrzsz()`（lrzsz 属于已删的传输层）
+4. 再删实现文件 → `go build` / `go test` 通过
+5. 三套闸门 + 桌面人工验收 → 合并回 main
