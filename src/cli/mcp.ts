@@ -100,3 +100,15 @@ export async function startCliMcp(opts: {
     }
   }
 }
+
+/** 网页终端起好之后，把它的地址补进端点文件（壳子/launcher 靠这个字段） */
+export function addTermUrlToEndpoint(termUrl: string): void {
+  const file = cliMcpFile()
+  try {
+    const cur = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>
+    cur.termUrl = termUrl
+    fs.writeFileSync(file, JSON.stringify(cur, null, 2), 'utf8')
+  } catch {
+    /* 文件不在（比如换了进程）就算了 */
+  }
+}

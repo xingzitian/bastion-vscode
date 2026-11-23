@@ -1,0 +1,5 @@
+[bastion] 主机指纹（sha256）：V5C5XQHxBYJSSiFO9wwkgQ/UBjnL62Yf/+jVwvN1ilk  —�?目前**不校�?*，请自行核对
+[bastion] MCP 已启动：http://127.0.0.1:52268/mcp
+[bastion] 端点文件：C:\Users\Administrator\.bastionshell\mcp-cli.json
+[bastion] 网页终端：http://127.0.0.1:52269/term?token=b6ba1abc4a95a009b8414d96073d104214647eb8c241a498b2a9fa1e558e15a1
+[bastion] 浏览器打开：http://127.0.0.1:52269/term?token=b6ba1abc4a95a009b8414d96073d104214647eb8c241a498b2a9fa1e558e15a1

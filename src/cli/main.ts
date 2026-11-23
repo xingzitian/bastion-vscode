@@ -14,7 +14,7 @@ import { connectProfile } from '../engine/connect'
 import { EngineSession } from '../engine/session'
 import { findProfile, loadProfiles, profilesFilePath } from '../engine/profiles'
 import { CliHost } from './host'
-import { startCliMcp } from './mcp'
+import { addTermUrlToEndpoint, startCliMcp } from './mcp'
 import { startTermServer } from './termServer'
 
 /** CLI 版本：跟扩展同号（同一份 core），先硬编码，发版时一起改 */
