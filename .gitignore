@@ -28,3 +28,6 @@ tools/.cli-*.txt
 
 # CLI pull 的默认落盘目录
 downloads/
+
+# npm pack 产物
+*.tgz

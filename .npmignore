@@ -1,0 +1,19 @@
+# npm 包只需 out/**/*.js + package.json + README（CLI 用）
+src/**
+tools/**
+scripts/**
+.github/**
+.vscode/**
+.vscode-test/**
+walkthroughs/**
+schemas/**
+media/**
+docs/**
+out/test/**
+out/testkit/**
+out/**/*.map
+*.vsix
+RELEASE-*.md
+tsconfig*.json
+*.tgz
+node_modules/**

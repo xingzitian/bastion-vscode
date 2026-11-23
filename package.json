@@ -1434,5 +1434,8 @@
     "@types/ws": "^8.18.2",
     "typescript": "^5.6.0"
   },
-  "homepage": "https://github.com/xingzitian/bastion-vscode#readme"
+  "homepage": "https://github.com/xingzitian/bastion-vscode#readme",
+  "bin": {
+    "bastionshell": "out/cli/main.js"
+  }
 }

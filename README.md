@@ -49,17 +49,23 @@
 ## 不想开 VS Code？用 CLI 宿主（同一份内核）
 
 ```bash
-# 一次性准备（要求 Node ≥ 22）
-npm install && npm run compile
+# 装成全局命令（一次性；要求 Node ≥ 22）
+npm install && npm run compile && npm pack     # 产出 bastion-vscode-<版本>.tgz，约 0.4 MB
+npm install -g ./bastion-vscode-0.3.21.tgz      # 之后直接用 `bastionshell`
+
+# （不想装全局：在仓库里用 node out/cli/main.js 效果一样）
 
 # 交互式终端 + MCP（Ctrl-] 退出）
-node out/cli/main.js connect xzt
+bastionshell connect xzt
 
 # 只跑后台：会话 + MCP + 网页终端，远端输出实时打印
-node out/cli/main.js serve xzt
+bastionshell serve xzt
+
+# 多条会话共用一个 MCP 端点（工具里用 session 指定）
+bastionshell serve xzt xb
 
 # 跑一条就走（脚本/CI 用）
-node out/cli/main.js run xzt --exec "systemctl status nginx"
+bastionshell run xzt --exec "systemctl status nginx"
 ```
 
 起好之后终端会打印网页地址（`http://127.0.0.1:<端口>/term?token=…`），浏览器打开就能敲命令；
