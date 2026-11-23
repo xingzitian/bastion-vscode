@@ -106,7 +106,25 @@ function page(title: string, token: string, list: Array<{ id: string; name: stri
     term.focus();
   };
   ws.onclose = () => { stat.textContent = '已断开'; };
-  ws.onmessage = (ev) => term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data));
+  // 服务端发的是 JSON 信封 {t:'out', d:<base64>}（这样二进制/UTF-8 不会被截断）。
+  // 页面必须解包再写终端 —— 直接把信封字符串丢给 xterm，屏幕上就会出现
+  // {"t":"out","d":"…"} 这种乱码（2026-11-23 用户点 ⚡ 看到的就是这个）。
+  ws.onmessage = (ev) => {
+    try {
+      const m = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
+      if (m && m.t === 'out' && typeof m.d === 'string') {
+        const bin = atob(m.d);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        term.write(bytes);
+        return;
+      }
+      if (m && typeof m.d === 'string') { term.write(m.d); return; }
+    } catch {
+      /* 不是信封（理论上不会发生）：原样写，至少不丢内容 */
+    }
+    if (typeof ev.data === 'string') term.write(ev.data);
+  };
   term.onData((d) => { if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'in', d })); });
 
   function sendSize() {

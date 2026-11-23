@@ -20,6 +20,7 @@ import { addTermUrlToEndpoint, startCliMcp } from './mcp'
 import { groupByIntent } from '../core/actionLedger'
 import { renderActionsHtml } from '../core/actionPanelHtml'
 import { startTermServer } from './termServer'
+import { startUiServer } from './uiServer'
 
 /** CLI 版本：跟扩展同号（同一份 core），先硬编码，发版时一起改 */
 const VERSION = '0.3.21-cli'
@@ -437,6 +438,36 @@ async function cmdServe(names: string[], mcpFile?: string, mcpPort?: number): Pr
   })
 }
 
+/**
+ * `ui`：只跑「界面后端」—— 把桌面 React 界面要的 HTTP + WS 协议实现在这个进程里。
+ *
+ * 用法：bastionshell ui [--port 18090]
+ * 然后把桌面界面的 API 地址指到它（默认就是 18090，所以界面不用改）。
+ */
+async function cmdUi(port: number | undefined): Promise<number> {
+  const srv = await startUiServer({
+    port,
+    hostKey: parseHostKeyPolicy(process.argv),
+    knownHostsFile: parseKnownHostsFile(process.argv),
+    log
+  })
+  log(`界面后端：http://127.0.0.1:${srv.port}/  （/api/profiles、/api/mcp-info、WS /ws）`)
+  log('这个模式只服务界面：文件上传/端口转发/MFA 交互还没实现（会明确回 501）。Ctrl-C 退出。')
+  const shutdown = async (): Promise<void> => {
+    try {
+      await srv.close()
+    } catch {
+      /* ignore */
+    }
+    process.exit(0)
+  }
+  process.on('SIGINT', () => void shutdown())
+  process.on('SIGTERM', () => void shutdown())
+  return await new Promise<number>(() => {
+    /* 长驻 */
+  })
+}
+
 async function main(): Promise<number> {
   const [cmd, ...rest] = process.argv.slice(2)
   if (!cmd || cmd === '-h' || cmd === '--help') {
@@ -461,6 +492,15 @@ async function main(): Promise<number> {
       return 2
     }
     return cmdConnect(name)
+  }
+  if (cmd === 'ui') {
+    let port: number | undefined
+    const i = rest.indexOf('--port')
+    if (i >= 0) {
+      const n = Number(rest[i + 1])
+      port = Number.isFinite(n) ? n : undefined
+    }
+    return cmdUi(port)
   }
   if (cmd === 'serve') {
     // 位置参数 = 档案名（可多个）；--mcp-file / --port 各带一个值
