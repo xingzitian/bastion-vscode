@@ -99,10 +99,30 @@ GET /api/shell/cli?profile=xzt  →  302
   Location: http://127.0.0.1:6xxxx/term?token=<沿用的旧 token>
 ```
 
-**一个待复验点**：把 exe 从当前终端上下文启动时，Go 往 `%APPDATA%\bastionshell`
-写**新文件**报 `Access is denied`（同一 shell 里 pwsh 写同目录正常）；判断是启动上下文的 ACL 差异，
-不是代码问题 —— 正常双击启动时该目录可写（现有 `mcp.json` 就是那样写的）。
-下一轮在**正常启动**下复验，再决定是否需要降级方案。
+### 写端点文件失败：根因已定位（2026-11-23）
+
+从**当前开发沙箱**启动 exe 时，应用进程写 `%TEMP%` / `%APPDATA%` / `~/.bastionshell` 全部
+`Access is denied`，只有仓库目录可写 —— 用新增的 `/api/shell/fs-probe` 一次看得很清楚：
+
+```
+C:\Users\...\Temp                          ok=False  Access is denied
+C:\Users\...\AppData\Roaming\bastionshell  ok=False  Access is denied
+C:\Users\Administrator\.bastionshell       ok=False  Access is denied
+...\shell_tools\bastion-wails\build\bin     ok=True
+```
+
+**这是沙箱限制，不是桌面版的问题**（同一个限制也让 `npm run build` 里的 esbuild 删临时文件失败）。
+正常双击启动时没有这层限制，`mcp.json` 就是那样写出来的（10-22 那版）。
+
+新增两条诊断/兜底路由：
+
+| 路由 | 作用 |
+|---|---|
+`GET /api/shell/endpoint` | 当前薄壳的 `running/termUrl/mcpUrl/token/port`，以及 **`writeError`**（宿主没写成 mcp.json 的真实原因） |
+`GET /api/shell/fs-probe` | 从**应用进程**视角逐个目录试写，返回 ok/error |
+
+另外 `cliScriptPath()` 现在会**自动探测** CLI 入口（环境变量 → exe 目录 → 往上 3 层找
+`bastion-vscode/out/cli/main.js`），开发布局下**不用设环境变量**；找不到时报错会列出试过的每个路径。
 
 ## 9. 下一步
 
