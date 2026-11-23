@@ -247,3 +247,26 @@ GET /api/shell/cli?profiles=xzt,xb    → 302
 3. `node tools/make-portable-cli.mjs`（把 CLI 装进 dist）
 4. 复制 exe 到 dist → 打 zip
 5. **洁净验证**：解到临时目录 → 启 exe → 两条路由 302 → 强杀后无残留 node
+## 15. 统一核心：进度（2026-11-23）
+
+架构已切换为「Go 壳 + core 后端」：
+
+```
+BastionShell.exe（Go）
+  ├─ 隐藏拉起 core：node <内置 bastion-cli>/out/cli/main.js ui --port 18090 --proxy http://127.0.0.1:18091
+  │     /api/profiles  /api/mcp-info  WS /ws（control/connect/input/resize）  MCP 13 工具
+  └─ Go 退到 18091：只处理还没迁走的 secret/upload/forwards/pick-files（core 反向代理过来）
+```
+
+已完成并验证：
+
+| 步 | 证据 |
+|---|---|
+① 界面走 core 列档案/连接/终端 | `/api/profiles` 10 条；WS `control→connected→ready`；`input→data` 回显 |
+② 存档密码 | `/api/secret` 经 18090 → 18091 原样返回 |
+③ 桌面 MCP = core 13 工具 | `mcp.json {port:39311, actualPort:5xxxx, note:…}`；`tools/list` = 13 含 `bastion_connect` |
+界面会话对 AI 可见 | 界面连 xzt → ready 带 `s-xxxx-1`，MCP `listSessions` 同一条 |
+
+待做：④ upload/forward 迁进 core；⑤ 删 Go 的 session/exec/mcp（删前全量 e2e）。
+
+单测：800 用例 / 775 通过 / 0 失败。
