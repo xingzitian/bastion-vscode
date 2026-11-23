@@ -90,9 +90,10 @@ try {
   if (t.text.includes('屏幕最后') && t.text.includes('cli-mcp-ok')) ok('bastion_tail')
   else bad('bastion_tail', t.text.slice(0, 200))
 
-  const c = await callTool(ep, 'bastion_connect', { profile: 'xzt' })
-  if (/CLI 版不支持/.test(c.text)) ok('bastion_connect 明确拒绝（文案说明，不假装成功）')
-  else bad('bastion_connect', `isError=${c.isError} text=${c.text.slice(0, 160)}`)
+  // connect 现在支持了：连一条新会话，listSessions 应该多一条
+  const c = await callTool(ep, 'bastion_connect', { profile: 'xb' })
+  if (/已连接/.test(c.text) && /会话 id/.test(c.text)) ok('bastion_connect 新建会话', c.text.split('\n')[0].slice(0, 40))
+  else bad('bastion_connect', c.text.slice(0, 200))
 
   const l = await callTool(ep, 'bastion_listSessions', {})
   if (l.text.includes('CLI 宿主')) ok('bastion_listSessions')

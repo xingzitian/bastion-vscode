@@ -13,6 +13,7 @@
 import { connectProfile } from '../engine/connect'
 import { EngineSession } from '../engine/session'
 import { findProfile, loadProfiles, profilesFilePath, type EngineProfile } from '../engine/profiles'
+import type { CliSessionEntry } from './host'
 import type { Client } from 'ssh2'
 import { CliHost } from './host'
 import { addTermUrlToEndpoint, startCliMcp } from './mcp'
@@ -344,10 +345,35 @@ async function cmdServe(names: string[], mcpFile?: string, mcpPort?: number): Pr
   }
 
   const sessionId = entries[0].id
+  // AI 新建连接（bastion_connect）：连上后追加到会话表里
+  let extraSeq = 0
+  const connectSession = async (profileName: string): Promise<CliSessionEntry> => {
+    const p2 = findProfile(profileName)
+    if (!p2) throw new Error(`找不到档案「${profileName}」（${profilesFilePath()}）`)
+    if (p2.authMethod !== 'key' && !passwordTable?.[p2.name]) {
+      throw new Error(
+        `档案「${p2.name}」是密码认证：AI 这条路没有密码可用。` +
+          `请人在终端里先连一次，或让桌面版的密码框启动它（密码只经 stdin 传，不落盘）`
+      )
+    }
+    const pw = await ensurePassword(p2.name, p2.authMethod !== 'key')
+    const conn = await connectProfile(p2, {
+      password: pw,
+      log,
+      hostKey: parseHostKeyPolicy(process.argv),
+      knownHostsFile: parseKnownHostsFile(process.argv)
+    })
+    const s2 = new EngineSession(p2.name, conn.channel, { log })
+    await s2.waitShellReady()
+    s2.onData((d) => process.stdout.write(d))
+    extraSeq += 1
+    return { id: `s-${process.pid.toString(16)}-${entries.length + extraSeq}`, profile: p2, session: s2, client: conn.client }
+  }
   const host = new CliHost({
     sessions: entries,
     version: VERSION,
-    log: (m) => log(m)
+    log: (m) => log(m),
+    connectSession
   })
   const mcp = await startCliMcp({
     host,

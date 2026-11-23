@@ -36,6 +36,11 @@ export interface CliSessionEntry {
 
 export interface CliHostOptions {
   sessions: CliSessionEntry[]
+  /**
+   * AI 要求新建连接时怎么开（astion_connect）。
+   * 由宿主的 main 注入：它才知道密码表、指纹策略、日志。
+   */
+  connectSession?: (profileName: string) => Promise<CliSessionEntry>
   version: string
   log?: (msg: string) => void
   now?: () => number
@@ -258,6 +263,12 @@ export class CliHost {
     return this.toResponse(e, job)
   }
 
+  /** 运行期新增一条会话（bastion_connect 用），返回会话 id */
+  addSession(entry: CliSessionEntry): string {
+    if (this.opts.sessions.some((s) => s.id === entry.id)) throw new Error(`会话 id 冲突：${entry.id}`)
+    this.opts.sessions.push(entry)
+    return entry.id
+  }
   /** 账本里属于本进程会话的记录（面板用；sessionId 为空 = 全部） */
   async ledgerRecords(sessionId?: string, limit = 200): Promise<import('../core/actionLedger').ActionRecord[]> {
     const { loadActionRecords } = await import('../core/actionLedgerIo')
@@ -313,7 +324,7 @@ export class CliHost {
             (s) =>
               `  ${s.id}（${s.profile.name}：${s.profile.username}@${s.profile.host}）[${s.session.isClosed ? '已关闭' : 'shell'}]`
           ),
-          '说明：CLI 不能由 AI 新建连接（连接由人在命令行发起）。多条会话时用 session 指定（id 或档案名都行）。'
+          '说明：AI 可以用 bastion_connect 新建连接（密钥认证直接连；密码认证需要宿主提供密码）。多条会话时用 session 指定（id 或档案名都行）。'
         ].join('\n')
       },
 
@@ -331,7 +342,7 @@ export class CliHost {
           `- 客户端：${input?.clientId ?? '(未声明)'}｜绑定：${input?.clientId ? self.bound.get(input.clientId) ?? '(无)' : '(无)'}`,
           `- 最近作业：${j ? `${j.id} ${j.state}（${j.sessionId}）` : '(无)'}`,
           '',
-          '未实现（CLI）：connect / habits。需要这些请用 VS Code 扩展。'
+          '能力：connect（AI 新建连接）已支持；habits（读写个人习惯）已支持。'
         ].join('\n')
       },
 
@@ -409,11 +420,25 @@ export class CliHost {
         return { text: 'CLI 版没有需要人工接手的挂起作业（exec 是同步等待）。', isError: true }
       },
 
-      async connect() {
-        return (
-          'CLI 版不支持由 AI 新建连接（连接由人在命令行发起）。' +
-          '请让人在终端里运行：bastionshell connect <档案>。'
-        )
+      async connect(input) {
+        const name = (input?.profile ?? '').trim()
+        // 返回类型：错误走 string，成功走 {text, structured}（McpSessionApi 的约定）
+        if (!name) return '错误：bastion_connect 需要 profile（档案名）'
+        if (!self.opts.connectSession) {
+          return '这个宿主没有开启「AI 新建连接」的能力（connectSession 未注入）'
+        }
+        try {
+          const entry = await self.opts.connectSession(name)
+          self.addSession(entry)
+          return {
+            text:
+              `已连接：${entry.profile.name}（${entry.profile.username}@${entry.profile.host}）` +
+              `\n会话 id：${entry.id}（之后可用 session:"${entry.id}" 或 "${entry.profile.name}" 指定）`,
+            structured: { sessionId: entry.id, profile: entry.profile.name, host: entry.profile.host }
+          }
+        } catch (e) {
+          return `连接失败：${(e as Error).message}`
+        }
       },
 
       async push(input) {
