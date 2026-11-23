@@ -267,17 +267,18 @@ BastionShell.exe（Go）
 ③ 桌面 MCP = core 13 工具 | `mcp.json {port:39311, actualPort:5xxxx, note:…}`；`tools/list` = 13 含 `bastion_connect` |
 界面会话对 AI 可见 | 界面连 xzt → ready 带 `s-xxxx-1`，MCP `listSessions` 同一条 |
 
-待做：④ upload/forward 迁进 core；⑤ 删 Go 的 session/exec/mcp（删前全量 e2e）。
+④ 上传/转发迁进 core | WS `upload` → SFTP `UPLOAD OK`；WS `forward:start` → `FORWARD OK SSH-2.0-OpenSSH_9.2p` |
 
-单测：800 用例 / 775 通过 / 0 失败。
+⑤ **已完成**（2026-11-23，分支 `cleanup-go-mcp` 合并回 main）：Go 侧的 session/exec/transfer/upload/
+forward/ssh/lrzsz/deploy/mcp_*/ai_* 全部删除（约 6.6k 行），`server.go` 从 368 行降到 80 行。
 
-### 继续做 ④ 的入口（交接用）
+删完之后的边界：
 
-- 协议侧：`src/cli/uiServer.ts` 的 `ws.on('message')` 已处理 `control/connect/input/resize`；
-  `upload` 与 `forward:start|stop` 现在回 `{type:'error'}`。要补的就是这两个分支。
-- 上传：复用 `src/core/transferPath.ts` 的 `pushPath`（需要给会话造一个 `TransferSession`，
-  参考 `src/cli/host.ts` 里的 `transferSession(entry)`）。
-- 转发：Go 的实现见 `bastion-wails/server.go` 的 `handleForwardMsg` + `forward.go`；
-  TS 侧没有现成实现，需要新写（本地 TCP ↔ SSH `direct-tcpip`）。
-- 迁完后的验收：界面里拖文件上传、加一条本地转发规则，行为与 Go 版一致；
-  再去掉 `uiServer` 代理清单里的 `/api/upload`、`/api/forwards`。
+| 谁 | 干什么 |
+|---|---|
+core（`node bastion-cli/out/cli/main.js ui`，18090） | 终端 / 会话 / 执行 / 上传 / 转发 / MCP / 网页终端 / 「AI 访问」数据 |
+Go（`BastionShell.exe`，18091） | 窗口、WebView2、DPAPI 存密码、系统文件对话框、文件字节落临时文件、共享配置读写、拉起并守护 core |
+
+闸门（全绿）：`npm test` 803 用例 / `npm run e2e:cli` 30 / `npm run e2e:shell` 7 /
+`node tools/desktop-core-ui-e2e.mjs` 6。踩到的坑与修法见 `docs/desktop-cleanup.md`。
+

@@ -111,14 +111,27 @@ try {
     ok('endpoint 反映运行中', ep.writeError ? '（writeError 存在但不影响使用）' : '')
   } else bad('endpoint', JSON.stringify(ep).slice(0, 160))
 
-  // ⑤ 关闭 → 子进程归零
+  // ⑤ 关闭 ⚡ 终端 → **只停那一个**，界面后端（core）不能跟着死
+  //
+  // 2026-11-23 真踩到：Go 的 startUiBackend 和 startCliShell 共用一个进程句柄，
+  // 于是「点 ⚡ 开终端」会先把界面后端杀掉 —— 界面立刻 ECONNRESET。
+  // 所以这里断言的正是那条界线：停终端之后 18090 必须还活着，而且只剩 core 一个子进程。
   const stopped = await post('http://127.0.0.1:18090/api/shell/cli/stop', {})
   if (stopped.status === 200) ok('POST stop')
   else bad('POST stop', `status=${stopped.status}`)
   await sleep(3000)
+  // 进程计数只作诊断：沙箱里 Get-CimInstance 有时数不到别人的子进程，别拿它当裁决
   const n2 = cliChildren()
-  if (n2 === 0) ok('stop 后子进程归零')
-  else bad('stop 后子进程', `还有 ${n2} 个`)
+  const epStopped = await fetch('http://127.0.0.1:18090/api/shell/endpoint')
+    .then((r) => r.json())
+    .catch(() => ({}))
+  if (epStopped.running === false) ok('⚡ 终端已停（endpoint running=false）', `子进程数=${n2}`)
+  else bad('⚡ 终端', `endpoint running=${epStopped.running}；子进程数=${n2}`)
+  const stillUp = await fetch('http://127.0.0.1:18090/api/profiles')
+    .then((r) => r.ok)
+    .catch(() => false)
+  if (stillUp) ok('stop 之后界面后端仍可访问')
+  else bad('界面后端', 'stop 之后 18090 不通（core 被一起杀了）')
 } catch (e) {
   bad('契约测试整体', e instanceof Error ? e.message : String(e))
 } finally {
@@ -130,6 +143,11 @@ try {
   await sleep(500)
   fs.rmSync(path.join(os.homedir(), '.bastionshell', 'mcp-cli.json'), { force: true })
   console.log(results.join('\n'))
+  if (results.some((r) => r.startsWith('FAIL'))) {
+    // 失败时把桌面/核心的日志尾巴打出来 —— 否则只能看到一句 "fetch failed"
+    console.log('--- 桌面日志（尾部） ---')
+    console.log(log.slice(-2000))
+  }
   console.log(`\nTOTAL pass=${results.filter((r) => r.startsWith('PASS')).length} fail=${results.filter((r) => r.startsWith('FAIL')).length}`)
   process.exit(results.some((r) => r.startsWith('FAIL')) ? 1 : 0)
 }

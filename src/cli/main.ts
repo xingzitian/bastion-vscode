@@ -446,6 +446,10 @@ async function cmdServe(names: string[], mcpFile?: string, mcpPort?: number): Pr
  */
 async function cmdUi(port: number | undefined, proxyBase?: string, mcpPort?: number, mcpFile?: string): Promise<number> {
   // 会话表 + MCP 都在这个进程里：界面开的会话对 AI 可见（统一核心：一份会话、一份语义）
+  // 父进程（桌面 exe）被强杀时跟着收摊 —— 否则会变成占着 18090 的孤儿：
+  // 下一个 exe 起不来（端口被占），界面连上去却是个不响应的后端（2026-11-23 踩到）。
+  const uiParentPid = parseParentPid(process.argv)
+  if (uiParentPid) exitWhenParentDies(uiParentPid, log)
   let seq = 0
   const host = new CliHost({ sessions: [], version: VERSION, log: (m) => log(m) })
   let mcp: Awaited<ReturnType<typeof startCliMcp>> | undefined
