@@ -279,3 +279,19 @@ bastionshell serve xzt xb          # 两条会话，共用一个端点
 真机（MCP 调用）：`remember` → "已记下（xzt）"；`setPrivilege` → "已设置（xzt）提权习惯=sudo"；
 `read` 立刻能看到；文件里落在 `"xzt"` 段下。测试写的是临时目录（`BASTIONSHELL_SHARED_DIR`），
 不碰真实配置 —— 单测 `src/test/cliHabits.test.ts` 覆盖写入位置与非法参数。
+## 18. 行动面板做成"活的"（2026-11-23）
+
+之前 `/ui` 只是**打开时渲染一次**，而面板页里的 JS 会去轮询 `/ui/actions`、`/ui/status`、
+订阅 `/ui/stream` —— 在 CLI 里全是 404（页面看着能用，其实不刷新）。
+
+现在补齐四个接口（`src/cli/termServer.ts` + `CliHost` 的面板方法）：
+
+| 接口 | 内容 |
+|---|---|
+`/ui/actions?limit&session` | `{html, groupsTotal}`：读同一份账本，用 `core/actionPanelHtml` 渲染；可按会话筛 |
+`/ui/status` | `{working}`：本进程正在跑的作业数 |
+`/ui/cancel`（仅 POST） | 给对应会话发 Ctrl-C，并把作业标成 cancelled |
+`/ui/stream` | 极简 SSE：作业状态变化推 `event: action`，20s 心跳 |
+
+真机 e2e（`tools/cli-panel-e2e.mjs`，7/7）：页面 / actions 有刚跑的动作 / status / cancel 405+POST /
+SSE 收到 `: connected` / 无 token 一律 401。

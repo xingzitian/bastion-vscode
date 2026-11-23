@@ -16,6 +16,8 @@ import { findProfile, loadProfiles, profilesFilePath, type EngineProfile } from 
 import type { Client } from 'ssh2'
 import { CliHost } from './host'
 import { addTermUrlToEndpoint, startCliMcp } from './mcp'
+import { groupByIntent } from '../core/actionLedger'
+import { renderActionsHtml } from '../core/actionPanelHtml'
 import { startTermServer } from './termServer'
 
 /** CLI 版本：跟扩展同号（同一份 core），先硬编码，发版时一起改 */
@@ -293,7 +295,18 @@ async function cmdServe(names: string[], mcpFile?: string, mcpPort?: number): Pr
     sessions: entries.map((e) => ({ id: e.id, name: e.profile.name, session: e.session })),
     token: mcp.token,
     title: entries.map((e) => e.profile.name).join('+'),
-    log: (m) => log(m)
+    log: (m) => log(m),
+    // 行动面板的实时数据：账本 + 在跑数量 + 取消 + 变更推送
+    panel: {
+      async actions(sessionId, limit) {
+        const records = await host.ledgerRecords(sessionId, limit)
+        const groups = groupByIntent(records)
+        return { html: renderActionsHtml(groups), groupsTotal: groups.length }
+      },
+      working: () => host.workingCount(),
+      cancel: (jobId) => host.cancelJob(jobId),
+      subscribe: (cb) => host.subscribe(cb)
+    }
   })
   if (process.argv.includes('--print-endpoint')) {
     // 机器可读：桌面据此自己写 mcp.json

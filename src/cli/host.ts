@@ -66,6 +66,7 @@ export class CliHost {
   private readonly bound = new Map<string, string>()
   /** 每条会话最近一次命令的退出码（transferPath 的 ExecLike 要它） */
   private readonly lastRc = new Map<string, number>()
+  private readonly subs = new Set<() => void>()
   private readonly now: () => number
 
   constructor(private readonly opts: CliHostOptions) {
@@ -248,12 +249,57 @@ export class CliHost {
       job.completedAt = this.now()
     }
 
+    this.notify()
     try {
       await appendActionRecord(recordFromJob(this.toExecJob(job), this.now()))
     } catch (err) {
       this.opts.log?.(`写账本失败（不影响执行）：${(err as Error).message}`)
     }
     return this.toResponse(e, job)
+  }
+
+  /** 账本里属于本进程会话的记录（面板用；sessionId 为空 = 全部） */
+  async ledgerRecords(sessionId?: string, limit = 200): Promise<import('../core/actionLedger').ActionRecord[]> {
+    const { loadActionRecords } = await import('../core/actionLedgerIo')
+    const all = await loadActionRecords(Math.max(limit, 200))
+    const ids = new Set(this.opts.sessions.map((s) => s.id))
+    const own = all.filter((r) => ids.has(String(r.sessionId ?? '')))
+    const picked = sessionId ? own.filter((r) => r.sessionId === sessionId) : own
+    return picked.slice(-limit)
+  }
+
+  /** 正在跑的作业数（面板的"在跑 N"） */
+  workingCount(): number {
+    let n = 0
+    for (const j of this.jobs.values()) if (j.state === 'working') n += 1
+    return n
+  }
+
+  /** 面板点"取消"：给对应会话发 Ctrl-C（尽力而为） */
+  cancelJob(jobId: string): void {
+    const j = this.jobs.get(jobId)
+    const target = j ? this.opts.sessions.find((s) => s.id === j.sessionId) : this.opts.sessions[0]
+    target?.session.write('\u0003')
+    if (j && !TERMINAL.includes(j.state)) {
+      j.state = 'cancelled'
+      j.completedAt = this.now()
+    }
+  }
+
+  /** 作业状态变化订阅（SSE 用）；返回取消订阅 */
+  subscribe(cb: () => void): () => void {
+    this.subs.add(cb)
+    return () => this.subs.delete(cb)
+  }
+
+  private notify(): void {
+    for (const cb of this.subs) {
+      try {
+        cb()
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   api(): McpSessionApi {

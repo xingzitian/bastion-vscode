@@ -23,6 +23,18 @@ export interface TermSessionRef {
   session: EngineSession
 }
 
+/** 行动面板要的宿主能力（CLI: CliHost；扩展里是另一套） */
+export interface PanelBridge {
+  /** 返回 {html, groupsTotal}；sessionId 为空 = 全部会话 */
+  actions(sessionId: string | undefined, limit: number): Promise<{ html: string; groupsTotal: number }>
+  /** 正在跑的作业数 */
+  working(): number
+  /** 取消某个作业（尽力而为） */
+  cancel(jobId: string): void
+  /** 作业状态变化订阅；返回取消订阅 */
+  subscribe(cb: () => void): () => void
+}
+
 export interface TermServerOptions {
   /** 至少一条；多条时页面顶部出现会话切换 */
   sessions: TermSessionRef[]
@@ -34,6 +46,8 @@ export interface TermServerOptions {
   log?: (msg: string) => void
   /** 只读面板的数据源（默认读账本） */
   listActions?: typeof loadActionRecords
+  /** 面板的实时口子（由宿主注入；没有就退化成"打开时渲染一次"） */
+  panel?: PanelBridge
 }
 
 export interface TermServer {
@@ -140,6 +154,65 @@ export async function startTermServer(opts: TermServerOptions): Promise<TermServ
       res.end(page(opts.title, token, sessions.map((s) => ({ id: s.id, name: s.name })), pick(url).id))
       return
     }
+    if (url.pathname === '/ui/actions') {
+      const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit')) || 100))
+      const sess = (url.searchParams.get('session') ?? '').trim() || undefined
+      void (async () => {
+        try {
+          const r = opts.panel
+            ? await opts.panel.actions(sess, limit)
+            : { html: '', groupsTotal: 0 }
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify(r))
+        } catch (e) {
+          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })()
+      return
+    }
+    if (url.pathname === '/ui/status') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ working: opts.panel?.working() ?? 0 }))
+      return
+    }
+    if (url.pathname === '/ui/cancel') {
+      if (req.method !== 'POST') {
+        res.writeHead(405).end()
+        return
+      }
+      let body = ''
+      req.on('data', (d) => (body += String(d)))
+      req.on('end', () => {
+        try {
+          const j = JSON.parse(body || '{}') as { jobId?: string }
+          if (j.jobId) opts.panel?.cancel(j.jobId)
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ ok: true }))
+        } catch {
+          res.writeHead(400).end()
+        }
+      })
+      return
+    }
+    if (url.pathname === '/ui/stream') {
+      // 极简 SSE：有变化就推一条；另外每 20s 心跳（防代理掐断）
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive'
+      })
+      res.write(': connected\n\n')
+      const unsub = opts.panel?.subscribe(() => {
+        res.write('event: action\ndata: {}\n\n')
+      })
+      const hb = setInterval(() => res.write(': ping\n\n'), 20_000)
+      req.on('close', () => {
+        clearInterval(hb)
+        unsub?.()
+      })
+      return
+    }
     if (url.pathname === '/ui') {
       void renderUi(res, token)
       return
@@ -155,9 +228,10 @@ export async function startTermServer(opts: TermServerOptions): Promise<TermServ
     res.end('not found')
   })
 
-  async function renderUi(res: http.ServerResponse, tok: string): Promise<void> {
+  async function renderUi(res: http.ServerResponse, tok: string, sessionId?: string): Promise<void> {
     try {
       const list = (opts.listActions ?? loadActionRecords)(300)
+      // 面板页是"全量"视图；按会话筛选走 /ui/actions?session=（页面会自己刷新）
       const html = renderStandalonePanel(await list, tok, { embed: false, theme: 'dark', limit: 100 })
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
       res.end(html)
