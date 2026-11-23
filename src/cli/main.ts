@@ -15,6 +15,7 @@ import { EngineSession } from '../engine/session'
 import { findProfile, loadProfiles, profilesFilePath } from '../engine/profiles'
 import { CliHost } from './host'
 import { startCliMcp } from './mcp'
+import { startTermServer } from './termServer'
 
 /** CLI 版本：跟扩展同号（同一份 core），先硬编码，发版时一起改 */
 const VERSION = '0.3.21-cli'
@@ -217,10 +218,14 @@ async function cmdServe(name: string): Promise<number> {
   const mcp = await startCliMcp({ host, version: VERSION, profileName: profile.name, sessionId, log })
   log(`MCP 已启动：${mcp.url}`)
   log(`端点文件：${mcp.file}`)
+  // 网页终端 + 只读面板：同一个 token，单开一个端口（不污染 MCP 的 HTTP 层）
+  const term = await startTermServer({ session, token: mcp.token, title: profile.name, log: (m) => log(m) })
+  log(`浏览器打开：${term.url}`)
   log('serve 模式：远端输出会实时打在这里；Ctrl-C 退出。')
 
   const shutdown = async (): Promise<void> => {
     try {
+      await term.close()
       await mcp.close()
     } catch {
       /* ignore */

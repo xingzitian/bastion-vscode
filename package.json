@@ -1420,14 +1420,18 @@
     "cli": "node out/cli/main.js"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "jsonc-parser": "^3.3.1",
     "ssh2": "^1.17.0",
+    "ws": "^8.23.0",
     "zmodem.js": "^0.1.10"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/ssh2": "^1.15.5",
     "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.18.2",
     "typescript": "^5.6.0"
   },
   "homepage": "https://github.com/xingzitian/bastion-vscode#readme"

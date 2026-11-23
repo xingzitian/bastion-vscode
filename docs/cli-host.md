@@ -1,6 +1,6 @@
 # CLI 宿主：一份语义，终端就是界面
 
-> 状态：**A1 + A2 已完成**（2026-11-23）。`bastionshell run xzt --exec "…"` 真机通过；
+> 状态：**A1 + A2 + A3 已完成**（2026-11-23）。`bastionshell run xzt --exec "…"` 真机通过；
 > `core/screen.ts` 抽取完成（扩展零行为变化，全量测试 784 绿）。
 > 下一步：A2（MCP 接线）。
 > 决策日期：2026-11-23。背景：桌面版 0.9.2 已冻结，但**有人真的在用它的 MCP**；
@@ -181,3 +181,29 @@ $ node out/cli/main.js serve xzt
 `bastion_push` / `bastion_pull`（下一批接 `core/transferPath`）、`bastion_habits`（写共享文件需确认流程）。
 
 下一步 A3：网页终端（xterm.js over WS）+ `/ui` 面板，然后 B 阶段桌面窗口指向它。
+## 13. A3 实际结果（2026-11-23）—— 网页终端 + 面板
+
+`src/cli/termServer.ts`（新）：一个独立的本地 HTTP + WS 服务（单开端口，不污染 MCP 的 HTTP 层）。
+
+| 路由 | 用途 |
+|---|---|
+`GET /term?token=…` | xterm.js 页面（**本地文件**，不依赖 CDN —— 内网/离线可用） |
+`WS /term/ws?token=…` | 双向字节：`{t:'in',d}` / `{t:'out',d:base64}` / `{t:'resize',cols,rows}` |
+`GET /ui?token=…` | 只读行动面板（复用 `core/uiPage`，数据来自同一份账本 JSONL） |
+`GET /xterm/*` | xterm.js / css / addon-fit（从 node_modules 读白名单文件） |
+
+只监听 127.0.0.1；所有路由要 `?token=`（与 MCP 同一个 token）。
+
+真机 e2e（`tools/cli-term-e2e.mjs`，起 `serve xzt` 后真开 WS 敲命令）：
+
+| 用例 | 结果 |
+|---|---|
+`/term` 页面 | ✅ 200，含 xterm 引用 |
+无 token | ✅ 401 |
+xterm.js 本地资源 | ✅ 200（>10KB） |
+**WS 输入→远端→输出** | ✅ 发 `echo web-term-ok\r`，收到回显（真终端回路） |
+`/ui` 面板 | ✅ 200，渲染出账本卡片 |
+
+依赖变化（都是 npm 依赖，**不打运行时**）：`@xterm/xterm`、`@xterm/addon-fit`、`ws`（+ `@types/ws` 仅开发）。
+
+下一步 B：桌面 Wails 窗口指向这个 `/term` 页面（Go 只改窗口 URL，不碰 MCP/会话逻辑）。
