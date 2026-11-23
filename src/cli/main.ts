@@ -52,6 +52,20 @@ export function exitWhenParentDies(parentPid: number, logFn: (m: string) => void
   return timer
 }
 
+/** 取 --host-key 策略（off / known_hosts / strict） */
+export function parseHostKeyPolicy(argv: string[]): 'off' | 'known_hosts' | 'strict' {
+  const i = argv.indexOf('--host-key')
+  const v = i >= 0 ? (argv[i + 1] ?? '').toLowerCase() : ''
+  return v === 'off' || v === 'strict' ? v : 'known_hosts'
+}
+
+/** 取 --known-hosts 路径 */
+export function parseKnownHostsFile(argv: string[]): string | undefined {
+  const i = argv.indexOf('--known-hosts')
+  const v = i >= 0 ? (argv[i + 1] ?? '').trim() : ''
+  return v || undefined
+}
+
 /** 从 argv 里取 --parent-pid */
 export function parseParentPid(argv: string[]): number | undefined {
   const i = argv.indexOf('--parent-pid')
@@ -74,6 +88,8 @@ function usage(): void {
       '  bastionshell serve <档案…>            （非交互：起会话 + MCP，输出实时打印；给脚本/桌面薄壳用）',
       '                                        --passwords-stdin：从 stdin 读一行 JSON 密码表（桌面用）',
       '                                        --print-endpoint：打印机器可读端点行（宿主写端点文件）',
+      '                                        --host-key=known_hosts|strict|off（默认 known_hosts：首次记录、之后必须一致）',
+      '                                        --known-hosts <路径>（默认 ~/.ssh/known_hosts）',
       ''
     ].join('\n')
   )
@@ -179,7 +195,12 @@ async function cmdRun(name: string, command: string): Promise<number> {
     return 2
   }
   const password = await ensurePassword(profile.name, profile.authMethod !== 'key')
-  const conn = await connectProfile(profile, { password, log })
+    const conn = await connectProfile(profile, {
+      password,
+      log,
+      hostKey: parseHostKeyPolicy(process.argv),
+      knownHostsFile: parseKnownHostsFile(process.argv)
+    })
   const session = new EngineSession(profile.name, conn.channel, { log })
   try {
     // 先等 shell 就绪：否则登录 banner 会被算进这次命令的输出
@@ -210,7 +231,14 @@ async function cmdConnect(name: string): Promise<number> {
   log(`连接 ${profile.username}@${profile.host}:${profile.port} …`)
   const cols = process.stdout.columns || 120
   const rows = process.stdout.rows || 30
-  const conn = await connectProfile(profile, { password, log, cols, rows })
+    const conn = await connectProfile(profile, {
+      password,
+      log,
+      cols,
+      rows,
+      hostKey: parseHostKeyPolicy(process.argv),
+      knownHostsFile: parseKnownHostsFile(process.argv)
+    })
   const session = new EngineSession(profile.name, conn.channel, { log })
   // 先把登录 banner 收完再进交互（否则它会刷在用户第一屏的最上面，还会被当成输出）
   await session.waitShellReady()
@@ -302,7 +330,12 @@ async function cmdServe(names: string[], mcpFile?: string, mcpPort?: number): Pr
     }
     const password = await ensurePassword(profile.name, profile.authMethod !== 'key')
     log(`连接 ${profile.name}（${profile.username}@${profile.host}:${profile.port}）…`)
-    const conn = await connectProfile(profile, { password, log })
+    const conn = await connectProfile(profile, {
+      password,
+      log,
+      hostKey: parseHostKeyPolicy(process.argv),
+      knownHostsFile: parseKnownHostsFile(process.argv)
+    })
     const session = new EngineSession(profile.name, conn.channel, { log })
     await session.waitShellReady()
     session.onData((d) => process.stdout.write(d))

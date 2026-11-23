@@ -105,8 +105,14 @@ bastionshell serve xzt xb cana
 
 ## 安全边界（先看清楚再用）
 
-1. **主机指纹不校验**：v1 只把 sha256 打进日志，**接受任何 host key**。
-   在不可信网络里先用 `ssh` 连一次核对指纹，或等后续版本补 known_hosts。
+1. **主机指纹：默认校验（known_hosts）**
+   - 默认 `--host-key=known_hosts`：第一次见到某台机器 → 打印 sha256 指纹并**记录**到
+     `~/.ssh/known_hosts`（TOFU，和 OpenSSH 的 `accept-new` 一致）；以后指纹必须一致，
+     **不一致直接拒绝连接**（提示"可能是中间人，也可能是对方换过 key"）。
+   - `--host-key=strict`：文件里没有记录也拒绝（最严）。
+   - `--host-key=off`：只打指纹不校验（原 v1 行为，仅在完全可信网络里用）。
+   - 文件位置可换：`--known-hosts <路径>`。支持 `[host]:port` 与 `|1|` 哈希写法。
+   - 不支持：`@cert-authority`、通配符条目（会被跳过并列出，不静默忽略）。
 2. **密码只在内存**：桌面 spawn 时经 **stdin** 传入（不进 argv —— argv 在任务管理器里可见）。
 3. **token 在 URL 上**：与扩展 `/ui` 的取舍一致；只监听 `127.0.0.1`。
 4. `http://` 不是 `https://`：本机回环，不经过网络。
