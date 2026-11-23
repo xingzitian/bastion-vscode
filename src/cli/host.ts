@@ -391,8 +391,27 @@ export class CliHost {
         return `${out.ok ? '已下载' : '下载失败'}：${out.message}${tail}`
       },
 
-      async habits() {
-        return 'CLI 版暂不支持写个人习惯（会改共享文件，需要单独设计确认流程）。'
+      async habits(input) {
+        const { getHabits, habitsForAI, appendHabit, setPrivilege, isPrivilegeMode } = await import('../core/habits')
+        const action = (input?.action ?? 'read').toLowerCase()
+        const target = (input?.profile ?? '').trim() || sessions[0].profile.name
+        if (action === 'read') {
+          const h = getHabits()
+          return [`档案「${target}」的个人习惯（只读展示）：`, habitsForAI(target)].join('\n')
+        }
+        if (action === 'remember') {
+          const text = (input?.habit ?? '').trim()
+          if (!text) return '错误：remember 需要 habit（要记的那句话）'
+          const ok = appendHabit(target, text)
+          return ok ? `已记下（${target}）：${text}` : '写入习惯文件失败（看 CLI 日志里的原因）'
+        }
+        if (action === 'setprivilege') {
+          const mode = input?.privilege
+          if (!isPrivilegeMode(mode)) return '错误：privilege 只能是 none / sudo / sudo-i / ask'
+          const ok = setPrivilege(target, mode)
+          return ok ? `已设置（${target}）提权习惯=${mode}` : '写入习惯文件失败（看 CLI 日志里的原因）'
+        }
+        return `未知 action：${action}（可用 read / remember / setPrivilege）`
       }
     }
   }

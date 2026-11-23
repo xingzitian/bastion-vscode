@@ -266,3 +266,16 @@ bastionshell serve xzt xb          # 两条会话，共用一个端点
 
 **顺手修了 core 的一个真问题**：`bastion_exec` 的返回把 `isError` 吞掉了（只透传 text/structured），
 导致"多条会话又没指定"这种客户端错误被 AI 当成执行成功。现在 `mcpTools` 会把 `r.isError` 透传 —— 扩展同样受益。
+## 17. habits 接上了（2026-11-23）
+
+`bastion_habits` 三个动作都可用（复用 `core/habits.ts`，写的是**共享** `~/.bastionshell/habits.jsonc`）：
+
+| action | 行为 |
+|---|---|
+`read` | 展示该档案的提权习惯与个人习惯 |
+`remember` | 追加一条习惯 |
+`setPrivilege` | 改提权方式（none / sudo / sudo-i / ask） |
+
+真机（MCP 调用）：`remember` → "已记下（xzt）"；`setPrivilege` → "已设置（xzt）提权习惯=sudo"；
+`read` 立刻能看到；文件里落在 `"xzt"` 段下。测试写的是临时目录（`BASTIONSHELL_SHARED_DIR`），
+不碰真实配置 —— 单测 `src/test/cliHabits.test.ts` 覆盖写入位置与非法参数。
