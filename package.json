@@ -1418,7 +1418,8 @@
     "check:unused": "tsc -p tsconfig.core.json --noUnusedLocals --noUnusedParameters",
     "check": "npm run check:core && npm run check:load && npm run check:requires && npm run check:assets && npm run check:cycles && npm run check:unused",
     "cli": "node out/cli/main.js",
-    "e2e:cli": "node tools/cli-e2e-all.mjs"
+    "e2e:cli": "node tools/cli-e2e-all.mjs",
+    "e2e:shell": "node tools/shell-ui-contract-e2e.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

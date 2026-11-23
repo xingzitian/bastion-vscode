@@ -174,3 +174,29 @@ headless 路由 | 302 → `http://127.0.0.1:63124/term?token=…` |
 
 届时按 §2 的顺序做（先加开关 → 再删引擎），且必须先解决 §4 的"旧 mcp.json 身份接管"
 （`serve --mcp-file … --port 39311` 已经在 CLI 里实现，可以直接用）。
+## 12. 薄壳按钮的契约测试（2026-11-23）
+
+我点不了 GUI，但前端点下去发的请求是可测的 —— 这层能挡住逻辑 bug：
+
+```bash
+npm run e2e:shell      # 需要先 wails build（用到 build/bin/BastionShell.exe）
+```
+
+```
+PASS  POST start → termUrl
+PASS  iframe 加载 term 页面（2688 字节）
+PASS  无重复 spawn（pid 未变，pid=49860）
+PASS  endpoint 反映运行中（writeError 存在但不影响使用）
+PASS  POST stop
+PASS  stop 后子进程归零
+```
+
+**它抓到的两个真 bug（已修）**：
+
+1. **优先级 bug**：`directUrl || profiles.length === 1 ? a : b` 被解析成 `(directUrl || …) ? a : b`，
+   `directUrl` 等于没生效 —— 密码启动后 iframe 又去打了 spawn 路由。
+2. **探活误判**：带 `directUrl` 时仍会 `fetch` 探活，把 term 页面（HTML 200）当成错误 JSON，
+   显示「起不来：<!DOCTYPE html>…」。
+
+修法：`spawnUrl` 与 `url` 分开算；有 `directUrl` 时**跳过** spawn 探活，只轮询端点。
+另外给 `/api/shell/endpoint` 加了 `pid`（CLI 子进程），测试用它判断「没有重复起进程」——比数进程稳。
