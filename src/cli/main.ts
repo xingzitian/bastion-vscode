@@ -444,9 +444,10 @@ async function cmdServe(names: string[], mcpFile?: string, mcpPort?: number): Pr
  * 用法：bastionshell ui [--port 18090]
  * 然后把桌面界面的 API 地址指到它（默认就是 18090，所以界面不用改）。
  */
-async function cmdUi(port: number | undefined): Promise<number> {
+async function cmdUi(port: number | undefined, proxyBase?: string): Promise<number> {
   const srv = await startUiServer({
     port,
+    proxyBase,
     hostKey: parseHostKeyPolicy(process.argv),
     knownHostsFile: parseKnownHostsFile(process.argv),
     log
@@ -495,12 +496,16 @@ async function main(): Promise<number> {
   }
   if (cmd === 'ui') {
     let port: number | undefined
-    const i = rest.indexOf('--port')
-    if (i >= 0) {
-      const n = Number(rest[i + 1])
-      port = Number.isFinite(n) ? n : undefined
+    let proxyBase: string | undefined
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--port') {
+        const n = Number(rest[++i])
+        port = Number.isFinite(n) ? n : undefined
+      } else if (rest[i] === '--proxy') {
+        proxyBase = rest[++i]
+      }
     }
-    return cmdUi(port)
+    return cmdUi(port, proxyBase)
   }
   if (cmd === 'serve') {
     // 位置参数 = 档案名（可多个）；--mcp-file / --port 各带一个值

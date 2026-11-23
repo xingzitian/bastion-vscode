@@ -27,6 +27,8 @@ export interface UiServerOptions {
   /** MCP 端点信息（/api/mcp-info 用） */
   mcp?: { url: string; token: string; port: number; portFallback: boolean; file: string }
   log?: (msg: string) => void
+  /** 未迁移的接口反向代理到这里（Go 的 18091；保证界面功能不断） */
+  proxyBase?: string
   /** 指纹策略 */
   hostKey?: 'known_hosts' | 'strict' | 'off'
   knownHostsFile?: string
@@ -90,12 +92,31 @@ export async function startUiServer(opts: UiServerOptions = {}): Promise<UiServe
       })
       return
     }
-    // 界面会用这些，但本宿主还没实现 —— 明确 501，不假装成功
-    for (const p of ['/api/upload', '/api/forwards', '/api/quick-commands', '/api/secret', '/api/pick-files']) {
-      if (url.pathname === p || url.pathname.startsWith(p + '/')) {
-        json(501, { error: `CLI 后端暂未实现 ${p}` })
+    // 还没迁进 core 的接口：有 proxyBase 就原样转发给 Go（DPAPI 存密码、上传、转发、系统对话框），
+    // 没有就明确 501 —— 两种都比"假装成功"好。
+    const proxied = ['/api/upload', '/api/forwards', '/api/quick-commands', '/api/secret', '/api/pick-files', '/api/shell', '/api/ai-access']
+    if (proxied.some((p) => url.pathname === p || url.pathname.startsWith(p + '/'))) {
+      if (!opts.proxyBase) {
+        json(501, { error: `CLI 后端暂未实现 ${url.pathname}（没有配置 proxyBase）` })
         return
       }
+      const chunks: Buffer[] = []
+      req.on('data', (c: Buffer) => chunks.push(c))
+      req.on('end', () => {
+        const target = new URL(url.pathname + url.search, opts.proxyBase)
+        const up = http.request(
+          target,
+          { method: req.method, headers: { ...req.headers, host: target.host } },
+          (res2) => {
+            res.writeHead(res2.statusCode ?? 502, res2.headers)
+            res2.pipe(res)
+          }
+        )
+        up.on('error', (e) => json(502, { error: `代理到 ${opts.proxyBase} 失败：${e.message}` }))
+        if (chunks.length) up.write(Buffer.concat(chunks))
+        up.end()
+      })
+      return
     }
     json(404, { error: `没有这个接口：${url.pathname}` })
   })
