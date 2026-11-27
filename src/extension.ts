@@ -287,13 +287,28 @@ export function activate(context: vscode.ExtensionContext): void {
       // 密码在服务器上改过、或者不想再用存的那份时用（认证失败那条路也会引导到这里）
       let name = node?.profile?.name
       if (!name) {
+        // 「档案改名/删除后留下的旧名字」也得能清：密码是按名字存的，而 SecretStorage 不能枚举，
+        // 一旦那个名字从档案表里消失，界面上就再没有入口能清掉它（维护者 2026-11-27 的清不掉有这一份）。
+        const MANUAL = '__manual__'
         const picked = await vscode.window.showQuickPick(
-          getProfiles(context).map((p) => ({ label: p.name, description: `${p.username}@${p.host}`, name: p.name })),
+          [
+            ...getProfiles(context).map((p) => ({ label: p.name, description: `${p.username}@${p.host}`, name: p.name })),
+            { label: '$(edit) 清除其它名字的凭据（原名已改/已删）…', description: '手输档案名', name: MANUAL }
+          ],
           { placeHolder: '清除哪个档案保存的密码？（下次连接会提示重新输入）' }
         )
 
         if (!picked) return
-        name = picked.name
+        if (picked.name === MANUAL) {
+          const typed = await vscode.window.showInputBox({
+            prompt: '要清除哪个名字保存的凭据？（改名/删除前的旧名字也可以填；没有的删了也没事）',
+            ignoreFocusOut: true
+          })
+          if (typed === undefined || typed.trim() === '') return
+          name = typed.trim()
+        } else {
+          name = picked.name
+        }
       }
       await deletePassword(context, name)
   await deletePassphrase(context, name) // 私钥口令也一起清掉：用户说
