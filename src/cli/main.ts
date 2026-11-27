@@ -19,11 +19,12 @@ import { CliHost } from './host'
 import { addTermUrlToEndpoint, startCliMcp } from './mcp'
 import { groupByIntent } from '../core/actionLedger'
 import { renderActionsHtml } from '../core/actionPanelHtml'
+import { fetchSecret } from '../core/secretLookup'
 import { startTermServer } from './termServer'
 import { startUiServer } from './uiServer'
 
 /** CLI 版本：跟扩展同号（同一份 core），先硬编码，发版时一起改 */
-const VERSION = '0.3.21-cli'
+const VERSION = '0.3.22-cli'
 
 /** 父进程还活着吗（Windows 上 signal 0 也能用） */
 export function isAlive(pid: number): boolean {
@@ -456,17 +457,27 @@ async function cmdUi(port: number | undefined, proxyBase?: string, mcpPort?: num
   let seq = 0
   // AI 新建连接（bastion_connect）：和 serve 模式同一份实现，区别只是新会话也注册进宿主，
   // 而且它的远端输出会经 WS 推给界面（不写 stdout，免得和日志混在一起）。
+  //
+  // 密码优先**现取**（proxyBase → Go 的 DPAPI 接口），stdin 那份表只当兜底：
+  // 启动快照会过时 —— 用户在界面里"清除已保存的密码"之后，快照里那份旧密码
+  // 还能被 AI 拿去连（2026-11-27 报的"清理不掉"桌面版就是这个）。
+  const liveSecret = proxyBase ? (name: string) => fetchSecret(proxyBase, name) : undefined
   const connectSession = async (profileName: string): Promise<CliSessionEntry> => {
     const p = findProfile(profileName)
     if (!p) throw new Error(`找不到档案「${profileName}」（${profilesFilePath()}）`)
     const needPw = p.authMethod !== 'key'
-    if (needPw && !passwordTable?.[p.name]) {
-      throw new Error(
-        `档案「${p.name}」是密码认证，但宿主没有它的密码（桌面没存过 / 没在密码框里给过）。` +
-          `请先在桌面里用 ⚡ 连一次（会写入 DPAPI），或在界面上新建连接。`
-      )
+    let pw = ''
+    if (needPw) {
+      const live = liveSecret ? await liveSecret(p.name) : undefined
+      pw = live ?? passwordTable?.[p.name] ?? ''
+      if (!pw) {
+        throw new Error(
+          `档案「${p.name}」是密码认证，但本机没有它的密码（DPAPI 里没存过，网络也不好到这里去现问）。` +
+            `请先在桌面里用 ⚡ 连一次并勾选保存密码，或在界面上新建连接。`
+        )
+      }
+      if (live) log(`已从 DPAPI 现取「${p.name}」的密码（${live.length} 字符，只在内存里）`)
     }
-    const pw = await ensurePassword(p.name, needPw)
     const conn = await connectProfile(p, {
       password: pw,
       log,

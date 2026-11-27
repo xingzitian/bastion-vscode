@@ -297,7 +297,11 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       await deletePassword(context, name)
   await deletePassphrase(context, name) // 私钥口令也一起清掉：用户说
-      log(`已清除保存的密码（${name}）`)
+      // ⚠️ 钥匙串清了还不够：连接池里的对象自己捏着这次握手用的密码（retryAuth 会沿用它），
+      // 不把它一起摘掉的话，下次连接 `ensureConnection` 直接命中它 —— 既不读钥匙串也不问新密码。
+      // 2026-11-27 维护者报的「清理密码还是有问题，为什么清理不掉」就是这个。
+      const dropped = manager.forget(name)
+      log(`已清除保存的密码（${name}）${dropped.dropped ? '（并丢掉了连接池里那条连接）' : ''}`)
       void vscode.window.showInformationMessage(`已清除 ${name} 保存的凭据（密码 / 私钥口令）—— 下次连接会提示重新输入。`)
     }),
     vscode.commands.registerCommand('bastion.showAiBindings', () => showAiBindings()),

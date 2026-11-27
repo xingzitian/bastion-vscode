@@ -61,6 +61,20 @@ try {
   if (/已连接/.test(cnText)) ok('桌面 bastion_connect 可用', cnText.slice(0, 120))
   else bad('bastion_connect', cnText.slice(0, 260))
 
+  // 密码档案：没有存过密码时必须**明确拒绝**（绝不能拿空密码去连、更不能报"已连接"）。
+  // 这条同时守住"清了密码之后 AI 也不再能连"：密码是现取 DPAPI 的，删了就取不到。
+  // 档案表会被维护者改（以前写死过 '中转2'，改名成「中转长期机器」后这条就变成假通过了），
+  // 所以这里**动态挑**一个密码认证的档案；一个都没有就跳过。
+  const pwProfile = profiles.find((x) => x.authMethod === 'password')
+  if (!pwProfile) {
+    ok('没有密码认证档案 → 跳过"没密码不假装连上"这条')
+  } else {
+    const noPw = await mcpToolsCall('bastion_connect', { profile: pwProfile.name })
+    const noPwText = JSON.stringify(noPw.result ?? noPw.error ?? noPw)
+    if (!/已连接/.test(noPwText)) ok(`密码档案「${pwProfile.name}」没密码 → 不假装连上`, noPwText.slice(0, 100))
+    else bad('密码档案 connect', '居然报成功了：' + noPwText.slice(0, 200))
+  }
+
   // ---- ① 上传落点 ----
   const ws = new WebSocket('ws://127.0.0.1:18090/ws')
   let data = ''

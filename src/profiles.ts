@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { readJsonFile, writeJsonFile, migrateJsonExtension } from './core/config';
+import { planSecretMigration } from './core/profileSecretMigration';
 import { log } from './log';
 
 export interface ConnectionProfile {
@@ -103,7 +104,48 @@ export function getProfiles(ctx: vscode.ExtensionContext): ConnectionProfile[] {
 }
 
 export function saveProfiles(ctx: vscode.ExtensionContext, profiles: ConnectionProfile[]): void {
-  writeJsonFile(PROFILES_FILE, profiles.map(normalizeProfile), PROFILES_HEADER);
+  // 先读旧列表：改名/删除之后钥匙串里那份密码要跟着走（见 core/profileSecretMigration）
+  const before = profiles.map(normalizeProfile)
+  writeJsonFile(PROFILES_FILE, profiles.map(normalizeProfile), PROFILES_HEADER)
+  void syncSecretsAfterSave(ctx, before, profiles.map(normalizeProfile))
+}
+
+/**
+ * 档案保存后的「密码对账」：改名的搬过去、删除的清掉、拿不准的不动。
+ *
+ * 为什么必须在保存这一刻做：SecretStorage 不能枚举，一旦旧名字消失，
+ * 那份密码就永远没法再被清掉了（维护者 2026-11-27 的"清理不掉"有这一份）。
+ * 异步执行、失败只记日志 —— 保存档案本身不能因为钥匙串出错而失败。
+ */
+async function syncSecretsAfterSave(
+  ctx: vscode.ExtensionContext,
+  before: ConnectionProfile[],
+  after: ConnectionProfile[]
+): Promise<void> {
+  const plan = planSecretMigration(before, after)
+  if (plan.renames.length === 0 && plan.removed.length === 0 && plan.skipped.length === 0) return
+  try {
+    for (const r of plan.renames) {
+      const pw = await ctx.secrets.get(SECRET_PREFIX + r.from)
+      const pp = await ctx.secrets.get(SECRET_PASSPHRASE_PREFIX + r.from)
+      // `undefined` = 从来没存过；`''` = 存过（私钥无口令 / 密码真为空）—— 都要原样搬
+      if (pw !== undefined) await ctx.secrets.store(SECRET_PREFIX + r.to, pw)
+      if (pp !== undefined) await ctx.secrets.store(SECRET_PASSPHRASE_PREFIX + r.to, pp)
+      await ctx.secrets.delete(SECRET_PREFIX + r.from)
+      await ctx.secrets.delete(SECRET_PASSPHRASE_PREFIX + r.from)
+      log(`档案改名：保存的密码已从「${r.from}」搬到「${r.to}」`)
+    }
+    for (const name of plan.removed) {
+      await ctx.secrets.delete(SECRET_PREFIX + name)
+      await ctx.secrets.delete(SECRET_PASSPHRASE_PREFIX + name)
+      log(`档案已删除：顺带清掉「${name}」保存的密码（不在钥匙串里留孤儿）`)
+    }
+    if (plan.skipped.length > 0) {
+      log(`这些档案的身份字段重复，分不清谁是谁，密码原样不动：${plan.skipped.join('、')}`)
+    }
+  } catch (e) {
+    log(`密码对账失败（不影响档案本身）：${(e as Error).message}`)
+  }
 }
 
 /** 密码改为 SecretStorage：由 VS Code 底层用系统钥匙串/DPAPI 加密，不再明文落盘 */

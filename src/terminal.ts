@@ -37,6 +37,7 @@ import {
   broadcastReceivers,
   getBroadcastMode,
   getBroadcastTargets,
+  manager,
   removeBroadcastTarget
 } from './state';
 import {
@@ -1450,9 +1451,16 @@ export class BastionTerminal implements vscode.Pseudoterminal {
             log(`改用新` + (keyAuth ? '口令' : '密码') + `重试（` + this.profile.name + `）`);
             // 继续往下走：下面的自动重试会调 retryAuth()，那里用的就是刚更新的密码
           } else if (reset.action === 'cleared') {
+            // 只删钥匙串不够：池子里这条连接的对象还攥着旧密码（retryAuth 会继续用它），
+            // 下次连接 `ensureConnection` 会直接命中它 —— 既不读钥匙串也不问新密码。
+            // 所以连池子里的那份一起摘掉（认证失败时它没开过 shell，end() 不会伤到别的会话）。
+            manager.forget(this.profile.name);
             this.handleFatal('已清除本机保存的密码 —— 重新连接时会提示你输入新密码。');
             return;
           } else {
+            // 「取消」也一样：这次握手用的密码已经被判无效，连接对象留在池子里只会让
+            // 下次连接撞上一个已 reject 的 ready（表现为"还没连上就报连接被关闭"）。
+            manager.forget(this.profile.name);
             this.handleFatal(info.message);
             return;
           }
@@ -1468,6 +1476,9 @@ export class BastionTerminal implements vscode.Pseudoterminal {
             this.finish(0);
             return;
           }
+          // 到此为止了：这条连接对象已经不可用（认证没过），但 authFailed 让它留在了池子里、
+          // 还捏着这次的密码。摘掉它，下次连接才会重新读钥匙串 / 问人。
+          manager.forget(this.profile.name);
           this.handleFatal(info.message);
           return;
         }

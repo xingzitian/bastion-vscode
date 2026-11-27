@@ -7,6 +7,7 @@ import { log } from './log';
 import { setSlot, clearSlot, progressBar } from './status';
 import { isPasswordPrompt, resolvePasswordPrompts } from './core/recognize';
 import { isAuthFailure } from './core/authError';
+import { forgetConnection } from './core/connectionPool';
 
 /** MFA 倒计时：显示在状态栏 mfa 槽位（右下角），提示 TOTP 动态码剩余有效期 */
 let mfaTimer: NodeJS.Timeout | null = null;
@@ -337,6 +338,23 @@ export class ConnectionManager {
       }
     });
     return conn;
+  }
+
+  /**
+   * 把某个档案的连接从池子里摘掉（**不一定**关掉它）。
+   *
+   * 为什么必须要有：`SharedConnection` 自己捏着这次握手用的密码（`retryAuth` 会沿用它）。
+   * 用户在钥匙串里清掉密码之后，池子里这个对象还留着旧密码 —— 下次连接
+   * `ensureConnection` → `get()` 直接命中它，既不读钥匙串也不弹输入框，
+   * 于是「密码清了，却还在用旧密码连 / 一直认证失败」（2026-11-27 维护者报的
+   * "清理密码还是有问题，为什么清理不掉"就是这个）。
+   *
+   * 认证失败时尤其明显：`authFailed` 会让 close 回调提前 return，连接**不会**被池子自动摘掉。
+   *
+   * 有活着的通道时只摘池子、不 `end()`：那些终端还在用这条连接，不能因为清了密码把它们打死。
+   */
+  forget(name: string): { dropped: boolean; ended: boolean } {
+    return forgetConnection(this.connections, name);
   }
 
   dispose(): void {
