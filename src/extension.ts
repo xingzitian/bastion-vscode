@@ -71,6 +71,7 @@ import { execRemote, runProtocolSelfTest } from './aiBridge'
 import { currentMcpToken } from './mcpRegister'
 import { getMcpEndpointInfo } from './state'
 import { showActionPanel } from './actionPanel'
+import { CredentialPanel } from './credentialPanel'
 import { appendActionRecord, loadActionRecords } from './core/actionLedgerIo'
 import { getJob, onJobEvent } from './core/execJobs'
 import { recordFromJob } from './core/actionLedger'
@@ -283,6 +284,11 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand('bastion.pickOverwriteMode', pickOverwriteMode),
     // 查看/复制 MCP 端点信息（URL、token、给其它 AI 客户端的配置片段）
+    vscode.commands.registerCommand('bastion.manageCredentials', () => {
+      // 「本机到底存了哪些密码」的总入口：并扩展钥匙串 + 桌面 DPAPI 的元数据，
+      // 能在这里设置/替换/查看/删除/测试连接，也能清孤儿（改名/删除留下的）。
+      CredentialPanel.show(context)
+    }),
     vscode.commands.registerCommand('bastion.forgetPassword', async (node?: { profile?: { name: string } }) => {
       // 密码在服务器上改过、或者不想再用存的那份时用（认证失败那条路也会引导到这里）
       let name = node?.profile?.name

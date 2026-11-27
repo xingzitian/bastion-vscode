@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { readJsonFile, writeJsonFile, migrateJsonExtension } from './core/config';
 import { planSecretMigration } from './core/profileSecretMigration';
+import { recordEntry, dropEntry } from './core/credentialIndex';
 import { log } from './log';
 
 export interface ConnectionProfile {
@@ -104,10 +105,12 @@ export function getProfiles(ctx: vscode.ExtensionContext): ConnectionProfile[] {
 }
 
 export function saveProfiles(ctx: vscode.ExtensionContext, profiles: ConnectionProfile[]): void {
-  // 先读旧列表：改名/删除之后钥匙串里那份密码要跟着走（见 core/profileSecretMigration）
-  const before = profiles.map(normalizeProfile)
-  writeJsonFile(PROFILES_FILE, profiles.map(normalizeProfile), PROFILES_HEADER)
-  void syncSecretsAfterSave(ctx, before, profiles.map(normalizeProfile))
+  // ⚠️ 必须先把**磁盘上的旧列表**读出来再写：改名/删除的密码对账全靠这个 before。
+  // （曾经写成拿新列表当 before —— 那样永远比不出改名，等于没做对账，2026-11-27 自查发现）
+  const before = readJsonFile<ConnectionProfile[]>(PROFILES_FILE, [], isValidProfiles).map(normalizeProfile)
+  const after = profiles.map(normalizeProfile)
+  writeJsonFile(PROFILES_FILE, after, PROFILES_HEADER)
+  void syncSecretsAfterSave(ctx, before, after)
 }
 
 /**
@@ -116,6 +119,9 @@ export function saveProfiles(ctx: vscode.ExtensionContext, profiles: ConnectionP
  * 为什么必须在保存这一刻做：SecretStorage 不能枚举，一旦旧名字消失，
  * 那份密码就永远没法再被清掉了（维护者 2026-11-27 的"清理不掉"有这一份）。
  * 异步执行、失败只记日志 —— 保存档案本身不能因为钥匙串出错而失败。
+ *
+ * 只动**本产品**（owner=vscode）的条目与清单：桌面那边存的那份不归这里管，
+ * 它由桌面自己在保存档案时对账；清单里留着的 desktop 条目会以「孤儿」出现在界面上。
  */
 async function syncSecretsAfterSave(
   ctx: vscode.ExtensionContext,
@@ -129,8 +135,16 @@ async function syncSecretsAfterSave(
       const pw = await ctx.secrets.get(SECRET_PREFIX + r.from)
       const pp = await ctx.secrets.get(SECRET_PASSPHRASE_PREFIX + r.from)
       // `undefined` = 从来没存过；`''` = 存过（私钥无口令 / 密码真为空）—— 都要原样搬
-      if (pw !== undefined) await ctx.secrets.store(SECRET_PREFIX + r.to, pw)
-      if (pp !== undefined) await ctx.secrets.store(SECRET_PASSPHRASE_PREFIX + r.to, pp)
+      if (pw !== undefined) {
+        await ctx.secrets.store(SECRET_PREFIX + r.to, pw)
+        recordEntry({ key: r.to, kind: 'password', owner: 'vscode' })
+        dropEntry(r.from, 'password', 'vscode')
+      }
+      if (pp !== undefined) {
+        await ctx.secrets.store(SECRET_PASSPHRASE_PREFIX + r.to, pp)
+        recordEntry({ key: r.to, kind: 'passphrase', owner: 'vscode' })
+        dropEntry(r.from, 'passphrase', 'vscode')
+      }
       await ctx.secrets.delete(SECRET_PREFIX + r.from)
       await ctx.secrets.delete(SECRET_PASSPHRASE_PREFIX + r.from)
       log(`档案改名：保存的密码已从「${r.from}」搬到「${r.to}」`)
@@ -138,6 +152,8 @@ async function syncSecretsAfterSave(
     for (const name of plan.removed) {
       await ctx.secrets.delete(SECRET_PREFIX + name)
       await ctx.secrets.delete(SECRET_PASSPHRASE_PREFIX + name)
+      dropEntry(name, 'password', 'vscode')
+      dropEntry(name, 'passphrase', 'vscode')
       log(`档案已删除：顺带清掉「${name}」保存的密码（不在钥匙串里留孤儿）`)
     }
     if (plan.skipped.length > 0) {
@@ -155,10 +171,13 @@ export async function getPassword(ctx: vscode.ExtensionContext, name: string): P
 
 export async function savePassword(ctx: vscode.ExtensionContext, name: string, password: string): Promise<void> {
   await ctx.secrets.store(SECRET_PREFIX + name, password);
+  // 清单（只有元数据）：让"我到底存了哪些密码"能在一个地方看见（见 core/credentialIndex）
+  recordEntry({ key: name, kind: 'password', owner: 'vscode' });
 }
 
 export async function deletePassword(ctx: vscode.ExtensionContext, name: string): Promise<void> {
   await ctx.secrets.delete(SECRET_PREFIX + name);
+  dropEntry(name, 'password', 'vscode');
 }
 
 
@@ -246,10 +265,12 @@ export async function getPassphrase(ctx: vscode.ExtensionContext, name: string):
 
 export async function savePassphrase(ctx: vscode.ExtensionContext, name: string, passphrase: string): Promise<void> {
   await ctx.secrets.store(SECRET_PASSPHRASE_PREFIX + name, passphrase);
+  recordEntry({ key: name, kind: 'passphrase', owner: 'vscode' });
 }
 
 export async function deletePassphrase(ctx: vscode.ExtensionContext, name: string): Promise<void> {
   await ctx.secrets.delete(SECRET_PASSPHRASE_PREFIX + name);
+  dropEntry(name, 'passphrase', 'vscode');
 }
 
 /** 这个档案存过私钥口令吗？ */

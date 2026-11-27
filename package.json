@@ -95,6 +95,7 @@
     "onCommand:bastion.toggleBroadcast",
     "onCommand:bastion.toggleBroadcastMode",
     "onCommand:bastion.rsyncSyncToSession",
+    "onCommand:bastion.manageCredentials",
     "onCommand:bastion.forgetPassword",
     "onCommand:bastion.manageAiTokens",
     "onView:bastion.aiAccess",
@@ -969,6 +970,11 @@
         "command": "bastion.toggleBroadcastMode",
         "title": "BastionShell: 广播模式（原样同步 / 整行发送）",
         "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "bastion.manageCredentials",
+        "title": "BastionShell: 凭据管理（密码 / 私钥口令）",
+        "icon": "$(lock)"
       },
       {
         "command": "bastion.forgetPassword",
