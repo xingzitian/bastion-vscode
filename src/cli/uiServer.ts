@@ -247,7 +247,9 @@ export async function startUiServer(opts: UiServerOptions = {}): Promise<UiServe
       '/api/secret',
       '/api/pick-files',
       '/api/shell',
-      '/api/profiles'
+      '/api/profiles',
+      // 凭据弹窗的数据（档案 × 凭据 × 孤儿）：DPAPI 那半边只有 Go 知道，清单是两边共写的
+      '/api/credentials'
     ]
     if (proxied.some((p) => url.pathname === p || url.pathname.startsWith(p + '/'))) {
       if (!opts.proxyBase) {

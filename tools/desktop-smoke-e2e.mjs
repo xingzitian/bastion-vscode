@@ -126,6 +126,19 @@ try {
   if (m.names.includes('bastion_connect') && m.names.includes('bastion_push')) ok('关键工具在（connect/push/pull）')
   else bad('关键工具', m.names.join(','))
 
+  // ④ 凭据弹窗的数据（core 18090 代理到 Go 的 /api/credentials）
+  const cr = await fetch('http://127.0.0.1:18090/api/credentials')
+  const crJson = cr.ok ? await cr.json() : null
+  const profilesNow = await (await fetch('http://127.0.0.1:18090/api/profiles')).json()
+  if (crJson && crJson.rows.length === profilesNow.length && crJson.indexFile)
+    ok('凭据数据（档案 × 凭据 × 孤儿）', `${crJson.rows.length} 行 / 孤儿 ${crJson.orphans.length} / ${crJson.indexFile}`)
+  else bad('凭据数据', `status=${cr.status} ${JSON.stringify(crJson).slice(0, 160)}`)
+  if (crJson && crJson.rows.every((r) => Array.isArray(r.password.owners) && typeof r.password.has === 'boolean'))
+    ok('凭据行的字段齐（has/owners/updatedAt）')
+  else bad('凭据行字段', JSON.stringify(crJson?.rows?.[0] ?? null).slice(0, 160))
+  if (crJson && !/"value"|"secret"/.test(JSON.stringify(crJson))) ok('凭据接口不带明文/密文')
+  else bad('凭据接口', '响应里出现了 value/secret 字段')
+
   // 真机终端
   const t = await termEcho()
   if (t.ok) ok('⚡ 真机终端（xzt）回显 term-core-ok', `${t.bytes} 字节`)
